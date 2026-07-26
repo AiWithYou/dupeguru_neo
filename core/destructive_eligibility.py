@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Callable, Iterable, Optional, Tuple
 
 from core.engine import VerificationKind
+from hscommon.jobprogress.job import JobCancelled
 
 
 class EligibilityCode(str, Enum):
@@ -90,6 +91,39 @@ def _evaluate_review_generations(dupe, group) -> Eligibility:
                 "A result file changed after this scan. Run a new scan before organizing files.",
             )
     return Eligibility(EligibilityCode.ELIGIBLE, "Result file generations still match the scan.")
+
+
+def _evaluate_review_contents(
+    dupe,
+    group,
+    *,
+    defer_target: bool,
+    stop_check=None,
+    progress_callback=None,
+) -> Eligibility:
+    """Require current review bytes, except a target proven by its executor."""
+
+    candidates = (group.ref,) if defer_target else (dupe, group.ref)
+    for candidate in candidates:
+        validate = getattr(candidate, "validate_review_scan_content", None)
+        if not callable(validate):
+            return Eligibility(
+                EligibilityCode.STALE_SCAN_CONTEXT,
+                "A result has no live content proof. Run a new scan before organizing files.",
+            )
+        try:
+            validate(
+                stop_check=stop_check,
+                progress_callback=progress_callback,
+            )
+        except (InterruptedError, JobCancelled):
+            raise
+        except Exception:
+            return Eligibility(
+                EligibilityCode.STALE_SCAN_CONTEXT,
+                "A result file changed after this scan. Run a new scan before organizing files.",
+            )
+    return Eligibility(EligibilityCode.ELIGIBLE, "Result file bytes still match the scan.")
 
 
 def evaluate_duplicate(
@@ -219,6 +253,34 @@ def evaluate_relocation_batch(
         else:
             blocked.append((dupe, eligibility))
     return BatchEligibility(tuple(allowed), tuple(blocked))
+
+
+def evaluate_relocation_action(
+    results,
+    dupe,
+    current_pool_resolver: Optional[Callable[[object], str]] = None,
+    *,
+    stop_check=None,
+    progress_callback=None,
+) -> Eligibility:
+    """Gate one imminent Copy/Move and live-verify its review keeper.
+
+    The selected source's SHA-256 is deliberately deferred to the copy/move
+    executor, which consumes it from the held source handle at publication.
+    This avoids a redundant full read without weakening the terminal proof.
+    """
+
+    eligibility = evaluate_relocation(results, dupe, current_pool_resolver)
+    if not eligibility.allowed:
+        return eligibility
+    group = results.get_group_of_duplicate(dupe)
+    return _evaluate_review_contents(
+        dupe,
+        group,
+        defer_target=True,
+        stop_check=stop_check,
+        progress_callback=progress_callback,
+    )
 
 
 def evaluate_rename(

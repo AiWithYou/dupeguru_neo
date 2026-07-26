@@ -1,9 +1,10 @@
 import errno
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from hscommon.jobprogress.job import nulljob
+from hscommon.jobprogress.job import Job, JobCancelled, nulljob
 
 from core import engine, fs
 from core.action_plan import build_bound_deletion_plan
@@ -296,6 +297,107 @@ def test_gui_organizer_rechecks_generation_inside_the_worker(tmp_path, monkeypat
     assert list(destination.rglob("duplicate-0.bin")) == []
     assert len(app.results.problems) == 1
     assert "changed after this scan" in app.results.problems[0][1]
+
+
+@pytest.mark.parametrize("copy", (True, False))
+def test_gui_organizer_rechecks_keeper_bytes_when_metadata_looks_unchanged(
+    tmp_path,
+    monkeypatch,
+    copy,
+):
+    app, _, files = _app_with_exact_group(tmp_path)
+    keeper = files[0]
+    target = files[1]
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    app.view.select_dest_folder = lambda _prompt: str(destination)
+
+    def run_after_same_tick_keeper_change(jobid, function, args=()):
+        Path(keeper.path).write_bytes(b"k" * len(PAYLOAD))
+        current = fs._snapshot_path(keeper.path)
+        keeper._review_scan_snapshot = replace(
+            keeper._review_scan_snapshot,
+            device=current.device,
+            file_id=current.file_id,
+            size=current.size,
+            mtime_ns=current.mtime_ns,
+            ctime_ns=current.ctime_ns,
+        )
+        function(nulljob, *args)
+
+    monkeypatch.setattr(app, "_start_job", run_after_same_tick_keeper_change)
+
+    app.copy_or_move_marked(copy)
+
+    assert Path(target.path).read_bytes() == PAYLOAD
+    assert Path(keeper.path).read_bytes() == b"k" * len(PAYLOAD)
+    assert list(destination.rglob("duplicate-0.bin")) == []
+    assert len(app.results.problems) == 1
+    assert "changed after this scan" in app.results.problems[0][1]
+
+
+def test_gui_organizer_keeper_proof_reports_bytes_before_action_completion(
+    tmp_path,
+    monkeypatch,
+):
+    app, _, files = _app_with_exact_group(tmp_path)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    app.view.select_dest_folder = lambda _prompt: str(destination)
+    updates = []
+
+    def report(progress, description=""):
+        updates.append((progress, description))
+        return True
+
+    def run_now(jobid, function, args=()):
+        function(Job(1, report), *args)
+
+    monkeypatch.setattr(app, "_start_job", run_now)
+
+    app.copy_or_move_marked(True)
+
+    assert Path(files[1].path).read_bytes() == PAYLOAD
+    assert len(list(destination.rglob("duplicate-0.bin"))) == 1
+    descriptions = [description for _, description in updates if description]
+    assert any(
+        "Verifying keeper" in description
+        and "0/1 organizer actions completed" in description
+        and "{} bytes read".format(len(PAYLOAD)) in description
+        for description in descriptions
+    )
+    assert descriptions[-1] == "Organizer action complete: 1/1 files"
+    assert updates[-1][0] == 100
+
+
+def test_gui_organizer_keeper_proof_honors_chunk_cancellation(
+    tmp_path,
+    monkeypatch,
+):
+    app, _, files = _app_with_exact_group(tmp_path)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    app.view.select_dest_folder = lambda _prompt: str(destination)
+    cancellation_polls = 0
+
+    def report(_progress, description=""):
+        nonlocal cancellation_polls
+        if description:
+            return True
+        cancellation_polls += 1
+        return cancellation_polls < 2
+
+    def run_now(jobid, function, args=()):
+        function(Job(1, report), *args)
+
+    monkeypatch.setattr(app, "_start_job", run_now)
+
+    with pytest.raises(JobCancelled):
+        app.copy_or_move_marked(True)
+
+    assert cancellation_polls == 2
+    assert Path(files[1].path).read_bytes() == PAYLOAD
+    assert list(destination.rglob("duplicate-0.bin")) == []
 
 
 @pytest.mark.parametrize("copy", (True, False))

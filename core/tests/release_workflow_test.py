@@ -403,6 +403,10 @@ def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
     assert "exactly one wheel" not in release_doc
     assert "not a pip `--require-hashes` lock" in release_doc
     assert "retained for 30 days" in release_doc
+    assert "does not pass `-no_uuid`" in release_doc
+    assert "default `LC_UUID` is hash-based" in release_doc
+    assert "complete wheel byte for byte" in release_doc
+    assert "byte-identical Mach-O copy" in release_doc
     assert "hash-before-install authentication" in readme
     assert "SOURCE-COMPANION-SHA256SUMS" not in release_doc
     assert "unsigned-portable" not in release_doc
@@ -562,7 +566,7 @@ def test_release_metadata_and_reproducible_build_inputs_are_pinned():
         "self.compiler.compile(",
         'if sys.platform == "darwin":',
         "self._configure_darwin()",
-        '("-Wl,-no_uuid",)',
+        '"-Wl,-reproducible"',
         "def byte_compile(self, files):",
         'build_root.rglob("__pycache__")',
     ):
@@ -571,7 +575,7 @@ def test_release_metadata_and_reproducible_build_inputs_are_pinned():
     assert "scripts/ci_artifact_smoke.py --artifacts dist --reproducible-wheel" in release
 
 
-def test_deterministic_darwin_native_builds_disable_random_macho_uuids():
+def test_deterministic_darwin_native_builds_preserve_hash_based_uuid():
     setup_py = ROOT.joinpath("setup.py").read_text(encoding="utf-8")
     build_extensions = setup_py.split("    def build_extensions(self):\n", 1)[1].split(
         "    def _configure_msvc(self, source_root):\n",
@@ -591,4 +595,5 @@ def test_deterministic_darwin_native_builds_disable_random_macho_uuids():
         "    def _supported_compile_args(self, candidates):\n",
         1,
     )[0]
-    assert 'extension.extra_link_args, ("-Wl,-no_uuid",)' in darwin_configuration
+    assert '"-Wl,-reproducible"' in darwin_configuration
+    assert "-Wl,-no_uuid" not in darwin_configuration

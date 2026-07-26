@@ -6,7 +6,9 @@ from core.destructive_eligibility import (
     evaluate_batch,
     evaluate_duplicate,
     evaluate_relocation,
+    evaluate_relocation_action,
     evaluate_relocation_batch,
+    evaluate_rename,
 )
 from core.results import Results
 from core.scan_receipt import ScanReceipt
@@ -20,6 +22,8 @@ def _exact_results():
     target.comparison_pool = "incoming"
     keeper.validate_review_scan = lambda: object()
     target.validate_review_scan = lambda: object()
+    keeper.validate_review_scan_content = lambda **_kwargs: object()
+    target.validate_review_scan_content = lambda **_kwargs: object()
     evidence = engine.ExactEvidence(
         kind=engine.VerificationKind.VERIFIED_EXACT,
         algorithm="sha256",
@@ -92,6 +96,8 @@ def test_current_approximate_incoming_result_may_be_relocated_but_not_deleted():
     second.comparison_pool = "incoming"
     first.validate_review_scan = lambda: object()
     second.validate_review_scan = lambda: object()
+    first.validate_review_scan_content = lambda **_kwargs: object()
+    second.validate_review_scan_content = lambda **_kwargs: object()
     group = engine.Group()
     group.add_match(engine.Match(first, second, 95))
     results = Results(DupeGuru())
@@ -120,6 +126,69 @@ def test_relocation_requires_a_stable_scan_generation_for_target_and_keeper():
     stale = evaluate_relocation(results, target)
 
     assert stale.code is EligibilityCode.STALE_SCAN_CONTEXT
+
+
+def test_relocation_action_live_checks_keeper_and_defers_target_to_executor():
+    results, keeper, target = _exact_results()
+    checked = []
+    keeper.validate_review_scan_content = lambda **_kwargs: checked.append("keeper")
+
+    def unexpected_target_read(**_kwargs):
+        raise AssertionError("the source executor owns the terminal target proof")
+
+    target.validate_review_scan_content = unexpected_target_read
+
+    eligibility = evaluate_relocation_action(results, target)
+
+    assert eligibility.allowed
+    assert checked == ["keeper"]
+
+    def changed_keeper(**_kwargs):
+        raise OSError("same-tick keeper rewrite")
+
+    keeper.validate_review_scan_content = changed_keeper
+    stale = evaluate_relocation_action(results, target)
+    assert stale.code is EligibilityCode.STALE_SCAN_CONTEXT
+
+
+def test_relocation_action_forwards_keeper_cancellation_and_progress():
+    results, keeper, target = _exact_results()
+    calls = []
+
+    def validate(*, stop_check, progress_callback):
+        calls.append("validate")
+        assert stop_check() is False
+        progress_callback(3)
+        progress_callback(5)
+
+    keeper.validate_review_scan_content = validate
+
+    eligibility = evaluate_relocation_action(
+        results,
+        target,
+        stop_check=lambda: calls.append("stop") or False,
+        progress_callback=lambda count: calls.append(("bytes", count)),
+    )
+
+    assert eligibility.allowed
+    assert calls == [
+        "validate",
+        "stop",
+        ("bytes", 3),
+        ("bytes", 5),
+    ]
+
+
+def test_rename_does_not_stream_payloads_on_the_ui_gate():
+    results, keeper, target = _exact_results()
+
+    def unexpected_content_read(**_kwargs):
+        raise AssertionError("rename preserves payload and invalidates the scan receipt")
+
+    keeper.validate_review_scan_content = unexpected_content_read
+    target.validate_review_scan_content = unexpected_content_read
+
+    assert evaluate_rename(results, target).allowed
 
 
 def test_unknown_relationship_cannot_be_relocated():

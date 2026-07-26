@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import io
 import json
@@ -5,6 +6,7 @@ from email.parser import Parser
 from pathlib import Path
 from pathlib import PurePosixPath
 import subprocess
+import stat
 import tarfile
 import zipfile
 
@@ -77,6 +79,62 @@ def _tar_bytes(entries):
             member.size = len(content)
             archive.addfile(member, io.BytesIO(content))
     return stream.getvalue()
+
+
+def _append_zip_member(archive_path, name, content=b"payload", *, mode=stat.S_IFREG | 0o644):
+    with zipfile.ZipFile(archive_path, "a") as archive:
+        date_time = archive.infolist()[0].date_time
+        info = zipfile.ZipInfo(name, date_time=date_time)
+        info.create_system = 3
+        info.external_attr = mode << 16
+        archive.writestr(info, content)
+
+
+def _write_structural_portable_tar(
+    path,
+    platform_name,
+    extra_members,
+    epoch,
+    *,
+    special_members=(),
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    members = [(name, b"payload") for name in portable_bundle._expected_archive_members(platform_name)]
+    members.extend(extra_members)
+    with path.open("wb") as raw_stream:
+        with gzip.GzipFile(
+            filename="",
+            mode="wb",
+            fileobj=raw_stream,
+            mtime=epoch,
+        ) as compressed_stream:
+            with tarfile.open(
+                mode="w",
+                fileobj=compressed_stream,
+                format=tarfile.PAX_FORMAT,
+            ) as archive:
+                for name, content in members:
+                    member = tarfile.TarInfo(name)
+                    member.size = len(content)
+                    member.mode = 0o644
+                    member.mtime = epoch
+                    member.uid = 0
+                    member.gid = 0
+                    member.uname = ""
+                    member.gname = ""
+                    archive.addfile(member, io.BytesIO(content))
+                for name, member_type, link_name in special_members:
+                    member = tarfile.TarInfo(name)
+                    member.type = member_type
+                    member.linkname = link_name
+                    member.mode = 0o755
+                    member.mtime = epoch
+                    member.uid = 0
+                    member.gid = 0
+                    member.uname = ""
+                    member.gname = ""
+                    archive.addfile(member)
+    return path
 
 
 def _windows_tree(parent):
@@ -473,6 +531,585 @@ def test_archive_verification_rejects_path_traversal(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="unsafe archive member"):
         portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_windows_archive_rejects_case_insensitive_member_collision(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    _append_zip_member(
+        archive_path,
+        "dupeguru-neo/DUPEGURU-NEO.EXE",
+        b"ambiguous executable",
+    )
+
+    with pytest.raises(RuntimeError, match="members collide on windows"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+@pytest.mark.parametrize(
+    ("hostile_name", "message"),
+    [
+        ("dupeguru-neo/_internal/LICENSE.", "unsafe Windows archive member"),
+        ("dupeguru-neo/_internal/trailing-space ", "unsafe Windows archive member"),
+        ("dupeguru-neo/_internal/license.txt:payload", "unsafe Windows archive member"),
+        ("dupeguru-neo/_internal/bad?.txt", "unsafe Windows archive member"),
+        ("dupeguru-neo/_internal/NUL.txt", "reserved Windows archive member"),
+        ("dupeguru-neo/_internal/COM¹.log", "reserved Windows archive member"),
+    ],
+)
+def test_windows_archive_rejects_ambiguous_or_reserved_names(
+    tmp_path,
+    monkeypatch,
+    hostile_name,
+    message,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    _append_zip_member(archive_path, hostile_name)
+
+    with pytest.raises(RuntimeError, match=message):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+@pytest.mark.parametrize(
+    "extra_members",
+    [
+        [("dupeguru-neo.app/Contents/MacOS/DUPEGURU-NEO", b"ambiguous executable")],
+        [
+            ("dupeguru-neo.app/Contents/Resources/café.txt", b"nfc"),
+            ("dupeguru-neo.app/Contents/Resources/cafe\u0301.txt", b"nfd"),
+        ],
+    ],
+)
+def test_macos_archive_rejects_case_or_unicode_normalization_collisions(
+    tmp_path,
+    monkeypatch,
+    extra_members,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "macos",
+            "arm64",
+        ),
+        "macos",
+        extra_members,
+        epoch,
+    )
+
+    with pytest.raises(RuntimeError, match="members collide on macos"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_linux_archive_retains_case_and_unicode_distinctions(
+    tmp_path,
+    monkeypatch,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [
+            ("dupeguru-neo/_internal/Case.txt", b"upper"),
+            ("dupeguru-neo/_internal/case.txt", b"lower"),
+            ("dupeguru-neo/_internal/café.txt", b"nfc"),
+            ("dupeguru-neo/_internal/cafe\u0301.txt", b"nfd"),
+        ],
+        epoch,
+    )
+
+    portable_bundle.verify_portable_archive(archive_path)
+
+
+@pytest.mark.parametrize(
+    "member_type",
+    [
+        stat.S_IFLNK,
+        stat.S_IFIFO,
+        stat.S_IFCHR,
+        stat.S_IFBLK,
+        stat.S_IFSOCK,
+    ],
+)
+def test_portable_zip_rejects_links_and_special_members(
+    tmp_path,
+    monkeypatch,
+    member_type,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    _append_zip_member(
+        archive_path,
+        "dupeguru-neo/_internal/hostile",
+        mode=member_type | 0o644,
+    )
+
+    with pytest.raises(RuntimeError, match="(?:symlink|unsupported member)"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+@pytest.mark.parametrize(
+    ("member_name", "link_name", "symbolic"),
+    [
+        ("dupeguru-neo/link", "../../escape", True),
+        ("dupeguru-neo/link", "outside", False),
+    ],
+)
+def test_portable_tar_rejects_escaping_symbolic_and_hard_links(
+    member_name,
+    link_name,
+    symbolic,
+):
+    with pytest.raises(RuntimeError, match="(?:unsafe archive member|archive link escapes its root)"):
+        portable_bundle._safe_link_target(
+            member_name,
+            link_name,
+            symbolic=symbolic,
+        )
+
+
+@pytest.mark.parametrize(
+    ("member_type", "link_name", "message"),
+    [
+        (tarfile.SYMTYPE, "../../escape", "(?:unsafe archive member|archive link escapes its root)"),
+        (tarfile.LNKTYPE, "outside", "archive link escapes its root"),
+        (tarfile.FIFOTYPE, "", "unsupported archive member type"),
+    ],
+)
+def test_portable_tar_archive_rejects_escaping_links_and_special_members(
+    tmp_path,
+    monkeypatch,
+    member_type,
+    link_name,
+    message,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [],
+        epoch,
+        special_members=[
+            ("dupeguru-neo/hostile", member_type, link_name),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_tar_archive_accepts_bounded_in_root_links(
+    tmp_path,
+    monkeypatch,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [],
+        epoch,
+        special_members=[
+            (
+                "dupeguru-neo/license-symbolic-link",
+                tarfile.SYMTYPE,
+                "_internal/LICENSE",
+            ),
+            (
+                "dupeguru-neo/license-hard-link",
+                tarfile.LNKTYPE,
+                "dupeguru-neo/_internal/LICENSE",
+            ),
+        ],
+    )
+
+    portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_archive_rejects_file_directory_topology_conflicts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    _append_zip_member(archive_path, "dupeguru-neo/_internal/conflict")
+    _append_zip_member(archive_path, "dupeguru-neo/_internal/conflict/child")
+
+    with pytest.raises(RuntimeError, match="descends from a non-directory"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_archive_bounds_input_members_names_and_payloads(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    with zipfile.ZipFile(archive_path) as archive:
+        infos = archive.infolist()
+    file_sizes = [info.file_size for info in infos if not info.is_dir()]
+    cases = [
+        (
+            "_MAX_PORTABLE_ARCHIVE_INPUT_SIZE",
+            archive_path.stat().st_size - 1,
+            "input size is outside the safety limit",
+        ),
+        (
+            "_MAX_PORTABLE_ARCHIVE_MEMBERS",
+            len(infos) - 1,
+            "member count exceeds the safety limit",
+        ),
+        (
+            "_MAX_PORTABLE_ZIP_CENTRAL_DIRECTORY_SIZE",
+            0,
+            "central directory exceeds the safety limit",
+        ),
+        (
+            "_MAX_PORTABLE_ARCHIVE_MEMBER_NAME_BYTES",
+            max(len(info.filename.encode("utf-8")) for info in infos) - 1,
+            "member name exceeds the safety limit",
+        ),
+        (
+            "_MAX_PORTABLE_ARCHIVE_MEMBER_SIZE",
+            max(file_sizes) - 1,
+            "member exceeds the size limit",
+        ),
+        (
+            "_MAX_PORTABLE_ARCHIVE_TOTAL_SIZE",
+            sum(file_sizes) - 1,
+            "uncompressed bytes exceed the safety limit",
+        ),
+    ]
+
+    for attribute, value, message in cases:
+        with monkeypatch.context() as context:
+            context.setattr(portable_bundle, attribute, value)
+            with pytest.raises(RuntimeError, match=message):
+                portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_zip_bounds_per_member_compression_ratio(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    root = _windows_tree(tmp_path / "source")
+    _write_file(root / "_internal" / "compressible.bin", b"\0" * 4096)
+    archive_path = portable_bundle.create_deterministic_zip(
+        root,
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "windows",
+            "x86_64",
+        ),
+    )
+    monkeypatch.setattr(portable_bundle, "_MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO", 2)
+
+    with pytest.raises(RuntimeError, match="member exceeds the compression-ratio limit"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_tar_bounds_whole_archive_compression_ratio(
+    tmp_path,
+    monkeypatch,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [("dupeguru-neo/_internal/compressible.bin", b"\0" * 4096)],
+        epoch,
+    )
+    monkeypatch.setattr(portable_bundle, "_MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO", 2)
+
+    with pytest.raises(RuntimeError, match="archive exceeds the compression-ratio limit"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_tar_bounds_the_complete_decompressed_stream(
+    tmp_path,
+    monkeypatch,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [],
+        epoch,
+    )
+    monkeypatch.setattr(portable_bundle, "_MAX_PORTABLE_TAR_STREAM_SIZE", 1)
+
+    with pytest.raises(RuntimeError, match="TAR stream exceeds the safety limit"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_portable_tar_bounds_pax_metadata_before_materializing_it(
+    tmp_path,
+    monkeypatch,
+):
+    epoch = 1700000000
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", str(epoch))
+    archive_path = _write_structural_portable_tar(
+        tmp_path
+        / portable_bundle.portable_archive_name(
+            "5.0.0",
+            "linux",
+            "x86_64",
+        ),
+        "linux",
+        [(f"dupeguru-neo/_internal/{'a' * 120}.txt", b"payload")],
+        epoch,
+    )
+    monkeypatch.setattr(portable_bundle, "_MAX_PORTABLE_TAR_METADATA_MEMBER_SIZE", 1)
+
+    with pytest.raises(RuntimeError, match="TAR metadata member exceeds the safety limit"):
+        portable_bundle.verify_portable_archive(archive_path)
+
+
+def test_linux_archive_verification_accepts_inventory_directory_entries(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
+    distribution, installation_root = _fake_distribution(tmp_path)
+    monkeypatch.setattr(
+        dependency_license_inventory.metadata,
+        "distribution",
+        lambda _name: distribution,
+    )
+    lock = tmp_path / "requirements-release.txt"
+    lock.write_text("Example==1.0\n", encoding="utf-8", newline="\n")
+    root = _linux_tree(tmp_path / "source")
+    _write_fake_license_inventory(
+        root / "_internal",
+        lock,
+        "Linux",
+        distribution,
+        installation_root,
+    )
+    name = portable_bundle.portable_archive_name(
+        "5.0.0",
+        "linux",
+        "x86_64",
+    )
+    archive_path = portable_bundle.create_deterministic_tar(
+        root,
+        tmp_path / name,
+    )
+
+    with tarfile.open(archive_path, "r:gz") as archive:
+        components = archive.getmember("dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/components")
+        assert components.isdir()
+        assert components.size == 0
+
+    portable_bundle.verify_portable_archive(
+        archive_path,
+        lock,
+        installation_root=installation_root,
+    )
+
+
+@pytest.mark.parametrize("member_type", [tarfile.SYMTYPE, tarfile.FIFOTYPE])
+def test_embedded_inventory_rejects_tar_links_and_special_files(
+    tmp_path,
+    member_type,
+):
+    lock = tmp_path / "requirements-release.txt"
+    lock.write_text("Example==1.0\n", encoding="utf-8", newline="\n")
+    lock.with_name("release-sources.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    archive_path = tmp_path / "hostile.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        member = tarfile.TarInfo("dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/components/hostile")
+        member.type = member_type
+        member.linkname = "target"
+        archive.addfile(member)
+
+    with pytest.raises(RuntimeError, match="member is not a file"):
+        portable_bundle._verify_embedded_license_inventory(
+            archive_path,
+            platform_name="linux",
+            extension=".tar.gz",
+            lock_path=lock,
+        )
+
+
+def test_embedded_inventory_rejects_unsafe_or_nonempty_tar_directories(tmp_path):
+    lock = tmp_path / "requirements-release.txt"
+    lock.write_text("Example==1.0\n", encoding="utf-8", newline="\n")
+    lock.with_name("release-sources.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    unsafe_archive = tmp_path / "unsafe-directory.tar.gz"
+    with tarfile.open(unsafe_archive, "w:gz") as archive:
+        member = tarfile.TarInfo("dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/" "components/../escape")
+        member.type = tarfile.DIRTYPE
+        archive.addfile(member)
+
+    with pytest.raises(RuntimeError, match="unsafe archive member"):
+        portable_bundle._verify_embedded_license_inventory(
+            unsafe_archive,
+            platform_name="linux",
+            extension=".tar.gz",
+            lock_path=lock,
+        )
+
+    nonempty_archive = tmp_path / "nonempty-directory.tar.gz"
+    with tarfile.open(nonempty_archive, "w:gz") as archive:
+        member = tarfile.TarInfo("dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/components")
+        member.type = tarfile.DIRTYPE
+        member.size = 1
+        archive.addfile(member, io.BytesIO(b"x"))
+
+    with pytest.raises(RuntimeError, match="directory has a non-zero size"):
+        portable_bundle._verify_embedded_license_inventory(
+            nonempty_archive,
+            platform_name="linux",
+            extension=".tar.gz",
+            lock_path=lock,
+        )
+
+
+def test_embedded_inventory_rejects_ambiguous_duplicate_tar_members(tmp_path):
+    lock = tmp_path / "requirements-release.txt"
+    lock.write_text("Example==1.0\n", encoding="utf-8", newline="\n")
+    lock.with_name("release-sources.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    archive_path = tmp_path / "duplicate.tar.gz"
+    name = "dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/components"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        directory = tarfile.TarInfo(name)
+        directory.type = tarfile.DIRTYPE
+        archive.addfile(directory)
+        regular = tarfile.TarInfo(name)
+        regular.size = 1
+        archive.addfile(regular, io.BytesIO(b"x"))
+
+    with pytest.raises(RuntimeError, match="duplicate portable license inventory member"):
+        portable_bundle._verify_embedded_license_inventory(
+            archive_path,
+            platform_name="linux",
+            extension=".tar.gz",
+            lock_path=lock,
+        )
+
+
+def test_embedded_inventory_bounds_zero_size_tar_directories(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(portable_bundle, "_MAX_EMBEDDED_LICENSE_MEMBERS", 1)
+    lock = tmp_path / "requirements-release.txt"
+    lock.write_text("Example==1.0\n", encoding="utf-8", newline="\n")
+    lock.with_name("release-sources.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    archive_path = tmp_path / "directory-flood.tar.gz"
+    prefix = "dupeguru-neo/_internal/FROZEN-RUNTIME-LICENSES/components"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for suffix in ("one", "two"):
+            directory = tarfile.TarInfo(f"{prefix}/{suffix}")
+            directory.type = tarfile.DIRTYPE
+            archive.addfile(directory)
+
+    with pytest.raises(RuntimeError, match="contains too many members"):
+        portable_bundle._verify_embedded_license_inventory(
+            archive_path,
+            platform_name="linux",
+            extension=".tar.gz",
+            lock_path=lock,
+        )
 
 
 def test_archive_verification_revalidates_embedded_license_inventory(

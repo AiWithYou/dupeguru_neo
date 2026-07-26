@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import unicodedata
 import zipfile
 
 if __package__:
@@ -95,6 +96,16 @@ _NATIVE_EXECUTABLE_MAGICS = {
 }
 _MAX_EMBEDDED_LICENSE_FILE_SIZE = 16 * 1024 * 1024
 _MAX_EMBEDDED_LICENSE_TOTAL_SIZE = 64 * 1024 * 1024
+_MAX_EMBEDDED_LICENSE_MEMBERS = 4096
+_MAX_PORTABLE_ARCHIVE_INPUT_SIZE = 512 * 1024 * 1024
+_MAX_PORTABLE_ARCHIVE_MEMBERS = 100_000
+_MAX_PORTABLE_ARCHIVE_MEMBER_NAME_BYTES = 4096
+_MAX_PORTABLE_ARCHIVE_MEMBER_SIZE = 256 * 1024 * 1024
+_MAX_PORTABLE_ARCHIVE_TOTAL_SIZE = 1024 * 1024 * 1024
+_MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO = 200
+_MAX_PORTABLE_TAR_STREAM_SIZE = 2 * 1024 * 1024 * 1024
+_MAX_PORTABLE_TAR_METADATA_MEMBER_SIZE = 16 * 1024 * 1024
+_MAX_PORTABLE_ZIP_CENTRAL_DIRECTORY_SIZE = 16 * 1024 * 1024
 _MAX_RELEASE_ARCHIVE_DEPTH = 3
 _MAX_RELEASE_ARCHIVE_MEMBERS = 100_000
 _MAX_RELEASE_ARCHIVE_MEMBER_NAME_BYTES = 4096
@@ -113,6 +124,8 @@ _SOURCE_COMPANION_SCHEMAS = (
 _ALLOWED_WHEEL_NATIVE_EXTENSION = re.compile(
     r"^(?:core/pe/(?:_block|_cache)|qt/pe/_block_qt)" r"(?:\.[A-Za-z0-9_-]+)+\.(?:pyd|so|dylib)$"
 )
+_WINDOWS_RESERVED_DEVICE = re.compile(r"^(?:aux|clock\$|con|conin\$|conout\$|nul|prn|com[1-9¹²³]|lpt[1-9¹²³])$")
+_WINDOWS_FORBIDDEN_NAME_CHARACTERS = frozenset('<>:"|?*')
 
 
 def _source_date_epoch() -> int:
@@ -338,6 +351,198 @@ def _safe_member_name(name: str) -> PurePosixPath:
     return candidate
 
 
+def _archive_member_name_size(name: str) -> int:
+    try:
+        return len(name.encode("utf-8"))
+    except UnicodeEncodeError as error:
+        raise RuntimeError(f"archive member name is not valid UTF-8: {name!r}") from error
+
+
+def _target_member_key(member: PurePosixPath, platform_name: str) -> tuple[str, ...]:
+    if platform_name == "windows":
+        key = []
+        for part in member.parts:
+            if (
+                part[-1] in {".", " "}
+                or any(character in _WINDOWS_FORBIDDEN_NAME_CHARACTERS for character in part)
+                or any(ord(character) < 32 for character in part)
+            ):
+                raise RuntimeError(f"unsafe Windows archive member: {member.as_posix()!r}")
+            device_stem = part.split(".", 1)[0].casefold()
+            if _WINDOWS_RESERVED_DEVICE.fullmatch(device_stem) is not None:
+                raise RuntimeError(f"reserved Windows archive member: {member.as_posix()!r}")
+            key.append(part.casefold())
+        return tuple(key)
+    if platform_name == "macos":
+        return tuple(
+            unicodedata.normalize(
+                "NFD",
+                unicodedata.normalize("NFD", part).casefold(),
+            )
+            for part in member.parts
+        )
+    if platform_name == "linux":
+        return member.parts
+    raise RuntimeError(f"unsupported portable platform: {platform_name!r}")
+
+
+def _record_target_member(
+    entries: dict[tuple[str, ...], tuple[str, bool]],
+    required_directories: set[tuple[str, ...]],
+    *,
+    member: PurePosixPath,
+    canonical_name: str,
+    is_directory: bool,
+    platform_name: str,
+) -> None:
+    key = _target_member_key(member, platform_name)
+    previous = entries.get(key)
+    if previous is not None:
+        raise RuntimeError(
+            "portable archive members collide on {}: {!r} and {!r}".format(
+                platform_name,
+                previous[0],
+                canonical_name,
+            )
+        )
+    if not is_directory and key in required_directories:
+        raise RuntimeError(f"portable archive file conflicts with an existing directory: {canonical_name!r}")
+    for index in range(1, len(key)):
+        parent = entries.get(key[:index])
+        if parent is not None and not parent[1]:
+            raise RuntimeError(
+                "portable archive member descends from a non-directory: " f"{canonical_name!r} below {parent[0]!r}"
+            )
+        required_directories.add(key[:index])
+    entries[key] = (canonical_name, is_directory)
+
+
+@dataclass
+class _PortableArchiveBudget:
+    members: int = 0
+    total_uncompressed: int = 0
+
+    def add_member(
+        self,
+        *,
+        name: str,
+        size: int,
+        compressed_size: int | None,
+    ) -> None:
+        if _archive_member_name_size(name) > _MAX_PORTABLE_ARCHIVE_MEMBER_NAME_BYTES:
+            raise RuntimeError(f"portable archive member name exceeds the safety limit: {name!r}")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise RuntimeError(f"portable archive member has an invalid size: {name}")
+        if size > _MAX_PORTABLE_ARCHIVE_MEMBER_SIZE:
+            raise RuntimeError(f"portable archive member exceeds the size limit: {name}")
+        self.members += 1
+        if self.members > _MAX_PORTABLE_ARCHIVE_MEMBERS:
+            raise RuntimeError("portable archive member count exceeds the safety limit")
+        self.total_uncompressed += size
+        if self.total_uncompressed > _MAX_PORTABLE_ARCHIVE_TOTAL_SIZE:
+            raise RuntimeError("portable archive uncompressed bytes exceed the safety limit")
+        if compressed_size is not None:
+            if isinstance(compressed_size, bool) or not isinstance(compressed_size, int) or compressed_size < 0:
+                raise RuntimeError(f"portable archive member has an invalid compressed size: {name}")
+            if size and compressed_size == 0:
+                raise RuntimeError(f"portable archive member has an invalid compressed size: {name}")
+            if size > compressed_size * _MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO:
+                raise RuntimeError(f"portable archive member exceeds the compression-ratio limit: {name}")
+
+    def verify_container_ratio(self, input_size: int) -> None:
+        if isinstance(input_size, bool) or not isinstance(input_size, int) or input_size <= 0:
+            raise RuntimeError("portable archive has an invalid input size")
+        if self.total_uncompressed > input_size * _MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO:
+            raise RuntimeError("portable archive exceeds the compression-ratio limit")
+
+
+def _preflight_portable_zip(archive_path: Path) -> int:
+    try:
+        with archive_path.open("rb") as stream:
+            end_record = zipfile._EndRecData(stream)
+    except (OSError, zipfile.BadZipFile) as error:
+        raise RuntimeError("portable ZIP has an unreadable central directory") from error
+    if end_record is None:
+        raise RuntimeError("portable ZIP has no valid central directory")
+    declared_members = end_record[zipfile._ECD_ENTRIES_TOTAL]
+    central_directory_size = end_record[zipfile._ECD_SIZE]
+    if (
+        isinstance(declared_members, bool)
+        or not isinstance(declared_members, int)
+        or declared_members < 0
+        or declared_members > _MAX_PORTABLE_ARCHIVE_MEMBERS
+    ):
+        raise RuntimeError("portable archive member count exceeds the safety limit")
+    if (
+        isinstance(central_directory_size, bool)
+        or not isinstance(central_directory_size, int)
+        or central_directory_size < 0
+        or central_directory_size > _MAX_PORTABLE_ZIP_CENTRAL_DIRECTORY_SIZE
+    ):
+        raise RuntimeError("portable ZIP central directory exceeds the safety limit")
+    return declared_members
+
+
+def _verify_portable_gzip_stream(archive_path: Path, input_size: int) -> None:
+    total_size = 0
+    physical_members = 0
+
+    def account(chunk: bytes) -> None:
+        nonlocal total_size
+        total_size += len(chunk)
+        if total_size > _MAX_PORTABLE_TAR_STREAM_SIZE:
+            raise RuntimeError("portable TAR stream exceeds the safety limit")
+        if total_size > input_size * _MAX_PORTABLE_ARCHIVE_COMPRESSION_RATIO:
+            raise RuntimeError("portable archive exceeds the compression-ratio limit")
+
+    try:
+        with gzip.open(archive_path, "rb") as stream:
+            zero_headers = 0
+            while True:
+                header = stream.read(512)
+                if not header:
+                    raise RuntimeError("portable TAR stream has no complete end marker")
+                account(header)
+                if len(header) != 512:
+                    raise RuntimeError("portable TAR stream has a truncated header")
+                if not any(header):
+                    zero_headers += 1
+                    if zero_headers < 2:
+                        continue
+                    for trailing in iter(lambda: stream.read(1024 * 1024), b""):
+                        account(trailing)
+                        if any(trailing):
+                            raise RuntimeError("portable TAR stream has data after its end marker")
+                    break
+                if zero_headers:
+                    raise RuntimeError("portable TAR stream has an invalid end marker")
+                physical_members += 1
+                if physical_members > _MAX_PORTABLE_ARCHIVE_MEMBERS:
+                    raise RuntimeError("portable archive member count exceeds the safety limit")
+                try:
+                    member_size = tarfile.nti(header[124:136])
+                except tarfile.InvalidHeaderError as error:
+                    raise RuntimeError("portable TAR stream has an invalid member size") from error
+                if (
+                    isinstance(member_size, bool)
+                    or not isinstance(member_size, int)
+                    or member_size < 0
+                    or member_size > _MAX_PORTABLE_ARCHIVE_MEMBER_SIZE
+                ):
+                    raise RuntimeError("portable TAR physical member exceeds the size limit")
+                if header[156:157] in {b"g", b"x", b"K", b"L"} and member_size > _MAX_PORTABLE_TAR_METADATA_MEMBER_SIZE:
+                    raise RuntimeError("portable TAR metadata member exceeds the safety limit")
+                remaining = ((member_size + 511) // 512) * 512
+                while remaining:
+                    chunk = stream.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        raise RuntimeError("portable TAR stream has a truncated member")
+                    account(chunk)
+                    remaining -= len(chunk)
+    except (EOFError, OSError, gzip.BadGzipFile) as error:
+        raise RuntimeError("portable TAR has an invalid gzip stream") from error
+
+
 def _safe_link_target(member_name: str, link_name: str, *, symbolic: bool) -> None:
     if not link_name or "\0" in link_name or "\\" in link_name or link_name.startswith("/"):
         raise RuntimeError(f"unsafe archive link target: {link_name!r}")
@@ -418,6 +623,31 @@ def _verify_embedded_license_inventory(
         embedded_lock = None
         embedded_source_lock = None
         total_size = 0
+        selected_members = set()
+
+        def selected_member(raw_name: str) -> str | None:
+            name = raw_name.rstrip("/")
+            if (
+                name not in {embedded_lock_name, embedded_source_lock_name}
+                and not name.startswith(inventory_prefix)
+                and not name.startswith(frozen_runtime_prefix)
+            ):
+                return None
+            if _archive_member_name_size(raw_name) > _MAX_RELEASE_ARCHIVE_MEMBER_NAME_BYTES:
+                raise RuntimeError(f"portable license inventory member name is too long: {name}")
+            _safe_member_name(raw_name)
+            if name in selected_members:
+                raise RuntimeError(f"duplicate portable license inventory member: {name}")
+            if len(selected_members) >= _MAX_EMBEDDED_LICENSE_MEMBERS:
+                raise RuntimeError("portable license inventory contains too many members")
+            selected_members.add(name)
+            return name
+
+        def accept_directory(name: str, size: int) -> None:
+            if name in {embedded_lock_name, embedded_source_lock_name}:
+                raise RuntimeError(f"portable license inventory member is not a file: {name}")
+            if size != 0:
+                raise RuntimeError(f"portable license inventory directory has a non-zero size: {name}")
 
         def accept_file(name: str, content: bytes) -> None:
             nonlocal embedded_lock, embedded_source_lock, total_size
@@ -448,26 +678,31 @@ def _verify_embedded_license_inventory(
         if extension == ".zip":
             with zipfile.ZipFile(archive_path) as archive:
                 for info in archive.infolist():
-                    name = info.filename.rstrip("/")
-                    if info.is_dir():
+                    name = selected_member(info.filename)
+                    if name is None:
                         continue
-                    if (
-                        name in {embedded_lock_name, embedded_source_lock_name}
-                        or name.startswith(inventory_prefix)
-                        or name.startswith(frozen_runtime_prefix)
-                    ):
-                        if not 0 < info.file_size <= _MAX_EMBEDDED_LICENSE_FILE_SIZE:
-                            raise RuntimeError("portable license inventory member has an invalid " f"size: {name}")
-                        accept_file(name, archive.read(info))
+                    mode = info.external_attr >> 16
+                    file_type = stat.S_IFMT(mode)
+                    if info.is_dir():
+                        if file_type not in {0, stat.S_IFDIR}:
+                            raise RuntimeError(
+                                "portable license inventory directory has an " f"invalid file type: {name}"
+                            )
+                        accept_directory(name, info.file_size)
+                        continue
+                    if file_type not in {0, stat.S_IFREG}:
+                        raise RuntimeError(f"portable license inventory member is not a regular file: {name}")
+                    if not 0 < info.file_size <= _MAX_EMBEDDED_LICENSE_FILE_SIZE:
+                        raise RuntimeError("portable license inventory member has an invalid " f"size: {name}")
+                    accept_file(name, archive.read(info))
         else:
             with tarfile.open(archive_path, mode="r:gz") as archive:
                 for member in archive:
-                    name = member.name.rstrip("/")
-                    if (
-                        name not in {embedded_lock_name, embedded_source_lock_name}
-                        and not name.startswith(inventory_prefix)
-                        and not name.startswith(frozen_runtime_prefix)
-                    ):
+                    name = selected_member(member.name)
+                    if name is None:
+                        continue
+                    if member.isdir():
+                        accept_directory(name, member.size)
                         continue
                     if not member.isfile():
                         raise RuntimeError(f"portable license inventory member is not a file: {name}")
@@ -510,6 +745,9 @@ def verify_portable_archive(
     archive_path = archive_path.resolve(strict=True)
     if not archive_path.is_file():
         raise RuntimeError(f"portable archive must be a regular file: {archive_path}")
+    archive_size = archive_path.stat().st_size
+    if not 0 < archive_size <= _MAX_PORTABLE_ARCHIVE_INPUT_SIZE:
+        raise RuntimeError("portable archive input size is outside the safety limit: " f"{archive_size} bytes")
     match = _ARCHIVE_NAME.fullmatch(archive_path.name)
     if match is None:
         raise RuntimeError(f"unexpected portable archive name: {archive_path.name}")
@@ -522,6 +760,9 @@ def verify_portable_archive(
     epoch = _source_date_epoch()
     names = set()
     roots = set()
+    target_entries = {}
+    required_target_directories = set()
+    budget = _PortableArchiveBudget()
     if extension == ".zip":
         timestamp = datetime.fromtimestamp(epoch, timezone.utc)
         timestamp = timestamp.replace(
@@ -540,8 +781,12 @@ def verify_portable_archive(
             timestamp.minute,
             timestamp.second,
         )
+        declared_members = _preflight_portable_zip(archive_path)
         with zipfile.ZipFile(archive_path) as archive:
-            for info in archive.infolist():
+            infos = archive.infolist()
+            if len(infos) != declared_members:
+                raise RuntimeError("portable ZIP central-directory member count is inconsistent")
+            for info in infos:
                 member = _safe_member_name(info.filename)
                 canonical_name = info.filename.rstrip("/")
                 if canonical_name in names:
@@ -549,13 +794,43 @@ def verify_portable_archive(
                 names.add(canonical_name)
                 roots.add(member.parts[0])
                 mode = info.external_attr >> 16
-                if stat.S_ISLNK(mode):
-                    raise RuntimeError(f"portable ZIP contains a symlink: {info.filename}")
+                file_type = stat.S_IFMT(mode)
+                is_directory = info.is_dir()
+                if is_directory:
+                    if file_type not in {0, stat.S_IFDIR}:
+                        raise RuntimeError(f"portable ZIP directory has an invalid type: {info.filename}")
+                    if info.file_size != 0:
+                        raise RuntimeError(f"portable ZIP directory has a non-zero size: {info.filename}")
+                    size = 0
+                    compressed_size = None
+                else:
+                    if stat.S_ISLNK(mode):
+                        raise RuntimeError(f"portable ZIP contains a symlink: {info.filename}")
+                    if file_type not in {0, stat.S_IFREG}:
+                        raise RuntimeError(f"portable ZIP contains an unsupported member: {info.filename}")
+                    size = info.file_size
+                    compressed_size = info.compress_size
+                budget.add_member(
+                    name=info.filename,
+                    size=size,
+                    compressed_size=compressed_size,
+                )
+                _record_target_member(
+                    target_entries,
+                    required_target_directories,
+                    member=member,
+                    canonical_name=canonical_name,
+                    is_directory=is_directory,
+                    platform_name=platform_name,
+                )
+                if info.flag_bits & 0x1:
+                    raise RuntimeError(f"portable ZIP contains an encrypted member: {info.filename}")
                 if info.date_time != expected_date_time:
                     raise RuntimeError(f"non-deterministic ZIP timestamp: {info.filename}")
             corrupt = archive.testzip()
             if corrupt is not None:
                 raise RuntimeError(f"portable ZIP has a corrupt member: {corrupt}")
+        budget.verify_container_ratio(archive_size)
     else:
         with archive_path.open("rb") as raw_archive:
             gzip_header = raw_archive.read(10)
@@ -565,6 +840,7 @@ def verify_portable_archive(
             or int.from_bytes(gzip_header[4:8], "little") != epoch
         ):
             raise RuntimeError("compressed tar has a non-deterministic gzip timestamp")
+        _verify_portable_gzip_stream(archive_path, archive_size)
         with tarfile.open(archive_path, mode="r:gz") as archive:
             for member_info in archive:
                 member = _safe_member_name(member_info.name)
@@ -573,6 +849,36 @@ def verify_portable_archive(
                     raise RuntimeError(f"duplicate archive member: {member_info.name}")
                 names.add(canonical_name)
                 roots.add(member.parts[0])
+                if member_info.isdir():
+                    if member_info.size != 0:
+                        raise RuntimeError(f"portable TAR directory has a non-zero size: {member_info.name}")
+                    size = 0
+                elif member_info.issym() or member_info.islnk():
+                    if member_info.size != 0:
+                        raise RuntimeError(f"portable TAR link has a non-zero size: {member_info.name}")
+                    _safe_link_target(
+                        member_info.name,
+                        member_info.linkname,
+                        symbolic=member_info.issym(),
+                    )
+                    size = 0
+                elif member_info.isfile():
+                    size = member_info.size
+                else:
+                    raise RuntimeError(f"unsupported archive member type: {member_info.name}")
+                budget.add_member(
+                    name=member_info.name,
+                    size=size,
+                    compressed_size=None,
+                )
+                _record_target_member(
+                    target_entries,
+                    required_target_directories,
+                    member=member,
+                    canonical_name=canonical_name,
+                    is_directory=member_info.isdir(),
+                    platform_name=platform_name,
+                )
                 if (
                     member_info.mtime != epoch
                     or member_info.uid != 0
@@ -581,20 +887,16 @@ def verify_portable_archive(
                     or member_info.gname
                 ):
                     raise RuntimeError(f"non-deterministic tar metadata: {member_info.name}")
-                if member_info.issym() or member_info.islnk():
-                    _safe_link_target(
-                        member_info.name,
-                        member_info.linkname,
-                        symbolic=member_info.issym(),
-                    )
-                elif not (member_info.isfile() or member_info.isdir()):
-                    raise RuntimeError(f"unsupported archive member type: {member_info.name}")
                 if member_info.isfile():
                     stream = archive.extractfile(member_info)
                     if stream is None:
                         raise RuntimeError(f"cannot read archive member: {member_info.name}")
-                    for _ in iter(lambda: stream.read(1024 * 1024), b""):
-                        pass
+                    read_size = 0
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        read_size += len(chunk)
+                    if read_size != member_info.size:
+                        raise RuntimeError(f"incomplete archive member: {member_info.name}")
+        budget.verify_container_ratio(archive_size)
     if len(roots) != 1:
         raise RuntimeError(f"portable archive must have one root, found {sorted(roots)}")
     missing = sorted(set(expected_members) - names)

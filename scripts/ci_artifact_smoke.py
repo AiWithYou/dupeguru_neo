@@ -10,12 +10,13 @@ from email import policy
 from email.parser import BytesParser
 import gettext
 import hashlib
-from importlib import metadata
+from importlib import import_module, metadata
 import io
 import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
+import re
 import stat
 import subprocess
 import sys
@@ -27,6 +28,9 @@ import zipfile
 
 EXPECTED_HELP_LANGUAGES = ("de", "en", "fr", "hy", "ru", "uk")
 EXPECTED_GETTEXT_CATALOGS = 63
+DARWIN_BUILD_UUID = re.compile(
+    r"^UUID: (?P<uuid>[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}) " r"\((?P<architecture>[A-Za-z0-9_]+)\) .+$"
+)
 
 
 def _run(command, *, cwd=None, env=None, capture_output=False):
@@ -86,6 +90,8 @@ def _installed_smoke() -> None:
     if not Path(HELP_PATH, "index.html").is_file():
         raise RuntimeError("Qt help path does not resolve to packaged English help")
     gettext.translation("core", localedir=locale_root, languages=["de"])
+    for native_module in ("core.pe._block", "core.pe._cache", "qt.pe._block_qt"):
+        import_module(native_module)
 
     command = _console_script("dupeguru")
     doctor = _run([command, "doctor"], capture_output=True)
@@ -188,6 +194,7 @@ def artifact_twine_check(directory: Path) -> None:
     wheel, sdist = _artifacts(directory)
     _validate_wheel_license_files(wheel)
     _validate_wheel_runtime_data(wheel)
+    _validate_darwin_wheel_build_uuids(wheel)
     _validate_sdist_build_inputs(sdist)
     _run(
         [
@@ -234,9 +241,69 @@ def reproducible_wheel_check(directory: Path) -> None:
         original_digest = _sha256_file(wheel)
         rebuilt_digest = _sha256_file(rebuilt)
         if rebuilt_digest != original_digest:
+            differences = _wheel_difference_report(wheel, rebuilt)
             raise RuntimeError(
-                "wheel is not byte-for-byte reproducible from its sdist: " f"{original_digest} != {rebuilt_digest}"
+                "wheel is not byte-for-byte reproducible from its sdist: "
+                f"{original_digest} != {rebuilt_digest}; {differences}"
             )
+
+
+def _wheel_difference_report(original: Path, rebuilt: Path, limit: int = 12) -> str:
+    """Describe a failed exact comparison without weakening the comparison."""
+
+    differences = []
+    with zipfile.ZipFile(original) as original_archive, zipfile.ZipFile(rebuilt) as rebuilt_archive:
+        original_infos = original_archive.infolist()
+        rebuilt_infos = rebuilt_archive.infolist()
+        original_names = [info.filename for info in original_infos]
+        rebuilt_names = [info.filename for info in rebuilt_infos]
+        if original_names != rebuilt_names:
+            original_only = sorted(set(original_names) - set(rebuilt_names))
+            rebuilt_only = sorted(set(rebuilt_names) - set(original_names))
+            differences.append(
+                "member sequence differs "
+                f"(original-only={original_only[:limit]!r}, rebuilt-only={rebuilt_only[:limit]!r})"
+            )
+
+        original_by_name = {info.filename: info for info in original_infos}
+        rebuilt_by_name = {info.filename: info for info in rebuilt_infos}
+        shared_names = sorted(set(original_by_name) & set(rebuilt_by_name))
+        for name in shared_names:
+            original_info = original_by_name[name]
+            rebuilt_info = rebuilt_by_name[name]
+            metadata_fields = (
+                "date_time",
+                "compress_type",
+                "comment",
+                "extra",
+                "create_system",
+                "create_version",
+                "extract_version",
+                "flag_bits",
+                "internal_attr",
+                "external_attr",
+            )
+            changed_metadata = [
+                field for field in metadata_fields if getattr(original_info, field) != getattr(rebuilt_info, field)
+            ]
+            if changed_metadata:
+                differences.append(f"{name!r}: ZIP metadata differs ({', '.join(changed_metadata)})")
+            original_member_digest = hashlib.sha256(original_archive.read(original_info)).hexdigest()
+            rebuilt_member_digest = hashlib.sha256(rebuilt_archive.read(rebuilt_info)).hexdigest()
+            if original_member_digest != rebuilt_member_digest:
+                differences.append(f"{name!r}: payload differs ({original_member_digest} != {rebuilt_member_digest})")
+
+        if original_archive.comment != rebuilt_archive.comment:
+            differences.append("ZIP archive comments differ")
+    if not differences:
+        differences.append(
+            "ZIP container encoding differs although member sequence, decoded payloads, and inspected metadata match"
+        )
+    omitted = max(0, len(differences) - limit)
+    report = "; ".join(differences[:limit])
+    if omitted:
+        report += f"; {omitted} additional difference(s) omitted"
+    return report
 
 
 def _extract_regular_sdist(sdist: Path, destination: Path) -> Path:
@@ -402,6 +469,52 @@ def _validate_wheel_runtime_data(wheel: Path) -> None:
         raise RuntimeError(f"wheel contains development-only sources: {development_only[:10]}")
     if not any(name.startswith("images/") and name.endswith(".png") for name in names):
         raise RuntimeError("wheel is missing packaged image resources")
+
+
+def _validate_darwin_wheel_build_uuids(wheel: Path) -> None:
+    if sys.platform != "darwin":
+        return
+    with zipfile.ZipFile(wheel) as archive:
+        native_members = sorted(
+            (info for info in archive.infolist() if not info.is_dir() and info.filename.endswith(".so")),
+            key=lambda info: info.filename,
+        )
+        if not native_members:
+            raise RuntimeError("macOS wheel has no native extensions to validate")
+        with tempfile.TemporaryDirectory(prefix="dupeguru-macho-uuid-") as temporary:
+            temporary_path = Path(temporary)
+            uuid_owners = {}
+            for index, info in enumerate(native_members):
+                extracted = temporary_path.joinpath(f"extension-{index}.so")
+                member_payload = archive.read(info)
+                member_digest = hashlib.sha256(member_payload).hexdigest()
+                extracted.write_bytes(member_payload)
+                result = _run(["dwarfdump", "--uuid", extracted], capture_output=True)
+                output_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                matches = [DARWIN_BUILD_UUID.fullmatch(line) for line in output_lines]
+                if not matches or any(match is None for match in matches):
+                    raise RuntimeError(f"macOS wheel member {info.filename!r} has no valid LC_UUID")
+                uuids = [match.group("uuid").casefold() for match in matches]
+                architectures = [match.group("architecture") for match in matches]
+                if len(set(architectures)) != len(architectures):
+                    raise RuntimeError(f"macOS wheel member {info.filename!r} repeats an LC_UUID architecture")
+                for uuid, architecture in zip(uuids, architectures):
+                    owner = f"{info.filename} ({architecture})"
+                    previous = uuid_owners.get(uuid)
+                    if previous is not None:
+                        previous_owner, previous_architecture, previous_digest = previous
+                        if previous_architecture == architecture and previous_digest == member_digest:
+                            continue
+                        conflict = (
+                            "a different architecture"
+                            if previous_architecture != architecture
+                            else "a different member SHA-256"
+                        )
+                        raise RuntimeError(
+                            f"macOS Mach-O image {owner!r} reuses LC_UUID {uuid} "
+                            f"from {previous_owner!r} with {conflict}"
+                        )
+                    uuid_owners[uuid] = (owner, architecture, member_digest)
 
 
 def _validate_sdist_build_inputs(sdist: Path) -> None:

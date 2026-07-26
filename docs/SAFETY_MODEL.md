@@ -41,12 +41,29 @@ operation may accept a green, yellow, or blue item only when the scan is
 complete and current and the target is still in Incoming Files. Protected
 Library, Compare Only, saved-report, stale, incomplete, and gray inputs are
 refused. Both the selected item and its review keeper must still have the
-physical identity and content-generation token captured for the scan. This is
-checked at the command boundary, again in the worker, and the selected
-source's snapshot is checked once more by the no-replace file operation. Copy
-preserves the source. Move removes the source name only after preserving the
-payload at the destination. Neither operation creates byte-equality evidence
-or permission for a later deletion.
+physical identity, content-generation token, and scan-bound SHA-256 proof.
+Direct scans capture the proof before matching and compare it with a second
+full read after matching; this detects equal-length rewrites which share one
+observable timestamp tick. This is checked at the command boundary, again in
+the worker, and the selected source's full proof is consumed once more by the
+no-replace file operation. Copy computes that terminal SHA-256 while performing
+its already-required source-to-staging byte comparison, so it adds no third
+full-file read. Move hashes the live publication descriptor immediately before
+the no-replace rename. Immediately before either action, the review keeper is
+also reread and matched to its scan-bound SHA-256. That pass checks job
+cancellation at every bounded chunk and reports streamed bytes before the
+action is counted as processed. The selected source is not redundantly read at
+that gate because the executor owns its later, stronger terminal proof. Every
+marked Copy/Move gets a fresh keeper read immediately before its own action.
+Consequently, `k` actions which share one keeper intentionally read that keeper
+`k` times: caching it across action boundaries would weaken freshness unless a
+platform capability froze the keeper for the whole batch. Copy preserves the
+source. Move removes the source name only after preserving the reviewed payload
+at the destination. Rename only changes one incoming path with no replacement,
+does not remove or copy payload bytes, and immediately invalidates the result
+receipt; its UI gate therefore checks identity/generation and directory policy
+but does not synchronously reread the selected item or keeper. Neither
+operation creates byte-equality evidence or permission for a later deletion.
 
 A Folder scan compares recursive aggregate manifests. It is review-only for
 file-action purposes: an equal folder digest is not `VERIFIED_PAYLOAD_EXACT`
@@ -197,10 +214,24 @@ Catalog behind the Standard-mode Contents scan.
 
 ## Direct-scan and catalog evidence
 
-A direct Contents scan keeps each file's scan-start `FileSnapshot` in memory.
-Strict digest reads and final byte comparisons also validate snapshots from
-their opened handles, and each comparison retains its two stable snapshots.
-That evidence is scoped to the current result set.
+A direct scan keeps each file's scan-start `FileSnapshot` and SHA-256 content
+proof in memory. It rereads and compares the SHA-256 proof after matching
+before publishing a complete result receipt. Strict digest reads and final
+byte comparisons also validate snapshots from their opened handles, and each
+comparison retains its two stable snapshots. That evidence is scoped to the
+current result set. The two proof passes are intentionally streaming and
+cancellation-aware: they bound memory but add two full reads per direct-scan
+file. The scan-start pass computes the exact engine's xxh128 candidate digest
+in parallel with SHA-256 and uses that same full digest for the partial/sample
+candidate fields; this avoids trusting a timestamp-keyed cache or rereading the
+file for exact candidate filtering. Direct scans expose weighted
+scan-start/matching/scan-end job phases. Both proof phases report completed
+files and streamed bytes, with updates at file boundaries and bounded byte
+intervals, while checking cancellation at every content chunk. Organizer Copy
+reuses its mandatory
+byte-comparison pass for the action proof instead of performing another
+digest-only read. Organizer Move has no copy pass to reuse and therefore
+performs one terminal full read through its held publication descriptor.
 
 A content-generation token is also mandatory; size and mtime alone are never
 accepted as freshness evidence. On Windows, a regular-file token combines the
@@ -231,8 +262,20 @@ working USN controls or as the only evidence of a tree change. Alternate data
 streams are not part of the unnamed-payload equality claim, although their
 changes ordinarily advance the descendant file USN and invalidate the tree
 token. A failed observation is incomplete and cannot authorize a file action.
-POSIX uses inode ctime bound to device/inode identity and the opened object;
-live SHA-256 and byte proofs are still required before quarantine.
+POSIX regular-file metadata freshness uses inode ctime bound to device/inode
+identity and the opened object. Ctime is not treated as a sufficient content
+counter because adjacent equal-length writes can share one observable tick.
+Direct-scan organizer authority therefore additionally requires the scan-bound
+SHA-256 proof described above; live SHA-256 and byte proofs remain mandatory
+before quarantine. Directory Copy/Move uses a separate
+`dupeguru-posix-directory-tree-v1` proof. It walks from an opened root
+descriptor with no-follow, descriptor-relative opens, folds exact names,
+identity, type, size, mode, mtime, ctime, and link count into a canonical
+digest, and streams SHA-256 over every regular file's ordinary data stream.
+Reading content is required because adjacent writes can share one observable
+ctime tick on some POSIX filesystems. Links, special files, and multiply-linked
+regular files are refused. One proof is bounded to 100,000 entries and depth
+128; file bytes are streamed rather than retained in memory.
 
 Directory Copy/Move validation takes the recursive token at the operation root
 and repeats that root proof at the terminal boundary. Per-directory snapshots
@@ -248,9 +291,34 @@ cataloged content generations, and byte-compares every member with its
 representative. Each successful edge has one persisted `verification_id`
 binding the two content-version IDs, digest algorithm/version, full digest,
 comparison time, and verification state. A read-only projection still compares
-live bytes but may only reuse an already-persisted positive ID. The ID is a
-historical comparison record, not an opened-handle snapshot and not mutation
-authority. Quarantine always creates a fresh live SHA-256 and byte proof.
+live bytes and streams SHA-256 during the same comparison pass. The live digest
+must equal the persisted full-hash artifact before a positive record or GUI
+group can be produced; a stale artifact invalidates the edge and makes the
+projection incomplete. In a writable catalog, this failure atomically
+invalidates every verification involving the affected content versions,
+deletes all of their content-derived artifacts (not only the SHA-256 which
+selected the bucket), fails and releases every old work-item lease, disconnects
+those versions from the current physical-file rows, removes affected immutable
+scan snapshots, and makes their scans and roots non-projectable. A later scan
+must therefore create fresh content versions and enqueue every configured
+analysis stage even when size, timestamp, and platform change token still look
+unchanged. An expired worker cannot revive the retired work or republish an
+artifact for the detached generation.
+
+A read-only projection cannot perform that repair. It fails closed with an
+explicit writable-repair requirement and leaves the database unchanged. The
+`dupeguru catalog groups` command publishes only its structured error record,
+not a partial group stream; running `dupeguru catalog scan` with the same
+database and roots performs one bounded writable retirement-and-rescan repair
+round before returning. A repeated mismatch remains a hard failure. A
+read-only projection may otherwise only reuse an already-persisted positive ID.
+The ID is a historical comparison record, not an opened-handle snapshot and
+not mutation authority. When a catalog group is materialized for the GUI, this
+persisted and freshly live-confirmed SHA-256 is attached to each current file
+snapshot instead of rereading every file solely to seed organizer authority. A
+later Copy or Move still consumes that digest against the live source at its
+terminal boundary. Quarantine always creates a fresh live SHA-256 and byte
+proof.
 
 ## Filesystem capability levels
 
@@ -277,6 +345,16 @@ drops that preopened capability cannot produce a verified commit. Failed-staging
 cleanup likewise applies disposition to the identity-checked DELETE handle
 itself and never falls back to a path unlink.
 
+The no-link path rule has one narrow macOS compatibility exception. The fixed
+system root aliases `/var`, `/tmp`, and `/etc` may be canonicalized to
+`/private/var`, `/private/tmp`, and `/private/etc` respectively only after the
+alias, `/`, and physical target are authenticated twice: the alias and target
+must be root-owned, the root must not be group/world writable, the target must
+be a plain directory with the same physical identity as the followed alias,
+and the exact link target and metadata must remain stable. All subsequent
+opens use the authenticated physical path. Any other symbolic-link component,
+changed alias, or failed authentication is rejected without a fallback.
+
 The adapter's weaker `rename_no_replace()` entry point exists for publishing
 immutable application-state files and legacy operations that make no verified
 content claim. Safety-critical user-file executors are statically checked not to
@@ -286,16 +364,29 @@ trusted internal boundary.
 Directory copies use an unpredictable private staging tree and repeat the full
 recursive token immediately before every candidate publication. Directory moves
 repeat the full source-tree token after preflight and immediately before every
-candidate rename. Windows does not expose one ordinary rename capability that
-freezes every descendant of an open directory, so a hostile process which can
-mutate a descendant in the final check-to-rename interval remains outside the
-directory-operation claim. Automatic verified duplicate removal acts on regular
-files and does not rely on that narrower directory guarantee.
+candidate rename. A POSIX copy opens the reviewed source root once, then performs
+enumeration, no-follow stat/open, regular-file reads, and recursion relative to
+that root and its opened child-directory descriptors; later parent-path
+replacement cannot redirect the copy. Windows holds no-delete-sharing leases on
+the source root and each directory being traversed, so a root-parent or active
+subdirectory rename cannot redirect its path walk. Windows does not expose one
+ordinary rename capability that freezes every descendant of an open directory,
+so a hostile process which can mutate a descendant in the final
+check-to-rename interval remains outside the directory-operation claim.
+Automatic verified duplicate removal acts on regular files and does not rely on
+that narrower directory guarantee.
 
 POSIX has no portable identity-conditional rename or unlink operand;
 descriptor-bound parents, unpredictable private staging names, and immediate
 identity checks harden ordinary races, but a hostile same-user process that can
-write the staging parent remains outside that POSIX claim.
+write the staging parent remains outside that POSIX claim. A scan-bound
+regular-file Move hashes the held source descriptor and rechecks its bound name
+immediately before `renameat2`/`renameatx_np`. Portable POSIX cannot deny writes
+through another process's already-open descriptor, however, so an active
+same-user writer can still alter that inode in the final digest-to-rename
+interval (or after the rename). That adversarial content race is the same
+documented boundary; ordinary same-tick rewrites completed before terminal
+verification are detected by SHA-256 and fail closed.
 
 Catalog databases are local. A network share may contain scanned files only
 when the host platform can provide the required identity and generation
@@ -328,9 +419,10 @@ same-name replacement cannot redirect either operation and there is no
 path-unlink fallback. POSIX has no portable identity-conditional unlink
 primitive: descriptor-bound parents, random private tombstone names, and an
 immediate identity check harden ordinary races, but a same-user adversary that
-can replace the entry during the final name operation may exceed the POSIX
-model. The application therefore claims the stronger handle-bound guarantee
-only where the platform provides it.
+can replace the entry during the final name operation, or write a move source
+through another already-open descriptor between its terminal digest and
+rename, may exceed the POSIX model. The application therefore claims the
+stronger no-write handle-bound guarantee only where the platform provides it.
 
 User-configured custom commands are external programs and are not file actions
 performed by either the quarantine or organizer executor. They may change or

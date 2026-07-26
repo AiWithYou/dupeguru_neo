@@ -35,7 +35,12 @@ from core.catalog_service import (
     CatalogServiceResult,
     CatalogServiceStatus,
 )
-from core.catalog_worker import CatalogWorkerError, VerifiedExactGroup
+from core.catalog_worker import (
+    CatalogWorkerError,
+    ContentGenerationChanged,
+    FullDigestCollision,
+    VerifiedExactGroup,
+)
 from core.safe_json import JsonStructuralLimits, preflight_json_structure
 
 CATALOG_SCHEMA_VERSION = 1
@@ -44,6 +49,7 @@ CATALOG_STATUS_SCHEMA = "dupeguru.catalog-status"
 CATALOG_GROUP_RECORD_SCHEMA = "dupeguru.catalog-group-record-v2"
 CATALOG_GROUP_RECORD_SCHEMA_VERSION = 2
 CATALOG_CHANGE_RECORD_SCHEMA = "dupeguru.catalog-change-record"
+CATALOG_CHANGE_RECORD_SCHEMA_VERSION = 2
 CATALOG_BACKUP_SCHEMA = "dupeguru.catalog-backup"
 CATALOG_ERROR_SCHEMA = "dupeguru.catalog-error"
 
@@ -397,6 +403,7 @@ def _change_safety_schema() -> Dict[str, Any]:
             "verification",
             "complete_scan_required",
             "move_classification",
+            "relocation_candidate_classification",
             "allows_automatic_destructive_action",
             "fresh_action_proof_required",
             "destructive_workflow",
@@ -405,7 +412,10 @@ def _change_safety_schema() -> Dict[str, Any]:
             "database_location": {"const": "local"},
             "verification": {"const": "immutable-complete-snapshot-diff"},
             "complete_scan_required": {"const": True},
-            "move_classification": {"const": "stable-native-identity-one-to-one-only"},
+            "move_classification": {"const": "trusted-event-journal-only"},
+            "relocation_candidate_classification": {
+                "const": "stable-native-identity-one-to-one-with-content-continuity"
+            },
             "allows_automatic_destructive_action": {"const": False},
             "fresh_action_proof_required": {"const": True},
             "destructive_workflow": {"const": "quarantine_then_explicit_finalize"},
@@ -847,7 +857,13 @@ _CATALOG_CHANGE_SCHEMA = {
     "properties": {
         "change_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "change_type": {
-            "enum": ["added", "modified", "moved", "missing"],
+            "enum": [
+                "added",
+                "modified",
+                "moved",
+                "relocation_candidate",
+                "missing",
+            ],
         },
         "old": _CATALOG_CHANGE_SNAPSHOT_SCHEMA,
         "new": _CATALOG_CHANGE_SNAPSHOT_SCHEMA,
@@ -857,7 +873,9 @@ _CATALOG_CHANGE_SCHEMA = {
             "enum": [
                 "immutable_snapshot_added",
                 "immutable_snapshot_modified",
-                "stable_native_identity_1_to_1_move",
+                "trusted_event_journal_move",
+                "stable_native_identity_1_to_1_same_catalog_generation_relocation_candidate",
+                "stable_native_identity_1_to_1_matching_full_sha256_relocation_candidate",
                 "immutable_snapshot_missing",
             ],
         },
@@ -873,6 +891,7 @@ _CATALOG_CHANGE_SUMMARY_SCHEMA = {
         "added",
         "modified",
         "moved",
+        "relocation_candidates",
         "missing",
         "page_size",
     ],
@@ -897,6 +916,11 @@ _CATALOG_CHANGE_SUMMARY_SCHEMA = {
             "minimum": 0,
             "maximum": CATALOG_MAX_CHANGES,
         },
+        "relocation_candidates": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": CATALOG_MAX_CHANGES,
+        },
         "missing": {
             "type": "integer",
             "minimum": 0,
@@ -912,7 +936,7 @@ _CATALOG_CHANGE_SUMMARY_SCHEMA = {
 
 CATALOG_CHANGE_RECORD_JSON_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "urn:dupeguru-neo:schema:catalog-change-record:1",
+    "$id": "urn:dupeguru-neo:schema:catalog-change-record:2",
     "title": "dupeGuru Neo immutable catalog change stream record",
     "type": "object",
     "additionalProperties": False,
@@ -934,7 +958,7 @@ CATALOG_CHANGE_RECORD_JSON_SCHEMA = {
     ],
     "properties": {
         "schema": {"const": CATALOG_CHANGE_RECORD_SCHEMA},
-        "schema_version": {"const": CATALOG_SCHEMA_VERSION},
+        "schema_version": {"const": CATALOG_CHANGE_RECORD_SCHEMA_VERSION},
         "record_type": {"enum": ["header", "change", "summary"]},
         "created_at": {"type": "string", "minLength": 1},
         "state": {"enum": ["streaming", "complete", "partial"]},
@@ -1160,6 +1184,7 @@ class _CatalogMachineStreamValidator:
             "added": 0,
             "modified": 0,
             "moved": 0,
+            "relocation_candidate": 0,
             "missing": 0,
         }
 
@@ -1342,7 +1367,8 @@ class _CatalogMachineStreamValidator:
             summary = payload["summary"]
             expected_total = sum(self.change_counts.values())
             if summary["total"] != expected_total or any(
-                summary[name] != count for name, count in self.change_counts.items()
+                summary["relocation_candidates" if name == "relocation_candidate" else name] != count
+                for name, count in self.change_counts.items()
             ):
                 raise _MachineOutputEncodingError("catalog change summary counts do not match the stream")
             if payload["state"] not in ("complete", "partial") or (
@@ -1511,8 +1537,18 @@ def _run_scan(args, stdout: TextIO) -> int:
     ) as service:
         result = service.run(app_version=__version__)
         if result.catalog_status == "complete" and result.outcome == "finished":
-            for _group in service.iter_verified_exact_groups(page_size=limits["batch_size"]):
-                pass
+            try:
+                for _group in service.iter_verified_exact_groups(page_size=limits["batch_size"]):
+                    pass
+            except (ContentGenerationChanged, FullDigestCollision):
+                # A writable projection atomically retires the invalid content
+                # evidence. One fresh scan creates new generations and queues
+                # every configured analysis stage; a repeated mismatch still
+                # escapes fail-closed after this single bounded repair round.
+                result = service.run(app_version=__version__)
+                if result.catalog_status == "complete" and result.outcome == "finished":
+                    for _group in service.iter_verified_exact_groups(page_size=limits["batch_size"]):
+                        pass
     return _write_service_result("scan", database, result, limits, stdout)
 
 
@@ -1605,11 +1641,12 @@ def _run_changes(args, stdout: TextIO) -> int:
             args.before_scan_id,
             args.after_scan_id,
         )
-        first_page = catalog.page_scan_changes(
+        rows = catalog.iter_scan_changes(
             args.before_scan_id,
             args.after_scan_id,
             root_ids,
-            limit=args.page_size,
+            fetch_size=args.page_size,
+            max_rows=CATALOG_MAX_CHANGES + 1,
         )
         return _stream_changes(
             catalog,
@@ -1618,7 +1655,7 @@ def _run_changes(args, stdout: TextIO) -> int:
             args.after_scan_id,
             root_ids,
             args.page_size,
-            first_page,
+            rows,
             stdout,
         )
 
@@ -1654,13 +1691,13 @@ def _stream_changes(
     after_scan_id: int,
     root_ids: Sequence[int],
     page_size: int,
-    first_page: Sequence[Any],
+    rows: Any,
     stdout: TextIO,
 ) -> int:
     created_at = _utc_now()
     base = {
         "schema": CATALOG_CHANGE_RECORD_SCHEMA,
-        "schema_version": CATALOG_SCHEMA_VERSION,
+        "schema_version": CATALOG_CHANGE_RECORD_SCHEMA_VERSION,
         "created_at": created_at,
         "database": str(database),
         "before_scan_id": before_scan_id,
@@ -1684,58 +1721,35 @@ def _stream_changes(
         "added": 0,
         "modified": 0,
         "moved": 0,
+        "relocation_candidate": 0,
         "missing": 0,
     }
-    cursor = (0, "", "")
-    page = first_page
     try:
-        while page:
-            for row in page:
-                if sum(counts.values()) >= CATALOG_MAX_CHANGES:
-                    raise _MachineOutputResourceLimit(
-                        "catalog change output exceeds the {} change limit".format(
-                            CATALOG_MAX_CHANGES,
-                        )
+        for row in rows:
+            if sum(counts.values()) >= CATALOG_MAX_CHANGES:
+                raise _MachineOutputResourceLimit(
+                    "catalog change output exceeds the {} change limit".format(
+                        CATALOG_MAX_CHANGES,
                     )
-                change = _change_value(
-                    row,
-                    before_scan_id,
-                    after_scan_id,
                 )
-                _write_json_line(
-                    stdout,
-                    {
-                        **base,
-                        "record_type": "change",
-                        "state": "complete",
-                        "partial": False,
-                        "issues": [],
-                        "change": change,
-                        "summary": None,
-                    },
-                )
-                counts[change["change_type"]] += 1
-
-            last = page[-1]
-            next_cursor = (
-                int(last["sort_root_id"]),
-                str(last["sort_path_key"]),
-                str(last["change_type"]),
-            )
-            if next_cursor <= cursor:
-                raise CatalogStateError("catalog change cursor did not advance")
-            cursor = next_cursor
-            if len(page) < page_size:
-                break
-            page = catalog.page_scan_changes(
+            change = _change_value(
+                row,
                 before_scan_id,
                 after_scan_id,
-                root_ids,
-                after_root_id=cursor[0],
-                after_path_key=cursor[1],
-                after_change_type=cursor[2],
-                limit=page_size,
             )
+            _write_json_line(
+                stdout,
+                {
+                    **base,
+                    "record_type": "change",
+                    "state": "complete",
+                    "partial": False,
+                    "issues": [],
+                    "change": change,
+                    "summary": None,
+                },
+            )
+            counts[change["change_type"]] += 1
     except (
         CatalogError,
         CatalogIndexError,
@@ -1785,7 +1799,13 @@ def _change_value(
     after_scan_id: int,
 ) -> Dict[str, Any]:
     change_type = str(row["change_type"])
-    if change_type not in {"added", "modified", "moved", "missing"}:
+    if change_type not in {
+        "added",
+        "modified",
+        "moved",
+        "relocation_candidate",
+        "missing",
+    }:
         raise ValueError("catalog emitted an unknown change type: '{}'".format(change_type))
     old = _change_snapshot(row, "old")
     new = _change_snapshot(row, "new")
@@ -1793,6 +1813,7 @@ def _change_value(
         "added": (False, True),
         "modified": (True, True),
         "moved": (True, True),
+        "relocation_candidate": (True, True),
         "missing": (True, False),
     }
     if (old is not None, new is not None) != expected_sides[change_type]:
@@ -1800,15 +1821,45 @@ def _change_value(
     identity_proven = bool(row["identity_proven"])
     if identity_proven != (change_type == "moved"):
         raise ValueError("catalog move identity proof is inconsistent with change type")
-    if change_type == "moved" and (old["identity_confidence"] != "stable" or new["identity_confidence"] != "stable"):
-        raise ValueError("catalog moved change lacks stable identity evidence")
+    relation_evidence = str(row["relation_evidence"])
+    relation_change = change_type in {"moved", "relocation_candidate"}
+    if relation_change:
+        if old["identity_confidence"] != "stable" or new["identity_confidence"] != "stable":
+            raise ValueError("catalog path relation lacks stable identity evidence")
+        if (
+            row["old_native_file_id"] is None
+            or row["old_native_file_id"] != row["new_native_file_id"]
+            or old["physical_file_id"] != new["physical_file_id"]
+        ):
+            raise ValueError("catalog path relation lacks one physical identity")
+        if bool(row["content_changed"]):
+            raise ValueError("catalog path relation lacks proven content continuity")
+    elif relation_evidence != "none":
+        raise ValueError("catalog non-relation change contains relation evidence")
+
+    if change_type == "moved" and relation_evidence != "trusted_event_journal":
+        raise ValueError("catalog moved change lacks trusted event-journal evidence")
+    if change_type == "relocation_candidate":
+        if relation_evidence == "same_catalog_generation":
+            if old["content_version_id"] != new["content_version_id"]:
+                raise ValueError("catalog generation-continuity candidate changed generation")
+        elif relation_evidence == "matching_full_sha256":
+            if old["content_version_id"] == new["content_version_id"]:
+                raise ValueError("catalog hash-continuity candidate reused one generation")
+        else:
+            raise ValueError("catalog relocation candidate has unknown content evidence")
 
     classifications = {
         "added": "immutable_snapshot_added",
         "modified": "immutable_snapshot_modified",
-        "moved": "stable_native_identity_1_to_1_move",
+        "moved": "trusted_event_journal_move",
         "missing": "immutable_snapshot_missing",
     }
+    if change_type == "relocation_candidate":
+        classifications[change_type] = {
+            "same_catalog_generation": ("stable_native_identity_1_to_1_same_catalog_generation_relocation_candidate"),
+            "matching_full_sha256": ("stable_native_identity_1_to_1_matching_full_sha256_relocation_candidate"),
+        }[relation_evidence]
     canonical = json.dumps(
         {
             "before_scan_id": before_scan_id,
@@ -1864,6 +1915,7 @@ def _change_summary(
         "added": counts["added"],
         "modified": counts["modified"],
         "moved": counts["moved"],
+        "relocation_candidates": counts["relocation_candidate"],
         "missing": counts["missing"],
         "page_size": page_size,
     }
@@ -1969,6 +2021,8 @@ def _stream_groups(
         TypeError,
         ValueError,
     ) as error:
+        if isinstance(error, (ContentGenerationChanged, FullDigestCollision)):
+            raise
         _write_json_line(
             stdout,
             {
@@ -2449,7 +2503,8 @@ def _change_safety() -> Dict[str, Any]:
         "database_location": "local",
         "verification": "immutable-complete-snapshot-diff",
         "complete_scan_required": True,
-        "move_classification": "stable-native-identity-one-to-one-only",
+        "move_classification": "trusted-event-journal-only",
+        "relocation_candidate_classification": "stable-native-identity-one-to-one-with-content-continuity",
         "allows_automatic_destructive_action": False,
         "fresh_action_proof_required": True,
         "destructive_workflow": "quarantine_then_explicit_finalize",
@@ -2494,6 +2549,7 @@ def _is_reparse_point(file_stat: os.stat_result) -> bool:
 __all__ = [
     "CATALOG_BACKUP_SCHEMA",
     "CATALOG_CHANGE_RECORD_SCHEMA",
+    "CATALOG_CHANGE_RECORD_SCHEMA_VERSION",
     "CATALOG_ERROR_SCHEMA",
     "CATALOG_GROUP_CHUNK_MAX_MEMBERS",
     "CATALOG_GROUP_PAGE_MAX_FILES",

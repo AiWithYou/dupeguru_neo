@@ -4,6 +4,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import hashlib
 import os
 import sqlite3
 import sys
@@ -693,23 +694,200 @@ def test_complete_scan_differences_are_keyset_paged_and_identity_proven(tmp_path
 
     assert len(changes) == 10
     assert [row["change_type"] for row in changes].count("modified") == 1
-    assert [row["change_type"] for row in changes].count("moved") == 1
+    assert [row["change_type"] for row in changes].count("moved") == 0
+    assert [row["change_type"] for row in changes].count("relocation_candidate") == 1
     assert [row["change_type"] for row in changes].count("missing") == 4
     assert [row["change_type"] for row in changes].count("added") == 4
     modified = next(row for row in changes if row["change_type"] == "modified")
     assert modified["old_display_path"] == str(modified_path)
     assert modified["new_display_path"] == str(modified_path)
     assert modified["content_changed"] == 1
-    moved = next(row for row in changes if row["change_type"] == "moved")
-    assert moved["old_display_path"] == str(old_move_path)
-    assert moved["new_display_path"] == str(new_move_path)
-    assert moved["identity_proven"] == 1
-    assert moved["old_native_file_id"] == moved["new_native_file_id"] == b"move"
+    relocation = next(row for row in changes if row["change_type"] == "relocation_candidate")
+    assert relocation["old_display_path"] == str(old_move_path)
+    assert relocation["new_display_path"] == str(new_move_path)
+    assert relocation["identity_proven"] == 0
+    assert relocation["relation_evidence"] == "same_catalog_generation"
+    assert relocation["old_native_file_id"] == relocation["new_native_file_id"] == b"move"
     assert not any(
-        row["change_type"] == "moved"
+        row["change_type"] in {"moved", "relocation_candidate"}
         and row["old_display_path"] in {str(old_path_only), *(str(p) for p in old_hardlinks)}
         for row in changes
     )
+    catalog.close()
+
+
+@pytest.mark.parametrize(
+    ("artifact_evidence", "old_size", "new_size"),
+    (
+        ("absent", 7, 7),
+        ("only_old_full", 7, 7),
+        ("candidate_match", 7, 7),
+        ("full_mismatch", 7, 7),
+        ("full_match_size_mismatch", 7, 5),
+        ("invalid_full_match", 7, 7),
+    ),
+)
+def test_scan_differences_do_not_claim_recycled_native_identity_as_move(
+    tmp_path,
+    artifact_evidence,
+    old_size,
+    new_size,
+):
+    catalog, _database_path, root_id, root_path = create_catalog(tmp_path)
+    deleted_path = root_path / "deleted.bin"
+    created_path = root_path / "created.bin"
+    recycled_identity = b"recycled-native-id"
+
+    first_scan, first_directory = begin_root_scan(catalog, root_id, now=10)
+    deleted = observe(
+        catalog,
+        first_scan,
+        root_id,
+        deleted_path,
+        recycled_identity,
+        size=old_size,
+        mtime_ns=1000,
+        now=10,
+    )
+    catalog.complete_scan_directory(first_directory["id"], now=11)
+    catalog.finish_scan(first_scan, now=12)
+
+    second_scan, second_directory = begin_root_scan(catalog, root_id, now=20)
+    created = observe(
+        catalog,
+        second_scan,
+        root_id,
+        created_path,
+        recycled_identity,
+        size=new_size,
+        mtime_ns=2000,
+        now=20,
+    )
+    catalog.complete_scan_directory(second_directory["id"], now=21)
+    catalog.finish_scan(second_scan, now=22)
+
+    if artifact_evidence != "absent":
+        verification_level = "candidate" if artifact_evidence == "candidate_match" else "full"
+        matching_digest = artifact_evidence in {
+            "candidate_match",
+            "full_match_size_mismatch",
+            "invalid_full_match",
+        }
+        if artifact_evidence == "invalid_full_match":
+            old_digest = new_digest = b"not-a-sha256"
+        elif matching_digest:
+            old_digest = new_digest = hashlib.sha256(b"same").digest()
+        else:
+            old_digest = hashlib.sha256(b"old").digest()
+            new_digest = hashlib.sha256(b"new").digest()
+        catalog.put_artifact(
+            deleted.content_version_id,
+            "full_hash",
+            "sha256",
+            "1",
+            old_digest,
+            verification_level=verification_level,
+            now=23,
+        )
+        if artifact_evidence != "only_old_full":
+            catalog.put_artifact(
+                created.content_version_id,
+                "full_hash",
+                "sha256",
+                "1",
+                new_digest,
+                verification_level=verification_level,
+                now=23,
+            )
+
+    changes = catalog.page_scan_changes(
+        first_scan,
+        second_scan,
+        (root_id,),
+        limit=10,
+    )
+
+    assert deleted.physical_file_id == created.physical_file_id
+    assert deleted.content_version_id != created.content_version_id
+    assert created.identity_reused
+    assert {row["change_type"] for row in changes} == {"added", "missing"}
+    assert not any(row["identity_proven"] for row in changes)
+    assert next(row for row in changes if row["change_type"] == "missing")["old_display_path"] == str(deleted_path)
+    assert next(row for row in changes if row["change_type"] == "added")["new_display_path"] == str(created_path)
+    catalog.close()
+
+
+def test_scan_differences_emit_hash_matched_relocation_candidate_without_move_proof(
+    tmp_path,
+):
+    catalog, _database_path, root_id, root_path = create_catalog(tmp_path)
+    old_path = root_path / "old-name.bin"
+    new_path = root_path / "new-name.bin"
+    stable_identity = b"stable-native-id"
+    digest = hashlib.sha256(b"matching contents").digest()
+
+    first_scan, first_directory = begin_root_scan(catalog, root_id, now=10)
+    old = observe(
+        catalog,
+        first_scan,
+        root_id,
+        old_path,
+        stable_identity,
+        size=4,
+        mtime_ns=1000,
+        now=10,
+    )
+    catalog.put_artifact(
+        old.content_version_id,
+        "full_hash",
+        "sha256",
+        "1",
+        digest,
+        verification_level="full",
+        now=10,
+    )
+    catalog.complete_scan_directory(first_directory["id"], now=11)
+    catalog.finish_scan(first_scan, now=12)
+
+    second_scan, second_directory = begin_root_scan(catalog, root_id, now=20)
+    new = observe(
+        catalog,
+        second_scan,
+        root_id,
+        new_path,
+        stable_identity,
+        size=4,
+        mtime_ns=2000,
+        now=20,
+    )
+    catalog.put_artifact(
+        new.content_version_id,
+        "full_hash",
+        "sha256",
+        "1",
+        digest,
+        verification_level="full",
+        now=20,
+    )
+    catalog.complete_scan_directory(second_directory["id"], now=21)
+    catalog.finish_scan(second_scan, now=22)
+
+    changes = catalog.page_scan_changes(
+        first_scan,
+        second_scan,
+        (root_id,),
+        limit=10,
+    )
+
+    assert old.content_version_id != new.content_version_id
+    assert new.identity_reused
+    assert len(changes) == 1
+    assert changes[0]["change_type"] == "relocation_candidate"
+    assert changes[0]["old_display_path"] == str(old_path)
+    assert changes[0]["new_display_path"] == str(new_path)
+    assert changes[0]["content_changed"] == 0
+    assert changes[0]["identity_proven"] == 0
+    assert changes[0]["relation_evidence"] == "matching_full_sha256"
     catalog.close()
 
 
@@ -1174,6 +1352,59 @@ def test_100k_snapshot_changes_remain_keyset_page_bounded(tmp_path):
     assert {row["old_observation_id"] for row in first_page}.isdisjoint(
         row["old_observation_id"] for row in second_page
     )
+    catalog.close()
+
+
+def test_100k_change_iterator_executes_once_and_fetches_bounded_batches(
+    tmp_path,
+    monkeypatch,
+):
+    catalog, _database_path, root_id, _root_path = create_catalog(tmp_path)
+
+    class FakeCursor:
+        def __init__(self, total):
+            self.remaining = total
+            self.fetch_sizes = []
+            self.maximum_batch = 0
+            self.closed = False
+
+        def fetchmany(self, size):
+            self.fetch_sizes.append(size)
+            batch_size = min(size, self.remaining)
+            self.remaining -= batch_size
+            self.maximum_batch = max(self.maximum_batch, batch_size)
+            return [None] * batch_size
+
+        def close(self):
+            self.closed = True
+
+    cursor = FakeCursor(100_000)
+    executions = []
+
+    def execute_once(*args, **kwargs):
+        executions.append((args, kwargs))
+        return cursor
+
+    monkeypatch.setattr(catalog, "_scan_changes_cursor", execute_once)
+
+    count = sum(
+        1
+        for _row in catalog.iter_scan_changes(
+            1,
+            2,
+            (root_id,),
+            fetch_size=257,
+            max_rows=100_001,
+        )
+    )
+
+    assert count == 100_000
+    assert len(executions) == 1
+    assert executions[0][1]["row_limit"] == 100_001
+    assert cursor.maximum_batch == 257
+    assert set(cursor.fetch_sizes) == {257}
+    assert cursor.remaining == 0
+    assert cursor.closed
     catalog.close()
 
 

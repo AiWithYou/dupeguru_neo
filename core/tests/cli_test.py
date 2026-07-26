@@ -553,7 +553,7 @@ def test_dataset_and_catalog_schemas_are_exposed_directly():
         "dataset-plan": "https://dupeguru.com/schemas/dataset-plan/v1",
         "catalog-result": "urn:dupeguru-neo:schema:catalog-result:1",
         "catalog-group-record": "urn:dupeguru-neo:schema:catalog-group-record:2",
-        "catalog-change-record": "urn:dupeguru-neo:schema:catalog-change-record:1",
+        "catalog-change-record": "urn:dupeguru-neo:schema:catalog-change-record:2",
     }
 
     for name, schema_id in expected.items():

@@ -2248,6 +2248,137 @@ class Catalog:
             (content_version_id, kind, algorithm, algorithm_version, parameters_hash),
         ).fetchone()
 
+    def retire_content_evidence(
+        self,
+        content_version_ids: Sequence[int],
+        *,
+        now: Optional[float] = None,
+    ) -> int:
+        """Retire stale derived evidence and force fresh content generations."""
+
+        content_version_ids = tuple(dict.fromkeys(int(value) for value in content_version_ids))
+        if not content_version_ids or any(value < 1 for value in content_version_ids):
+            raise ValueError("content_version_ids must contain positive identifiers")
+        now = time.time() if now is None else now
+        placeholders = ", ".join("?" for _ in content_version_ids)
+        with self.transaction():
+            impacted_scans = tuple(
+                (row["id"], row["status"])
+                for row in self._connection.execute(
+                    """
+                    SELECT DISTINCT scans.id, scans.status
+                    FROM scans
+                    WHERE scans.status IN ('running', 'complete')
+                        AND (
+                            scans.id IN (
+                                SELECT scan_id
+                                FROM scan_path_observations
+                                WHERE content_version_id IN ({ids})
+                            )
+                            OR scans.id IN (
+                                SELECT scan_id
+                                FROM work_items
+                                WHERE content_version_id IN ({ids})
+                            )
+                        )
+                    """.format(ids=placeholders),
+                    (*content_version_ids, *content_version_ids),
+                )
+            )
+            complete_scan_ids = tuple(scan_id for scan_id, status in impacted_scans if status == "complete")
+            running_scan_ids = tuple(scan_id for scan_id, status in impacted_scans if status == "running")
+            cursor = self._connection.execute(
+                """
+                DELETE FROM artifacts
+                WHERE content_version_id IN ({})
+                """.format(placeholders),
+                content_version_ids,
+            )
+            self._connection.execute(
+                """
+                UPDATE verification_records
+                SET state = 'invalidated', updated_at = ?
+                WHERE first_content_version_id IN ({ids})
+                    OR second_content_version_id IN ({ids})
+                """.format(ids=placeholders),
+                (now, *content_version_ids, *content_version_ids),
+            )
+            self._connection.execute(
+                """
+                UPDATE work_items
+                SET status = 'failed',
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE content_version_id IN ({})
+                    AND status != 'failed'
+                """.format(placeholders),
+                (
+                    "content evidence retired after failed live verification",
+                    now,
+                    *content_version_ids,
+                ),
+            )
+            self._connection.execute(
+                """
+                UPDATE physical_files
+                SET current_content_version_id = NULL
+                WHERE current_content_version_id IN ({})
+                """.format(placeholders),
+                content_version_ids,
+            )
+            if complete_scan_ids:
+                scan_placeholders = ", ".join("?" for _ in complete_scan_ids)
+                self._connection.execute(
+                    """
+                    UPDATE scans
+                    SET status = 'completed_with_errors',
+                        error_count = error_count + 1
+                    WHERE id IN ({}) AND status = 'complete'
+                    """.format(scan_placeholders),
+                    complete_scan_ids,
+                )
+                self._connection.execute(
+                    "DELETE FROM scan_snapshots WHERE scan_id IN ({})".format(scan_placeholders),
+                    complete_scan_ids,
+                )
+                self._connection.execute(
+                    """
+                    UPDATE roots
+                    SET last_complete_scan_id = NULL, updated_at = ?
+                    WHERE last_complete_scan_id IN ({})
+                    """.format(scan_placeholders),
+                    (now, *complete_scan_ids),
+                )
+            if running_scan_ids:
+                scan_placeholders = ", ".join("?" for _ in running_scan_ids)
+                self._connection.execute(
+                    """
+                    UPDATE scan_dirs
+                    SET status = 'failed',
+                        lease_owner = NULL,
+                        lease_until = NULL,
+                        error_count = error_count + 1,
+                        updated_at = ?
+                    WHERE scan_id IN ({})
+                        AND status IN ('pending', 'in_progress')
+                    """.format(scan_placeholders),
+                    (now, *running_scan_ids),
+                )
+                self._connection.execute(
+                    """
+                    UPDATE scans
+                    SET status = 'failed',
+                        phase = 'failed',
+                        finished_at = ?,
+                        error_count = error_count + 1
+                    WHERE id IN ({}) AND status = 'running'
+                    """.format(scan_placeholders),
+                    (now, *running_scan_ids),
+                )
+            return cursor.rowcount
+
     def get_work_item(self, work_item_id: int) -> sqlite3.Row:
         """Return one durable work item without changing its lease."""
 
@@ -3152,7 +3283,7 @@ class Catalog:
                 )
             )
 
-    def page_scan_changes(
+    def _scan_changes_cursor(
         self,
         before_scan_id: int,
         after_scan_id: int,
@@ -3160,23 +3291,27 @@ class Catalog:
         after_root_id: int = 0,
         after_path_key: str = "",
         after_change_type: str = "",
-        limit: int = 100,
-    ) -> List[sqlite3.Row]:
-        """Keyset-page proven changes between two immutable complete snapshots.
+        row_limit: int = MAX_SQLITE_INTEGER,
+    ) -> sqlite3.Cursor:
+        """Execute one bounded change query between complete snapshots.
 
         A same-path content or identity change is ``modified``. A path present
-        in only one snapshot is ``added`` or ``missing``. It becomes ``moved``
-        only when exactly one old and one new unmatched path share the same
-        non-null native identity on the same volume and both observations have
-        ``stable`` identity confidence. Ambiguous hard-link/path-only cases are
-        deliberately emitted as separate ``added`` and ``missing`` changes.
+        in only one snapshot is ``added`` or ``missing``. Two unmatched paths
+        become one ``relocation_candidate`` only when exactly one old and one
+        new path share a stable non-null native identity on the same volume and
+        content continuity is supported by one catalog generation or matching
+        canonical full SHA-256 artifacts. Endpoint identity and content
+        equivalence do not prove that an operating-system rename occurred, so
+        ``moved`` remains reserved for future trusted event-journal evidence.
 
-        Callers continue with the last row's ``sort_root_id``,
-        ``sort_path_key``, and ``change_type`` values.
+        Ambiguous, unverified, hard-link, and path-only cases are deliberately
+        emitted as separate ``added`` and ``missing`` changes. ``row_limit`` is
+        a SQL result cap, not a fetch buffer size.
         """
 
         self._ensure_open()
-        self._validate_page_size(limit)
+        if isinstance(row_limit, bool) or not isinstance(row_limit, int) or not 1 <= row_limit <= MAX_SQLITE_INTEGER:
+            raise ValueError("row_limit must be an integer between 1 and {}".format(MAX_SQLITE_INTEGER))
         root_ids = tuple(dict.fromkeys(root_ids))
         if not root_ids:
             raise ValueError("at least one root is required for scan differences")
@@ -3202,11 +3337,10 @@ class Catalog:
             after_root_id,
             after_path_key,
             after_change_type,
-            limit,
+            row_limit,
         ]
-        return list(
-            self._connection.execute(
-                """
+        return self._connection.execute(
+            """
                 WITH
                 before_rows AS (
                     SELECT
@@ -3305,6 +3439,7 @@ class Catalog:
                             THEN 1 ELSE 0
                         END AS content_changed,
                         0 AS identity_proven,
+                        'none' AS relation_evidence,
                         after_rows.root_id AS sort_root_id,
                         after_rows.path_key AS sort_path_key
                     FROM before_rows
@@ -3319,9 +3454,9 @@ class Catalog:
                         OR before_rows.path_state != after_rows.path_state
                         OR before_rows.content_state != after_rows.content_state
                 ),
-                moved AS (
+                relocation_candidates AS (
                     SELECT
-                        'moved' AS change_type,
+                        'relocation_candidate' AS change_type,
                         old_only.observation_id AS old_observation_id,
                         new_only.observation_id AS new_observation_id,
                         old_only.root_id AS old_root_id,
@@ -3344,12 +3479,14 @@ class Catalog:
                         new_only.identity_confidence AS new_identity_confidence,
                         old_only.native_file_id AS old_native_file_id,
                         new_only.native_file_id AS new_native_file_id,
+                        0 AS content_changed,
+                        0 AS identity_proven,
                         CASE
-                            WHEN old_only.content_version_id !=
+                            WHEN old_only.content_version_id =
                                 new_only.content_version_id
-                            THEN 1 ELSE 0
-                        END AS content_changed,
-                        1 AS identity_proven,
+                            THEN 'same_catalog_generation'
+                            ELSE 'matching_full_sha256'
+                        END AS relation_evidence,
                         new_only.root_id AS sort_root_id,
                         new_only.path_key AS sort_path_key
                     FROM old_only
@@ -3369,6 +3506,41 @@ class Catalog:
                     WHERE old_only.identity_confidence = 'stable'
                         AND new_only.identity_confidence = 'stable'
                         AND old_only.native_file_id IS NOT NULL
+                        AND (
+                            old_only.content_version_id =
+                                new_only.content_version_id
+                            OR EXISTS (
+                                SELECT 1
+                                FROM artifacts AS old_full_hash
+                                JOIN content_versions AS old_hashed_content
+                                    ON old_hashed_content.id =
+                                        old_full_hash.content_version_id
+                                JOIN artifacts AS new_full_hash
+                                    ON new_full_hash.value =
+                                        old_full_hash.value
+                                    AND new_full_hash.kind = 'full_hash'
+                                    AND new_full_hash.algorithm = 'sha256'
+                                    AND new_full_hash.algorithm_version = '1'
+                                    AND new_full_hash.parameters_hash = ''
+                                    AND new_full_hash.verification_level = 'full'
+                                JOIN content_versions AS new_hashed_content
+                                    ON new_hashed_content.id =
+                                        new_full_hash.content_version_id
+                                    AND new_hashed_content.size =
+                                        old_hashed_content.size
+                                WHERE old_full_hash.content_version_id =
+                                        old_only.content_version_id
+                                    AND old_full_hash.kind = 'full_hash'
+                                    AND old_full_hash.algorithm = 'sha256'
+                                    AND old_full_hash.algorithm_version = '1'
+                                    AND old_full_hash.parameters_hash = ''
+                                    AND old_full_hash.verification_level = 'full'
+                                    AND length(old_full_hash.value) = 32
+                                    AND new_full_hash.content_version_id =
+                                        new_only.content_version_id
+                                    AND length(new_full_hash.value) = 32
+                            )
+                        )
                 ),
                 missing AS (
                     SELECT
@@ -3397,13 +3569,14 @@ class Catalog:
                         NULL AS new_native_file_id,
                         0 AS content_changed,
                         0 AS identity_proven,
+                        'none' AS relation_evidence,
                         old_only.root_id AS sort_root_id,
                         old_only.path_key AS sort_path_key
                     FROM old_only
                     WHERE NOT EXISTS (
                         SELECT 1
-                        FROM moved
-                        WHERE moved.old_observation_id =
+                        FROM relocation_candidates
+                        WHERE relocation_candidates.old_observation_id =
                             old_only.observation_id
                     )
                 ),
@@ -3434,20 +3607,21 @@ class Catalog:
                         new_only.native_file_id AS new_native_file_id,
                         0 AS content_changed,
                         0 AS identity_proven,
+                        'none' AS relation_evidence,
                         new_only.root_id AS sort_root_id,
                         new_only.path_key AS sort_path_key
                     FROM new_only
                     WHERE NOT EXISTS (
                         SELECT 1
-                        FROM moved
-                        WHERE moved.new_observation_id =
+                        FROM relocation_candidates
+                        WHERE relocation_candidates.new_observation_id =
                             new_only.observation_id
                     )
                 ),
                 changes AS (
                     SELECT * FROM modified
                     UNION ALL
-                    SELECT * FROM moved
+                    SELECT * FROM relocation_candidates
                     UNION ALL
                     SELECT * FROM missing
                     UNION ALL
@@ -3468,9 +3642,70 @@ class Catalog:
                 ORDER BY sort_root_id, sort_path_key, change_type
                 LIMIT ?
                 """.format(roots=placeholders),
-                parameters,
+            parameters,
+        )
+
+    def page_scan_changes(
+        self,
+        before_scan_id: int,
+        after_scan_id: int,
+        root_ids: Sequence[int],
+        after_root_id: int = 0,
+        after_path_key: str = "",
+        after_change_type: str = "",
+        limit: int = 100,
+    ) -> List[sqlite3.Row]:
+        """Keyset-page catalog changes without materializing later pages."""
+
+        self._validate_page_size(limit)
+        return list(
+            self._scan_changes_cursor(
+                before_scan_id,
+                after_scan_id,
+                root_ids,
+                after_root_id=after_root_id,
+                after_path_key=after_path_key,
+                after_change_type=after_change_type,
+                row_limit=limit,
             )
         )
+
+    def iter_scan_changes(
+        self,
+        before_scan_id: int,
+        after_scan_id: int,
+        root_ids: Sequence[int],
+        *,
+        fetch_size: int = 100,
+        max_rows: Optional[int] = None,
+    ) -> Iterator[sqlite3.Row]:
+        """Execute the complete difference once and fetch bounded row batches."""
+
+        self._validate_page_size(fetch_size)
+        if max_rows is None:
+            row_limit = MAX_SQLITE_INTEGER
+        elif isinstance(max_rows, bool) or not isinstance(max_rows, int) or not 1 <= max_rows <= MAX_SQLITE_INTEGER:
+            raise ValueError("max_rows must be an integer between 1 and {}".format(MAX_SQLITE_INTEGER))
+        else:
+            row_limit = max_rows
+        cursor = self._scan_changes_cursor(
+            before_scan_id,
+            after_scan_id,
+            root_ids,
+            row_limit=row_limit,
+        )
+
+        def fetch_rows() -> Iterator[sqlite3.Row]:
+            try:
+                while True:
+                    rows = cursor.fetchmany(fetch_size)
+                    if not rows:
+                        return
+                    yield from rows
+            finally:
+                cursor.close()
+
+        return fetch_rows()
 
     def page_paths(
         self,

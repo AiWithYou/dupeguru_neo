@@ -45,6 +45,7 @@ from core.scanner import ScanType
 from core.destructive_eligibility import (
     evaluate_batch,
     evaluate_relocation_batch,
+    evaluate_relocation_action,
     evaluate_rename,
 )
 from core.action_plan import ActionPlanError, build_bound_deletion_plan
@@ -137,6 +138,8 @@ JOBID2TITLE = {
     JobType.DELETE: tr("Moving verified duplicates to quarantine"),
     JobType.RESTORE: tr("Restoring quarantined files"),
 }
+
+DIRECT_PROOF_PROGRESS_BYTES = 16 * 1024 * 1024
 
 
 class DupeGuru(Broadcaster):
@@ -752,26 +755,72 @@ class DupeGuru(Broadcaster):
                     j.add_progress()
                 return
 
-            def op(dupe):
-                j.add_progress()
-                eligibility = evaluate_relocation_batch(
-                    self.results,
-                    (dupe,),
-                    self.directories.current_file_pool,
-                )
-                if not eligibility.ok:
-                    reason = eligibility.blocked[0][1].message
-                    raise OSError(errno.ESTALE, reason, str(dupe.path))
-                expected_source_snapshot = dupe.validate_review_scan()
-                self.copy_or_move(
-                    dupe,
-                    copy,
-                    destination,
-                    desttype,
-                    expected_source_snapshot,
-                )
+            completed_actions = 0
+            total_actions = len(marked)
 
-            j.start_job(self.results.mark_count)
+            def op(dupe):
+                nonlocal completed_actions
+                keeper_bytes = 0
+                action_cancelled = False
+                action_succeeded = False
+
+                def keeper_description():
+                    return tr("Verifying keeper: {}/{} organizer actions completed, " "{} bytes read for '{}'").format(
+                        completed_actions,
+                        total_actions,
+                        keeper_bytes,
+                        dupe.name,
+                    )
+
+                def stop_check():
+                    j.check_if_cancelled()
+                    return False
+
+                def progress_callback(byte_count):
+                    nonlocal keeper_bytes
+                    keeper_bytes += byte_count
+                    j.set_progress(completed_actions, keeper_description())
+
+                try:
+                    eligibility = evaluate_relocation_action(
+                        self.results,
+                        dupe,
+                        self.directories.current_file_pool,
+                        stop_check=stop_check,
+                        progress_callback=progress_callback,
+                    )
+                    if not eligibility.allowed:
+                        reason = eligibility.message
+                        raise OSError(errno.ESTALE, reason, str(dupe.path))
+                    expected_source_snapshot = dupe.validate_review_scan()
+                    self.copy_or_move(
+                        dupe,
+                        copy,
+                        destination,
+                        desttype,
+                        expected_source_snapshot,
+                    )
+                    action_succeeded = True
+                except (InterruptedError, job.JobCancelled):
+                    action_cancelled = True
+                    raise
+                finally:
+                    if not action_cancelled:
+                        completed_actions += 1
+                        status = (
+                            tr("Organizer action complete")
+                            if action_succeeded
+                            else tr("Organizer action failed safely")
+                        )
+                        j.add_progress(
+                            desc=tr("{}: {}/{} files").format(
+                                status,
+                                completed_actions,
+                                total_actions,
+                            )
+                        )
+
+            j.start_job(max(1, total_actions))
             self.results.perform_on_marked(op, not copy)
 
         if not self.results.mark_count:
@@ -1321,6 +1370,33 @@ class DupeGuru(Broadcaster):
     def _bind_direct_scan_generations(files, j):
         """Capture one fail-closed organizer baseline for every direct-scan file."""
 
+        file_count = len(files)
+        total_bytes = sum(max(0, int(getattr(file, "size", 0) or 0)) for file in files)
+        processed_bytes = 0
+        pending_progress = 0
+        completed_files = 0
+
+        def description():
+            return tr("Hashing scan-start proofs: {}/{} files, {}/{} bytes").format(
+                completed_files,
+                file_count,
+                processed_bytes,
+                total_bytes,
+            )
+
+        def stop_check():
+            j.check_if_cancelled()
+            return False
+
+        def progress_callback(byte_count):
+            nonlocal pending_progress, processed_bytes
+            processed_bytes += byte_count
+            pending_progress += byte_count
+            if pending_progress >= DIRECT_PROOF_PROGRESS_BYTES:
+                j.add_progress(pending_progress, description())
+                pending_progress = 0
+
+        j.start_job(max(1, total_bytes), description())
         for index, file in enumerate(files):
             if index % 256 == 0:
                 j.check_if_cancelled()
@@ -1331,23 +1407,70 @@ class DupeGuru(Broadcaster):
                         getattr(file, "path", "<unknown>"),
                     )
                 )
-            begin()
+            begin(
+                stop_check=stop_check,
+                progress_callback=progress_callback,
+            )
+            completed_files = index + 1
+            if pending_progress:
+                j.add_progress(pending_progress, description())
+                pending_progress = 0
+            else:
+                j.set_progress(processed_bytes, description())
+        j.set_progress(max(1, total_bytes), description())
 
     @staticmethod
     def _validate_direct_scan_generations(files, j):
-        """Require every direct-scan input to remain on its captured generation."""
+        """Require metadata and bytes to remain on the captured generation."""
 
+        file_count = len(files)
+        total_bytes = sum(max(0, int(getattr(file, "size", 0) or 0)) for file in files)
+        processed_bytes = 0
+        pending_progress = 0
+        completed_files = 0
+
+        def description():
+            return tr("Confirming scan-end proofs: {}/{} files, {}/{} bytes").format(
+                completed_files,
+                file_count,
+                processed_bytes,
+                total_bytes,
+            )
+
+        def stop_check():
+            j.check_if_cancelled()
+            return False
+
+        def progress_callback(byte_count):
+            nonlocal pending_progress, processed_bytes
+            processed_bytes += byte_count
+            pending_progress += byte_count
+            if pending_progress >= DIRECT_PROOF_PROGRESS_BYTES:
+                j.add_progress(pending_progress, description())
+                pending_progress = 0
+
+        j.start_job(max(1, total_bytes), description())
         for index, file in enumerate(files):
             if index % 256 == 0:
                 j.check_if_cancelled()
-            validate = getattr(file, "validate_review_scan", None)
+            validate = getattr(file, "validate_review_scan_content", None)
             if validate is None:
                 raise fs.FileChangedError(
                     "A direct-scan input lost its organizer baseline: {}".format(
                         getattr(file, "path", "<unknown>"),
                     )
                 )
-            validate()
+            validate(
+                stop_check=stop_check,
+                progress_callback=progress_callback,
+            )
+            completed_files = index + 1
+            if pending_progress:
+                j.add_progress(pending_progress, description())
+                pending_progress = 0
+            else:
+                j.set_progress(processed_bytes, description())
+        j.set_progress(max(1, total_bytes), description())
 
     def _record_scan_generation_failure(self, error, file_count, *, after_matching):
         logging.warning("Direct scan did not retain stable file generations: %s", error)
@@ -1459,6 +1582,7 @@ class DupeGuru(Broadcaster):
                         path,
                     )
                 )
+            file.prime_review_content_digest(catalog_group.full_digest)
             self.directories._apply_file_state(file, state)
             files.append(file)
         if len(files) < 2:
@@ -1701,9 +1825,15 @@ class DupeGuru(Broadcaster):
                                 j=j,
                             )
                         logging.info("Scanning %d files" % len(files))
+                        matching_job = j
+                        proof_job = None
                         if not folder_scan:
+                            proof_job = j.start_subjob(
+                                [2, 6, 2],
+                                tr("Preparing scan-start content proofs"),
+                            )
                             try:
-                                self._bind_direct_scan_generations(files, j)
+                                self._bind_direct_scan_generations(files, proof_job)
                             except (OSError, TypeError, ValueError) as error:
                                 self._record_scan_generation_failure(
                                     error,
@@ -1711,10 +1841,18 @@ class DupeGuru(Broadcaster):
                                     after_matching=False,
                                 )
                                 return
-                        groups = scanner.get_dupe_groups(files, self.ignore_list, j)
+                            matching_job = proof_job.start_subjob(
+                                1,
+                                tr("Matching files"),
+                            )
+                        groups = scanner.get_dupe_groups(
+                            files,
+                            self.ignore_list,
+                            matching_job,
+                        )
                         if not folder_scan:
                             try:
-                                self._validate_direct_scan_generations(files, j)
+                                self._validate_direct_scan_generations(files, proof_job)
                             except (OSError, TypeError, ValueError) as error:
                                 self._record_scan_generation_failure(
                                     error,

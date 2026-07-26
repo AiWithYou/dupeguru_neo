@@ -548,6 +548,7 @@ class CatalogWorker:
         verified_groups = []
         comparisons = 0
         for (size, digest), candidates in grouped.items():
+            bucket_content_version_ids = tuple(row["content_version_id"] for row in candidates)
             reference_row = candidates[0]
             reference_context = self.catalog.get_content_context(reference_row["content_version_id"])
             if reference_context is None:
@@ -573,7 +574,7 @@ class CatalogWorker:
                 self._validate_context(candidate_before, candidate_context)
                 candidate_file = fs.File(candidate_path)
                 try:
-                    evidence = reference.file.compare_bytes(candidate_file)
+                    evidence = reference.file.compare_bytes_with_sha256(candidate_file)
                 except fs.FileChangedError as error:
                     raise ContentGenerationChanged("File changed during final byte comparison") from error
                 comparisons += 1
@@ -582,20 +583,30 @@ class CatalogWorker:
                 if reference_before != reference_after or candidate_before != candidate_after:
                     raise ContentGenerationChanged("File changed during final byte comparison")
                 if evidence is None:
-                    self.catalog.record_verification(
+                    self._retire_invalid_exact_bucket(
                         reference.content_version_id,
                         candidate_row["content_version_id"],
-                        "sha256+byte-compare",
-                        "1",
+                        bucket_content_version_ids,
                         digest,
-                        state="invalidated",
-                        byte_compare_at=self.clock(),
-                        now=self.clock(),
                     )
                     raise FullDigestCollision(
                         "SHA-256 bucket for {}-byte files contains unequal bytes: "
                         "'{}' and '{}'".format(
                             size,
+                            reference_path,
+                            candidate_path,
+                        )
+                    )
+                if evidence.sha256_digest != digest:
+                    self._retire_invalid_exact_bucket(
+                        reference.content_version_id,
+                        candidate_row["content_version_id"],
+                        bucket_content_version_ids,
+                        digest,
+                    )
+                    raise ContentGenerationChanged(
+                        "Live bytes no longer match the catalog SHA-256 for "
+                        "'{}' and '{}'".format(
                             reference_path,
                             candidate_path,
                         )
@@ -640,6 +651,38 @@ class CatalogWorker:
             next_after_digest,
             comparisons,
         )
+
+    def _retire_invalid_exact_bucket(
+        self,
+        first_content_version_id,
+        second_content_version_id,
+        bucket_content_version_ids,
+        digest,
+    ):
+        """Atomically retire every artifact which selected an invalid bucket."""
+
+        now = self.clock()
+        try:
+            with self.catalog.transaction():
+                self.catalog.record_verification(
+                    first_content_version_id,
+                    second_content_version_id,
+                    "sha256+byte-compare",
+                    "1",
+                    digest,
+                    state="invalidated",
+                    byte_compare_at=now,
+                    now=now,
+                )
+                self.catalog.retire_content_evidence(
+                    bucket_content_version_ids,
+                    now=now,
+                )
+        except CatalogStateError as repair_error:
+            raise ContentGenerationChanged(
+                "Live bytes no longer support the catalog SHA-256 bucket; "
+                "open the catalog writable and run a repair scan"
+            ) from repair_error
 
 
 __all__ = [

@@ -12,7 +12,7 @@ import pytest
 import core.catalog_service as catalog_service_module
 from core.catalog import Catalog, CatalogStateError
 from core.catalog_service import CatalogService, CatalogServiceError
-from core.catalog_worker import VerifiedExactPage
+from core.catalog_worker import ContentGenerationChanged, VerifiedExactPage
 from core.reserved_paths import RESERVED_INTERNAL_DIRECTORY_NAMES
 
 
@@ -102,10 +102,10 @@ def test_canonical_database_alias_inside_root_is_rejected_before_open(
     realpath = os.path.realpath
     database_key = os.path.normcase(os.path.abspath(str(database)))
 
-    def injected_realpath(path):
+    def injected_realpath(path, *, strict=False):
         if os.path.normcase(os.path.abspath(os.fspath(path))) == database_key:
             return str(first / "catalog.sqlite3")
-        return realpath(path)
+        return realpath(path, strict=strict)
 
     def unexpected_catalog_open(*_args, **_kwargs):
         raise AssertionError("canonical boundary must be checked before SQLite opens")
@@ -376,6 +376,52 @@ def test_verified_projection_is_scoped_to_selected_roots_and_rejects_running_sca
     with pytest.raises(CatalogStateError):
         list(selected.iter_verified_exact_groups())
     selected.close()
+
+
+def test_read_only_projection_reports_explicit_writable_repair_requirement(
+    tmp_path,
+):
+    first, second = create_roots(tmp_path)
+    payload = b"read-only repair proof"
+    (first / "first.bin").write_bytes(payload)
+    (second / "second.bin").write_bytes(payload)
+    database = tmp_path / "catalog.sqlite3"
+    writable = CatalogService(database, (first, second))
+    result = writable.run()
+    root_ids = writable.selected_root_ids()
+    assert result.outcome == "finished"
+    for artifact in writable.catalog._connection.execute(
+        "SELECT id FROM artifacts WHERE kind = 'full_hash' AND algorithm = 'sha256'"
+    ):
+        writable.catalog._connection.execute(
+            "UPDATE artifacts SET value = ? WHERE id = ?",
+            (b"\x7f" * 32, artifact["id"]),
+        )
+    writable.catalog._connection.commit()
+    writable.close()
+
+    read_only_catalog = Catalog.open_read_only(database)
+    read_only = CatalogService(
+        database,
+        (first, second),
+        catalog=read_only_catalog,
+        selected_root_ids=root_ids,
+    )
+    with read_only:
+        with pytest.raises(
+            ContentGenerationChanged,
+            match="open the catalog writable and run a repair scan",
+        ):
+            list(read_only.iter_verified_exact_groups())
+
+    with Catalog.open_read_only(database) as unchanged:
+        assert (
+            unchanged._connection.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE value = ?",
+                (b"\x7f" * 32,),
+            ).fetchone()[0]
+            == 2
+        )
 
 
 def test_intentionally_pruned_subtree_is_recorded_but_scan_remains_complete(tmp_path):

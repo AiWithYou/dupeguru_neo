@@ -20,6 +20,7 @@ from core.catalog import Catalog, CatalogSchemaError
 from core.catalog_cli import (
     CATALOG_BACKUP_SCHEMA,
     CATALOG_CHANGE_RECORD_SCHEMA,
+    CATALOG_CHANGE_RECORD_SCHEMA_VERSION,
     CATALOG_ERROR_SCHEMA,
     CATALOG_GROUP_CHUNK_MAX_MEMBERS,
     CATALOG_GROUP_PAGE_MAX_FILES,
@@ -69,6 +70,45 @@ def _create_roots(tmp_path):
 
 def _catalog_family_bytes(database):
     return {path.name: path.read_bytes() for path in database.parent.glob(database.name + "*") if path.is_file()}
+
+
+def _fake_relation_row(
+    *,
+    change_type="relocation_candidate",
+    relation_evidence="same_catalog_generation",
+    identity_proven=0,
+    content_changed=0,
+    old_content_version_id=41,
+    new_content_version_id=41,
+):
+    row = {
+        "change_type": change_type,
+        "content_changed": content_changed,
+        "identity_proven": identity_proven,
+        "relation_evidence": relation_evidence,
+        "old_native_file_id": b"stable-file-id",
+        "new_native_file_id": b"stable-file-id",
+        "old_path_key": "old.bin",
+        "new_path_key": "new.bin",
+    }
+    for prefix, observation_id, path_id, content_version_id, path in (
+        ("old", 11, 21, old_content_version_id, "old.bin"),
+        ("new", 12, 22, new_content_version_id, "new.bin"),
+    ):
+        row.update(
+            {
+                "{}_observation_id".format(prefix): observation_id,
+                "{}_root_id".format(prefix): 1,
+                "{}_path_id".format(prefix): path_id,
+                "{}_physical_file_id".format(prefix): 31,
+                "{}_content_version_id".format(prefix): content_version_id,
+                "{}_display_path".format(prefix): path,
+                "{}_path_state".format(prefix): "active",
+                "{}_content_state".format(prefix): "stable",
+                "{}_identity_confidence".format(prefix): "stable",
+            }
+        )
+    return row
 
 
 def _reconstruct_group_records(records):
@@ -205,9 +245,10 @@ def test_catalog_schemas_are_versioned_draft_2020_12_and_fail_closed():
     }
     for name, schema in CATALOG_SCHEMAS.items():
         assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-        expected_version = (
-            CATALOG_GROUP_RECORD_SCHEMA_VERSION if name == "catalog-group-record" else CATALOG_SCHEMA_VERSION
-        )
+        expected_version = {
+            "catalog-group-record": CATALOG_GROUP_RECORD_SCHEMA_VERSION,
+            "catalog-change-record": CATALOG_CHANGE_RECORD_SCHEMA_VERSION,
+        }.get(name, CATALOG_SCHEMA_VERSION)
         assert schema["properties"]["schema_version"]["const"] == expected_version
         _assert_all_object_schemas_are_closed(schema)
 
@@ -352,6 +393,79 @@ def test_catalog_scan_cold_warm_rename_and_verified_group_stream(tmp_path):
     assert str(original) not in renamed_paths
 
 
+def test_read_only_groups_requires_repair_and_scan_recovers_in_one_command(
+    tmp_path,
+):
+    first, second = _create_roots(tmp_path)
+    payload = b"catalog CLI repair payload"
+    (first / "first.bin").write_bytes(payload)
+    (second / "second.bin").write_bytes(payload)
+    database = tmp_path / "catalog.sqlite3"
+    cold_code, _, _ = _invoke(["scan", str(database), str(first), str(second)])
+    assert cold_code == CatalogExitCode.OK
+
+    with Catalog(database) as catalog:
+        content_version_ids = tuple(row["content_version_id"] for row in catalog._connection.execute("""
+                SELECT artifacts.content_version_id
+                FROM artifacts
+                WHERE artifacts.kind = 'full_hash'
+                    AND artifacts.algorithm = 'sha256'
+                ORDER BY artifacts.content_version_id
+                """))
+        with catalog.transaction():
+            catalog._connection.execute(
+                """
+                UPDATE artifacts
+                SET value = ?
+                WHERE kind = 'full_hash' AND algorithm = 'sha256'
+                """,
+                (b"\x7f" * 32,),
+            )
+            for content_version_id in content_version_ids:
+                catalog.put_artifact(
+                    content_version_id,
+                    "perceptual_hash",
+                    "test-phash",
+                    "1",
+                    b"stale-derived-artifact",
+                )
+
+    groups_code, group_records, groups_stderr = _invoke(["groups", str(database)])
+
+    assert groups_code == CatalogExitCode.INPUT_ERROR
+    assert len(group_records) == 1
+    assert group_records[0]["schema"] == CATALOG_ERROR_SCHEMA
+    assert "open the catalog writable and run a repair scan" in group_records[0]["issues"][0]["message"]
+    assert "ContentGenerationChanged" in groups_stderr
+    with Catalog.open_read_only(database) as unchanged:
+        assert (
+            unchanged._connection.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE value = ?",
+                (b"stale-derived-artifact",),
+            ).fetchone()[0]
+            == 2
+        )
+
+    repair_code, repair_records, repair_stderr = _invoke(["scan", str(database), str(first), str(second)])
+
+    assert repair_code == CatalogExitCode.OK
+    assert repair_stderr == ""
+    assert repair_records[0]["result"]["changed_content"] == 2
+    assert repair_records[0]["result"]["work_completed"] == 2
+    with Catalog.open_read_only(database) as repaired:
+        assert (
+            repaired._connection.execute(
+                "SELECT COUNT(*) FROM artifacts WHERE value = ?",
+                (b"stale-derived-artifact",),
+            ).fetchone()[0]
+            == 0
+        )
+    final_groups_code, final_group_records, final_groups_stderr = _invoke(["groups", str(database)])
+    assert final_groups_code == CatalogExitCode.OK
+    assert final_groups_stderr == ""
+    assert final_group_records[-1]["summary"]["groups"] == 1
+
+
 def test_catalog_resource_limit_status_resume_and_incomplete_group_gate(tmp_path):
     first, second = _create_roots(tmp_path)
     (first / "one.bin").write_bytes(b"one")
@@ -426,7 +540,7 @@ def test_catalog_resource_limit_status_resume_and_incomplete_group_gate(tmp_path
     assert complete_status_records[0]["status"]["verified_projection_allowed"] is True
 
 
-def test_catalog_changes_streams_proven_added_modified_moved_and_missing(
+def test_catalog_changes_streams_added_modified_relocation_candidate_and_missing(
     tmp_path,
 ):
     root = tmp_path / "library"
@@ -482,16 +596,26 @@ def test_catalog_changes_streams_proven_added_modified_moved_and_missing(
             CATALOG_SCHEMAS["catalog-change-record"],
         )
         assert record["schema"] == CATALOG_CHANGE_RECORD_SCHEMA
+        assert record["schema_version"] == CATALOG_CHANGE_RECORD_SCHEMA_VERSION
         assert record["before_scan_id"] == first_scan_id
         assert record["after_scan_id"] == second_scan_id
         assert record["safety"]["verification"] == "immutable-complete-snapshot-diff"
-        assert record["safety"]["move_classification"] == "stable-native-identity-one-to-one-only"
+        assert record["safety"]["move_classification"] == "trusted-event-journal-only"
+        assert (
+            record["safety"]["relocation_candidate_classification"]
+            == "stable-native-identity-one-to-one-with-content-continuity"
+        )
         assert record["safety"]["allows_automatic_destructive_action"] is False
 
     changes = {
         record["change"]["change_type"]: record["change"] for record in records if record["record_type"] == "change"
     }
-    assert set(changes) == {"added", "modified", "moved", "missing"}
+    assert set(changes) == {
+        "added",
+        "modified",
+        "relocation_candidate",
+        "missing",
+    }
     assert changes["added"]["old"] is None
     assert changes["added"]["new"]["path"] == str(added)
     assert changes["missing"]["old"]["path"] == str(missing)
@@ -499,19 +623,135 @@ def test_catalog_changes_streams_proven_added_modified_moved_and_missing(
     assert changes["modified"]["old"]["path"] == str(modified)
     assert changes["modified"]["new"]["path"] == str(modified)
     assert changes["modified"]["content_changed"] is True
-    assert changes["moved"]["old"]["path"] == str(old_move)
-    assert changes["moved"]["new"]["path"] == str(new_move)
-    assert changes["moved"]["move_identity_proven"] is True
-    assert changes["moved"]["classification"] == "stable_native_identity_1_to_1_move"
+    assert changes["relocation_candidate"]["old"]["path"] == str(old_move)
+    assert changes["relocation_candidate"]["new"]["path"] == str(new_move)
+    assert changes["relocation_candidate"]["content_changed"] is False
+    assert changes["relocation_candidate"]["move_identity_proven"] is False
+    assert (
+        changes["relocation_candidate"]["classification"]
+        == "stable_native_identity_1_to_1_matching_full_sha256_relocation_candidate"
+    )
     assert all(change["allows_automatic_destructive_action"] is False for change in changes.values())
     assert records[-1]["summary"] == {
         "total": 4,
         "added": 1,
         "modified": 1,
-        "moved": 1,
+        "moved": 0,
+        "relocation_candidates": 1,
         "missing": 1,
         "page_size": 1,
     }
+
+
+def test_change_value_distinguishes_generation_and_hash_relocation_evidence():
+    generation = catalog_cli._change_value(
+        _fake_relation_row(),
+        1,
+        2,
+    )
+    hash_match = catalog_cli._change_value(
+        _fake_relation_row(
+            relation_evidence="matching_full_sha256",
+            new_content_version_id=42,
+        ),
+        1,
+        2,
+    )
+
+    assert generation["move_identity_proven"] is False
+    assert generation["classification"] == "stable_native_identity_1_to_1_same_catalog_generation_relocation_candidate"
+    assert hash_match["move_identity_proven"] is False
+    assert hash_match["classification"] == "stable_native_identity_1_to_1_matching_full_sha256_relocation_candidate"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("identity_proven", 1, "move identity proof"),
+        ("content_changed", 1, "content continuity"),
+        ("new_native_file_id", b"different-file-id", "physical identity"),
+        ("relation_evidence", "unknown", "unknown content evidence"),
+    ),
+)
+def test_change_value_rejects_unproven_relocation_candidate(
+    field,
+    value,
+    message,
+):
+    row = _fake_relation_row()
+    row[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        catalog_cli._change_value(row, 1, 2)
+
+
+def test_change_value_reserves_moved_for_trusted_event_journal_evidence():
+    row = _fake_relation_row(
+        change_type="moved",
+        relation_evidence="same_catalog_generation",
+        identity_proven=1,
+    )
+
+    with pytest.raises(ValueError, match="trusted event-journal"):
+        catalog_cli._change_value(row, 1, 2)
+
+
+def test_run_changes_uses_one_bounded_iterator_without_stateless_pages(
+    monkeypatch,
+):
+    calls = []
+
+    class FakeCatalog:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def scan_roots(self, _scan_id):
+            return ({"root_id": 7},)
+
+        def iter_scan_changes(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return iter(())
+
+        def page_scan_changes(self, *_args, **_kwargs):
+            raise AssertionError("full change streams must not repeat stateless page queries")
+
+    monkeypatch.setattr(
+        catalog_cli,
+        "_database_path",
+        lambda _value, *, must_exist: Path("catalog.sqlite3"),
+    )
+    monkeypatch.setattr(
+        catalog_cli.Catalog,
+        "open_read_only",
+        lambda _database: FakeCatalog(),
+    )
+    output = io.StringIO()
+
+    result = catalog_cli._run_changes(
+        SimpleNamespace(
+            database="catalog.sqlite3",
+            before_scan_id=1,
+            after_scan_id=2,
+            page_size=257,
+        ),
+        output,
+    )
+
+    assert result == CatalogExitCode.OK
+    assert len(calls) == 1
+    assert calls[0] == (
+        (1, 2, (7,)),
+        {
+            "fetch_size": 257,
+            "max_rows": CATALOG_MAX_CHANGES + 1,
+        },
+    )
+    records = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert [record["record_type"] for record in records] == ["header", "summary"]
+    assert records[-1]["summary"]["total"] == 0
 
 
 def test_catalog_changes_rejects_incomplete_scan_before_streaming(tmp_path):

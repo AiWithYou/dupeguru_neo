@@ -185,7 +185,12 @@ dupeguru catalog backup catalog.sqlite3 catalog-backup.sqlite3
 
 The two scan IDs for `catalog changes` must name complete immutable snapshots
 with the same root set. Catalog reports are evidence and never execute file
-actions.
+actions. Change records use the `dupeguru.catalog-change-record` schema at
+version 2. Without trusted event-journal evidence, a one-to-one stable native
+identity observed at two paths is reported as a `relocation_candidate`, not a
+proven `moved` event. The candidate classification states whether continuity
+comes from one catalog content generation or matching canonical full SHA-256
+artifacts; neither grants destructive authority.
 
 Catalog exact groups use the reconstructable
 `dupeguru.catalog-group-record-v2` JSONL contract: `header`, then
@@ -203,6 +208,15 @@ the final standard-output copy is the sole case that can leave a validated
 prefix and returns a failed status. Normal process output is copied through
 the binary stream so Windows code pages and newline translation cannot alter
 the validated UTF-8/LF bytes.
+
+`catalog groups` is a read-only live projection. If its byte comparison finds
+that a stored digest bucket no longer describes the current bytes, it returns a
+structured repair-required error and publishes no partial group stream. Run
+`dupeguru catalog scan` again with the same database and roots: the writable
+scan command retires every derived artifact and old work lease for that content
+generation, creates fresh generations, reruns all configured analysis stages,
+and performs one bounded verification retry. A second mismatch still fails
+closed instead of looping.
 
 Inspect the read-only video workflow or prepare an image dataset plan:
 

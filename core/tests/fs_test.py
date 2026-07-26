@@ -6,6 +6,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import hashlib
 import os
 import sqlite3
 import sys
@@ -33,6 +34,34 @@ def test_file_snapshot_requires_an_explicit_generation_token(tmp_path):
 
 def test_hash_algorithm_is_the_required_xxhash_implementation():
     assert fs.HASH_ALGORITHM == "xxh128"
+
+
+def test_review_scan_streams_sha256_and_reuses_its_full_fast_digest(tmp_path):
+    path = tmp_path / "payload.bin"
+    payload = (b"scan-bound payload" * 8192) + b"tail"
+    path.write_bytes(payload)
+    file = fs.File(path)
+
+    snapshot = file.begin_review_scan()
+    expected_fast = fs.hasher(payload).digest()
+
+    assert snapshot.content_digest_algorithm == "sha256"
+    assert snapshot.content_digest == hashlib.sha256(payload).digest()
+    for field in fs.FilesDB.digest_keys:
+        assert file.read_info_strict(field) == expected_fast
+
+
+def test_priming_exact_digest_preserves_the_scan_bound_content_proof(tmp_path):
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"stable payload")
+    file = fs.File(path)
+    review_snapshot = file.begin_review_scan()
+    exact_snapshot = fs._snapshot_path(path)
+
+    file.prime_exact_digest("digest", b"service digest", exact_snapshot)
+
+    assert file.validate_review_scan() is review_snapshot
+    assert file.validate_review_scan_content() is review_snapshot
 
 
 def test_hash_cache_invalidates_other_digests_on_generation_change(tmp_path):

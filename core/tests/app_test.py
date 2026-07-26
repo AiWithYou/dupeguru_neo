@@ -21,6 +21,7 @@ from hscommon.jobprogress.job import Job
 from core.tests.base import TestApp
 from core.tests.results_test import GetTestGroups
 from core import app, engine, export, fs
+from core.file_generation import FileGenerationToken
 import core.ignore as ignore_module
 from core.scan_receipt import ScanReceipt, ScanStatus
 from core.scanner import ScanType
@@ -296,7 +297,7 @@ class TestCaseDupeGuru:
         dgapp.directories.add_path(p)
         [f] = dgapp.directories.get_files()
         with tempfile.TemporaryDirectory() as tmp_dir:
-            snapshot = fs.FileSnapshot.from_path(f.path)
+            snapshot = fs.FileSnapshot.from_path_with_content_digest(f.path)
             dgapp.copy_or_move(f, True, tmp_dir, 0, snapshot)
             eq_(1, len(hscommon.conflict.smart_copy.calls))
             call = hscommon.conflict.smart_copy.calls[0]
@@ -319,7 +320,7 @@ class TestCaseDupeGuru:
             False,
             tmppath.joinpath("dest"),
             0,
-            fs.FileSnapshot.from_path(myfile.path),
+            fs.FileSnapshot.from_path_with_content_digest(myfile.path),
         )
         calls = app.clean_empty_dirs.calls
         eq_(1, len(calls))
@@ -368,7 +369,7 @@ class TestCaseDupeGuru:
             False,
             destination,
             app.DestType.DIRECT,
-            fs.FileSnapshot.from_path(source),
+            fs.FileSnapshot.from_path_with_content_digest(source),
         )
 
         assert (destination / "payload.bin").read_bytes() == b"moved payload"
@@ -394,7 +395,7 @@ class TestCaseDupeGuru:
             False,
             destination,
             app.DestType.DIRECT,
-            fs.FileSnapshot.from_path(source),
+            fs.FileSnapshot.from_path_with_content_digest(source),
         )
 
         assert not source.exists()
@@ -510,11 +511,27 @@ class TestCaseDupeGuru:
         second = root / "same two.bin"
         first.write_bytes(b"before")
         second.write_bytes(b"before")
+        first_before = first.stat()
         dgapp.directories.add_path(root)
         dgapp.options["scan_type"] = ScanType.FILENAME
+        generation = FileGenerationToken("test-fixed-generation", 1)
+        monkeypatch.setattr(
+            fs,
+            "get_file_generation_token",
+            lambda *args, **kwargs: generation,
+        )
+        monkeypatch.setattr(
+            fs,
+            "get_file_generation_token_from_fd",
+            lambda *args, **kwargs: generation,
+        )
 
         def change_during_scan(scanner, files, ignore_list, j):
             first.write_bytes(b"after!")
+            os.utime(
+                first,
+                ns=(first_before.st_atime_ns, first_before.st_mtime_ns),
+            )
             return []
 
         def run_now(jobid, function, args=()):
@@ -534,6 +551,77 @@ class TestCaseDupeGuru:
         assert receipt.status is ScanStatus.FAILED
         assert receipt.issues[0].code == "scan_generation_changed"
         assert not receipt.allows_destructive_actions
+
+    def test_direct_scan_content_proofs_report_phase_file_and_byte_progress(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        first = tmp_path / "first.bin"
+        second = tmp_path / "second.bin"
+        first.write_bytes(b"abc")
+        second.write_bytes(b"defgh")
+        files = [fs.File(first), fs.File(second)]
+        updates = []
+
+        def report(progress, description=""):
+            updates.append((progress, description))
+            return True
+
+        proof_job = Job([1, 1], report)
+        monkeypatch.setattr(app, "DIRECT_PROOF_PROGRESS_BYTES", 1)
+
+        app.DupeGuru._bind_direct_scan_generations(files, proof_job)
+        app.DupeGuru._validate_direct_scan_generations(files, proof_job)
+
+        descriptions = [description for _, description in updates if description]
+        first_file_stream = next(
+            description
+            for description in descriptions
+            if "Hashing scan-start proofs" in description and "3/8 bytes" in description
+        )
+        assert "0/2 files" in first_file_stream
+        assert any(
+            "Hashing scan-start proofs" in description and "2/2 files" in description and "8/8 bytes" in description
+            for description in descriptions
+        )
+        assert any(
+            "Confirming scan-end proofs" in description and "2/2 files" in description and "8/8 bytes" in description
+            for description in descriptions
+        )
+        assert updates[-1][0] == 100
+
+    def test_direct_scan_sequences_proof_matching_and_confirmation_jobs(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "same one.bin").write_bytes(b"payload")
+        (root / "same two.bin").write_bytes(b"payload")
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+        updates = []
+
+        def report(progress, description=""):
+            updates.append((progress, description))
+            return True
+
+        def run_now(jobid, function, args=()):
+            function(Job(1, report), *args)
+
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+
+        dgapp.start_scanning()
+
+        descriptions = [description for _, description in updates if description]
+        assert any("Hashing scan-start proofs" in value for value in descriptions)
+        assert any("Matching files" in value for value in descriptions)
+        assert any("Confirming scan-end proofs" in value for value in descriptions)
+        assert updates[-1][0] == 100
+        assert dgapp.results.scan_receipt.complete
 
     @pytest.mark.parametrize(
         ("device", "inode"),

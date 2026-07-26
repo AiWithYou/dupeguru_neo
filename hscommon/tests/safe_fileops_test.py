@@ -8,6 +8,7 @@ import contextlib
 import errno
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,59 @@ def test_directory_creation_rejects_a_non_directory_component(tmp_path):
         ensure_plain_directory(protected / "child")
 
     assert protected.read_bytes() == b"must remain"
+
+
+def test_absolute_path_switches_to_an_authenticated_root_alias_target(
+    tmp_path,
+    monkeypatch,
+):
+    lexical_root = Path(tmp_path.anchor) / "dupeguru-lexical-root-alias"
+    canonical_root = tmp_path / "canonical-root"
+    lexical_path = lexical_root / "one" / "two"
+    observed = []
+
+    def authenticate(candidate):
+        observed.append(candidate)
+        if candidate == lexical_root:
+            return canonical_root
+        return None
+
+    monkeypatch.setattr(
+        safe_fileops,
+        "_authenticated_darwin_root_alias",
+        authenticate,
+    )
+
+    assert safe_fileops._absolute(lexical_path) == canonical_root / "one" / "two"
+    assert observed == [lexical_root]
+
+
+@pytest.mark.skipif(safe_fileops.sys.platform != "darwin", reason="macOS standard root aliases")
+def test_copy_accepts_authenticated_darwin_var_alias(
+    tmp_path,
+    rename_no_replace,
+):
+    canonical_parent = tmp_path.resolve(strict=True)
+    try:
+        relative = canonical_parent.relative_to(Path("/private/var"))
+    except ValueError:
+        pytest.skip("temporary directory is not below /private/var")
+    lexical_parent = Path("/var").joinpath(relative)
+    lexical_destination = lexical_parent / "alias-created"
+    canonical_destination = canonical_parent / "alias-created"
+    source = canonical_parent / "source.bin"
+    source.write_bytes(b"darwin alias payload")
+
+    result = ensure_plain_directory(lexical_destination)
+    smart_copy(
+        source,
+        lexical_destination / "copied.bin",
+        rename_no_replace=rename_no_replace,
+    )
+
+    assert result == canonical_destination
+    assert canonical_destination.is_dir()
+    assert (canonical_destination / "copied.bin").read_bytes() == b"darwin alias payload"
 
 
 def test_copy_destination_appearing_during_publish_is_not_overwritten(tmp_path, rename_no_replace):
@@ -118,9 +172,20 @@ def test_scan_bound_operation_rejects_source_generation_drift(
     source = tmp_path / "source.bin"
     destination = tmp_path / "destination.bin"
     source.write_bytes(b"reviewed")
-    expected = fs.FileSnapshot.from_path(source)
+    expected = fs.FileSnapshot.from_path_with_content_digest(source)
     if replacement_kind == "in_place":
         source.write_bytes(b"replaced")
+        # Model a filesystem timestamp tick which reports unchanged generation
+        # metadata even though equal-length bytes were rewritten.
+        current = fs.FileSnapshot.from_path(source)
+        expected = replace(
+            expected,
+            device=current.device,
+            file_id=current.file_id,
+            size=current.size,
+            mtime_ns=current.mtime_ns,
+            ctime_ns=current.ctime_ns,
+        )
     else:
         replacement = tmp_path / "replacement.bin"
         replacement.write_bytes(b"replaced")
@@ -138,6 +203,29 @@ def test_scan_bound_operation_rejects_source_generation_drift(
     assert source.read_bytes() == b"replaced"
     assert not destination.exists()
     assert not _staging_entries(tmp_path)
+
+
+@pytest.mark.parametrize("operation", [smart_copy, smart_move])
+def test_scan_bound_regular_operation_requires_a_full_content_proof(
+    tmp_path,
+    rename_no_replace,
+    operation,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"metadata alone is not a proof")
+
+    with pytest.raises(OSError) as caught:
+        operation(
+            source,
+            destination,
+            rename_no_replace=rename_no_replace,
+            expected_source_snapshot=fs.FileSnapshot.from_path(source),
+        )
+
+    assert caught.value.errno == errno.ESTALE
+    assert source.read_bytes() == b"metadata alone is not a proof"
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(
@@ -242,6 +330,63 @@ def test_directory_copy_stays_bound_when_parent_is_swapped_during_staging(
     assert (source / "nested" / "payload.bin").read_bytes() == b"nested bound payload"
     assert not _staging_entries(committed_parent)
     assert not _staging_entries(destination_parent)
+
+
+def test_directory_copy_reads_the_bound_source_or_blocks_its_parent_swap(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source_parent = tmp_path / "source-parent"
+    source = source_parent / "source"
+    relocated_parent = tmp_path / "relocated-reviewed-parent"
+    replacement_parent = tmp_path / "replacement-parent"
+    replacement_after = tmp_path / "replacement-after"
+    destination = tmp_path / "destination"
+    (source / "nested").mkdir(parents=True)
+    (source / "nested" / "payload.bin").write_bytes(b"GOOD")
+    (replacement_parent / "source" / "nested").mkdir(parents=True)
+    (replacement_parent / "source" / "nested" / "payload.bin").write_bytes(b"EVIL")
+    real_copy_tree = safe_fileops._copy_tree
+    attempted = False
+    swapped = False
+
+    def copy_after_source_parent_swap(*args, **kwargs):
+        nonlocal attempted, swapped
+        if not attempted and kwargs.get("source_directory") is not None:
+            attempted = True
+            try:
+                os.rename(source_parent, relocated_parent)
+            except OSError:
+                assert os.name == "nt"
+                return real_copy_tree(*args, **kwargs)
+            swapped = True
+            os.rename(replacement_parent, source_parent)
+            try:
+                return real_copy_tree(*args, **kwargs)
+            finally:
+                os.rename(source_parent, replacement_after)
+                os.rename(relocated_parent, source_parent)
+        return real_copy_tree(*args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_fileops,
+        "_copy_tree",
+        copy_after_source_parent_swap,
+    )
+
+    smart_copy(
+        source,
+        destination,
+        rename_no_replace=rename_no_replace,
+    )
+
+    assert attempted
+    assert swapped is (os.name == "posix")
+    assert (destination / "nested" / "payload.bin").read_bytes() == b"GOOD"
+    assert (source / "nested" / "payload.bin").read_bytes() == b"GOOD"
+    evil_parent = replacement_after if swapped else replacement_parent
+    assert (evil_parent / "source" / "nested" / "payload.bin").read_bytes() == b"EVIL"
 
 
 @pytest.mark.parametrize(
@@ -424,6 +569,45 @@ def test_directory_copy_is_staged_and_published_as_a_complete_tree(tmp_path, ren
     assert (destination / "nested" / "payload.bin").read_bytes() == b"nested payload"
     assert (source / "nested" / "payload.bin").read_bytes() == b"nested payload"
     assert not _staging_entries(tmp_path)
+
+
+def test_bound_directory_proof_detects_descendant_rewrite_with_restored_mtime(
+    tmp_path,
+):
+    source = tmp_path / "source"
+    payload = source / "nested" / "payload.bin"
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(b"AAAA")
+    payload_stat = os.stat(payload, follow_symlinks=False)
+    source_snapshot = safe_fileops._inspect_source(source)
+    parent_identity = safe_fileops._validate_directory(source.parent)
+
+    with atomic_rename.open_bound_directory(
+        source.parent,
+        expected_identity=parent_identity,
+    ) as source_directory:
+        safe_fileops._assert_bound_snapshot(
+            source_directory,
+            source.name,
+            source_snapshot,
+            source,
+        )
+        payload.write_bytes(b"BBBB")
+        os.utime(
+            payload,
+            ns=(payload_stat.st_atime_ns, payload_stat.st_mtime_ns),
+        )
+
+        with pytest.raises(OSError) as caught:
+            safe_fileops._assert_bound_snapshot(
+                source_directory,
+                source.name,
+                source_snapshot,
+                source,
+            )
+
+    assert caught.value.errno == errno.ESTALE
+    assert payload.read_bytes() == b"BBBB"
 
 
 @pytest.mark.parametrize("operation", [smart_copy, smart_move])
@@ -906,6 +1090,7 @@ def test_move_rejects_generation_drift_after_preflight_before_rename(
     source = tmp_path / "source.bin"
     destination = tmp_path / "destination.bin"
     source.write_bytes(b"reviewed")
+    expected = fs.FileSnapshot.from_path_with_content_digest(source)
     rename_called = False
     real_verified_source = safe_fileops._verified_publish_source
 
@@ -936,7 +1121,12 @@ def test_move_rejects_generation_drift_after_preflight_before_rename(
     )
 
     with pytest.raises(OSError) as caught:
-        smart_move(source, destination, rename_no_replace=publish)
+        smart_move(
+            source,
+            destination,
+            rename_no_replace=publish,
+            expected_source_snapshot=expected,
+        )
 
     assert caught.value.errno == errno.ESTALE
     assert not rename_called
@@ -960,9 +1150,21 @@ def test_directory_move_rechecks_recursive_tree_immediately_before_rename(
     source_assertions = 0
     rename_called = False
 
-    def mutate_before_terminal_tree_assert(directory, name, expected, label):
+    def mutate_before_terminal_tree_assert(
+        directory,
+        name,
+        expected,
+        label,
+        **assert_options,
+    ):
         nonlocal source_assertions
-        real_bound_assert(directory, name, expected, label)
+        real_bound_assert(
+            directory,
+            name,
+            expected,
+            label,
+            **assert_options,
+        )
         if label == source:
             source_assertions += 1
             if source_assertions == 3:

@@ -12,13 +12,14 @@
 # and I'm doing it now.
 
 import contextlib
+import hashlib
 import ntpath
 import os
 import posixpath
 import stat
 import sys
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field, replace
 from math import floor
 import logging
 import sqlite3
@@ -37,6 +38,7 @@ from core.file_generation import (
 
 hasher = xxhash.xxh128
 HASH_ALGORITHM = "xxh128"
+REVIEW_CONTENT_DIGEST_ALGORITHM = "sha256"
 
 __all__ = [
     "File",
@@ -77,6 +79,8 @@ class FileSnapshot:
     size: int
     mtime_ns: int
     ctime_ns: bytes
+    content_digest_algorithm: Union[str, None] = dataclass_field(default=None, compare=False)
+    content_digest: Union[bytes, None] = dataclass_field(default=None, compare=False)
 
     @classmethod
     def from_stat(cls, stat_result, generation_token):
@@ -110,6 +114,25 @@ class FileSnapshot:
         )
         return cls.from_stat(stat_result, token)
 
+    @classmethod
+    def from_path_with_content_digest(cls, path, stop_check=None):
+        """Capture metadata plus a stable full-content proof from one handle."""
+
+        return _snapshot_path_with_content_digest(Path(path), stop_check=stop_check)
+
+    def with_content_digest(self, algorithm, digest):
+        """Attach a validated full-content proof without changing SQL metadata."""
+
+        if algorithm != REVIEW_CONTENT_DIGEST_ALGORITHM:
+            raise ValueError("Unsupported review content digest algorithm: {!r}".format(algorithm))
+        if not isinstance(digest, bytes) or len(digest) != hashlib.sha256().digest_size:
+            raise ValueError("Review content digest must be one SHA-256 byte string")
+        return replace(
+            self,
+            content_digest_algorithm=algorithm,
+            content_digest=digest,
+        )
+
     def as_sql_params(self):
         return {
             "device": self.device,
@@ -140,6 +163,18 @@ class FileSnapshot:
             other.ctime_ns,
         )
 
+    def same_reviewed_content(self, other):
+        """Require both stable generation metadata and equal SHA-256 proofs."""
+
+        return (
+            self.same_content_generation(other)
+            and self.content_digest_algorithm == REVIEW_CONTENT_DIGEST_ALGORITHM
+            and other.content_digest_algorithm == REVIEW_CONTENT_DIGEST_ALGORITHM
+            and isinstance(self.content_digest, bytes)
+            and isinstance(other.content_digest, bytes)
+            and self.content_digest == other.content_digest
+        )
+
 
 @dataclass(frozen=True)
 class ByteComparisonEvidence:
@@ -148,6 +183,7 @@ class ByteComparisonEvidence:
     first: FileSnapshot
     second: FileSnapshot
     bytes_compared: int
+    sha256_digest: Union[bytes, None] = None
 
 
 def _snapshot_path(path: Path) -> FileSnapshot:
@@ -163,11 +199,77 @@ def _snapshot_handle(fp, path=None) -> FileSnapshot:
     return FileSnapshot.from_file(fp, path=path)
 
 
+def _snapshot_path_with_content_digest(
+    path: Path,
+    stop_check=None,
+    progress_callback=None,
+) -> FileSnapshot:
+    """Hash one no-follow handle and prove its path/generation remained stable."""
+
+    snapshot, _fast_digest = _snapshot_path_with_review_digests(
+        path,
+        stop_check=stop_check,
+        progress_callback=progress_callback,
+        include_fast_digest=False,
+    )
+    return snapshot
+
+
+def _snapshot_path_with_review_digests(
+    path: Path,
+    stop_check=None,
+    progress_callback=None,
+    *,
+    include_fast_digest,
+):
+    """Capture SHA-256 and optionally xxh128 in one streaming pass."""
+
+    with _open_readonly_no_follow(path) as file_handle:
+        before = _snapshot_handle(file_handle, path)
+        digest = hashlib.sha256()
+        fast_digest = hasher() if include_fast_digest else None
+        bytes_read = 0
+        while True:
+            _raise_if_scan_stopped(stop_check)
+            block = file_handle.read(CHUNK_SIZE)
+            if not block:
+                break
+            digest.update(block)
+            if fast_digest is not None:
+                fast_digest.update(block)
+            bytes_read += len(block)
+            if progress_callback is not None:
+                progress_callback(len(block))
+        after = _snapshot_handle(file_handle, path)
+        _ensure_unchanged(before, after, path)
+        if bytes_read != before.size:
+            raise FileChangedError("File size changed while its review proof was read: {}".format(path))
+    current = _snapshot_path(path)
+    _ensure_unchanged(before, current, path)
+    return (
+        before.with_content_digest(
+            REVIEW_CONTENT_DIGEST_ALGORITHM,
+            digest.digest(),
+        ),
+        fast_digest.digest() if fast_digest is not None else None,
+    )
+
+
 _readonly_file_system = None
 
 
 def _ensure_no_link_components(path):
     absolute = Path(os.path.abspath(os.fspath(path)))
+    parts = absolute.parts[1:] if absolute.anchor else absolute.parts
+    authenticated_alias = None
+    lexical_alias = None
+    if parts:
+        first = Path(absolute.anchor) / parts[0]
+        first_stat = os.lstat(first)
+        authenticated_alias = _authenticated_darwin_root_alias(first, first_stat)
+        if authenticated_alias is not None:
+            lexical_alias = first
+            absolute = authenticated_alias.joinpath(*parts[1:])
     current = Path(absolute.anchor)
     for component in absolute.parts[1:]:
         current = current.joinpath(component)
@@ -176,6 +278,11 @@ def _ensure_no_link_components(path):
         file_attributes = getattr(component_stat, "st_file_attributes", 0)
         if stat.S_ISLNK(component_stat.st_mode) or (reparse_marker and file_attributes & reparse_marker):
             raise OSError(f"Path contains a symbolic link or reparse point: {current}")
+    if authenticated_alias is not None:
+        lexical_stat = os.lstat(lexical_alias)
+        if _authenticated_darwin_root_alias(lexical_alias, lexical_stat) != authenticated_alias:
+            raise OSError("Platform root alias changed while it was being authenticated: {}".format(lexical_alias))
+    return absolute
 
 
 @contextlib.contextmanager
@@ -187,8 +294,7 @@ def _open_readonly_no_follow(path):
     keeps the filesystem model independent during module initialization.
     """
 
-    path = Path(path)
-    _ensure_no_link_components(path)
+    path = _ensure_no_link_components(path)
     before_path = _snapshot_path(path)
     global _readonly_file_system
     if _readonly_file_system is None:
@@ -1196,23 +1302,56 @@ class File:
                 self._strict_digest_snapshots.pop(field, None)
         return snapshot.size
 
-    def begin_review_scan(self):
-        """Bind later organizer actions to the generation entering this scan."""
+    def begin_review_scan(self, stop_check=None, progress_callback=None):
+        """Bind later organizer actions to metadata and bytes entering this scan."""
 
-        snapshot = _snapshot_path(self.path)
+        snapshot, fast_digest = _snapshot_path_with_review_digests(
+            self.path,
+            stop_check=stop_check,
+            progress_callback=progress_callback,
+            include_fast_digest=True,
+        )
         self._review_scan_snapshot = snapshot
         self.size = snapshot.size
         self.mtime = snapshot.mtime_ns / 1_000_000_000
+        if fast_digest is None:
+            raise FileChangedError("The scan did not capture a fast content digest for: {}".format(self.path))
+        for digest_field in FilesDB.digest_keys:
+            setattr(self, digest_field, fast_digest)
+            self._strict_digest_snapshots[digest_field] = snapshot
         return snapshot
 
     def validate_review_scan(self):
-        """Fail unless this path still names the generation reviewed by the scan."""
+        """Metadata-check and return the scan-bound full-content proof.
+
+        The organizer executor consumes the returned SHA-256 proof while it
+        copies or holds the source.  This method intentionally does not reread
+        the full file on every eligibility/UI check.
+        """
 
         if self._review_scan_snapshot is None:
             raise FileChangedError("The scan did not capture an organizer baseline for: {}".format(self.path))
+        if (
+            self._review_scan_snapshot.content_digest_algorithm != REVIEW_CONTENT_DIGEST_ALGORITHM
+            or self._review_scan_snapshot.content_digest is None
+        ):
+            raise FileChangedError("The scan did not capture a content proof for: {}".format(self.path))
         current = _snapshot_path(self.path)
         _ensure_unchanged(self._review_scan_snapshot, current, self.path)
         return self._review_scan_snapshot
+
+    def validate_review_scan_content(self, stop_check=None, progress_callback=None):
+        """Reread bytes once and reject same-tick, same-size scan mutations."""
+
+        baseline = self.validate_review_scan()
+        current = _snapshot_path_with_content_digest(
+            self.path,
+            stop_check=stop_check,
+            progress_callback=progress_callback,
+        )
+        if not baseline.same_reviewed_content(current):
+            raise FileChangedError("File content changed while it was being reviewed: {}".format(self.path))
+        return baseline
 
     def validate_exact_scan(self):
         """Fail if the path no longer names the generation this scan began on."""
@@ -1233,9 +1372,25 @@ class File:
         current = _snapshot_path(self.path)
         _ensure_unchanged(snapshot, current, self.path)
         self._exact_scan_snapshot = snapshot
-        self._review_scan_snapshot = snapshot
+        if self._review_scan_snapshot is None:
+            self._review_scan_snapshot = snapshot
+        else:
+            _ensure_unchanged(self._review_scan_snapshot, snapshot, self.path)
         setattr(self, field, digest)
         self._strict_digest_snapshots[field] = snapshot
+
+    def prime_review_content_digest(self, digest, algorithm=REVIEW_CONTENT_DIGEST_ALGORITHM):
+        """Bind trusted service evidence to the current organizer generation."""
+
+        if self._review_scan_snapshot is None:
+            raise FileChangedError("No organizer generation exists for: {}".format(self.path))
+        current = _snapshot_path(self.path)
+        _ensure_unchanged(self._review_scan_snapshot, current, self.path)
+        self._review_scan_snapshot = self._review_scan_snapshot.with_content_digest(
+            algorithm,
+            digest,
+        )
+        return self._review_scan_snapshot
 
     def _read_info(self, field, strict=False):
         # print(f"_read_info({field}) for {self}")
@@ -1307,7 +1462,16 @@ class File:
     def compare_bytes(self, other):
         return self.compare_bytes_interruptible(other, None)
 
-    def compare_bytes_interruptible(self, other, stop_check):
+    def compare_bytes_with_sha256(self, other):
+        """Compare bytes and return their SHA-256 in the same streaming pass."""
+
+        return self.compare_bytes_interruptible(
+            other,
+            None,
+            compute_sha256=True,
+        )
+
+    def compare_bytes_interruptible(self, other, stop_check, *, compute_sha256=False):
         """Compare two files through stable open handles.
 
         Returns evidence for equal files, ``None`` for unequal files, and raises
@@ -1320,6 +1484,7 @@ class File:
                 return None
             bytes_compared = 0
             equal = True
+            sha256 = hashlib.sha256() if compute_sha256 else None
             while True:
                 _raise_if_scan_stopped(stop_check)
                 first_data = first_fp.read(CHUNK_SIZE)
@@ -1329,6 +1494,8 @@ class File:
                     break
                 if not first_data:
                     break
+                if sha256 is not None:
+                    sha256.update(first_data)
                 bytes_compared += len(first_data)
             first_after = _snapshot_handle(first_fp, self.path)
             second_after = _snapshot_handle(second_fp, other.path)
@@ -1338,7 +1505,12 @@ class File:
                 return None
             if bytes_compared != first_before.size:
                 raise FileChangedError("Unexpected end of file during byte comparison")
-            return ByteComparisonEvidence(first_before, second_before, bytes_compared)
+            return ByteComparisonEvidence(
+                first_before,
+                second_before,
+                bytes_compared,
+                sha256.digest() if sha256 is not None else None,
+            )
 
     def rename(self, newname):
         if (

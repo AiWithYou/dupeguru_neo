@@ -148,7 +148,10 @@ class ReproducibleBuildExt(build_ext):
 
     def _configure_darwin(self):
         for extension in self.extensions:
-            extension.extra_link_args = _append_unique(extension.extra_link_args, ("-Wl,-no_uuid",))
+            extension.extra_link_args = _append_unique(
+                extension.extra_link_args,
+                ("-Wl,-reproducible",),
+            )
 
     def _supported_compile_args(self, candidates):
         supported = []

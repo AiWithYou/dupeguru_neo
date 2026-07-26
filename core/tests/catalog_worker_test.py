@@ -13,9 +13,14 @@ from pathlib import Path
 import pytest
 
 from core import fs
-from core.catalog import MAX_WORK_ITEM_PAYLOAD_BYTES, Catalog
+from core.catalog import MAX_WORK_ITEM_PAYLOAD_BYTES, Catalog, CatalogStateError
 from core.catalog_indexer import CatalogIndexer, IndexOutcome
-from core.catalog_worker import CatalogWorker, FullDigestCollision, WorkerOutcome
+from core.catalog_worker import (
+    CatalogWorker,
+    ContentGenerationChanged,
+    FullDigestCollision,
+    WorkerOutcome,
+)
 from core.file_generation import (
     FileGenerationError,
     FileGenerationToken,
@@ -411,9 +416,10 @@ def test_exact_projection_counts_and_sql_caps_never_split_an_oversized_group(
 
 
 def test_full_digest_collision_rejects_the_entire_projection_bucket(tmp_path):
+    duplicate = b"bbb"
     catalog, indexer, scan, _paths = create_catalog_scan(
         tmp_path,
-        [b"aaa", b"bbb", b"bbb"],
+        [b"aaa", duplicate, duplicate],
     )
     worker = CatalogWorker(catalog, owner="worker")
     assert worker.run_batch(scan_id=scan.scan_id, limit=10).completed == 3
@@ -426,6 +432,13 @@ def test_full_digest_collision_rejects_the_entire_projection_bucket(tmp_path):
             b"forced-sha256-collision",
             verification_level="full",
         )
+        catalog.put_artifact(
+            work["content_version_id"],
+            "thumbnail",
+            "test-thumbnail",
+            "1",
+            b"stale-derived-artifact",
+        )
     assert indexer.finalize_scan(scan.scan_id).outcome == IndexOutcome.FINISHED
 
     with pytest.raises(FullDigestCollision):
@@ -436,6 +449,187 @@ def test_full_digest_collision_rejects_the_entire_projection_bucket(tmp_path):
 
     states = [row["state"] for row in catalog._connection.execute("SELECT state FROM verification_records ORDER BY id")]
     assert states == ["invalidated"]
+
+    for work in catalog.page_work_items(scan_id=scan.scan_id):
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "full_hash",
+                "sha256",
+                "1",
+            )
+            is None
+        )
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "thumbnail",
+                "test-thumbnail",
+                "1",
+            )
+            is None
+        )
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "full_hash",
+                fs.HASH_ALGORITHM,
+                "1",
+            )
+            is None
+        )
+    with pytest.raises(CatalogStateError, match="no current fully complete scan"):
+        catalog.require_roots_projectable((scan.root_id,))
+
+    repair_scan = indexer.run()
+    assert repair_scan.work_enqueued == 3
+    assert worker.run_batch(scan_id=repair_scan.scan_id, limit=10).completed == 3
+    assert indexer.finalize_scan(repair_scan.scan_id).outcome == IndexOutcome.FINISHED
+    repaired = worker.page_verified_exact_groups(
+        limit=10,
+        root_ids=(repair_scan.root_id,),
+    )
+    assert len(repaired.groups) == 1
+    assert repaired.groups[0].full_digest == hashlib.sha256(duplicate).digest()
+    catalog.close()
+
+
+def test_exact_projection_rejects_persisted_sha_that_does_not_match_live_equal_bytes(
+    tmp_path,
+):
+    duplicate = b"currently equal payload"
+    catalog, indexer, scan, _paths = create_catalog_scan(
+        tmp_path,
+        [duplicate, duplicate],
+    )
+    worker = CatalogWorker(catalog, owner="worker")
+    assert worker.run_batch(scan_id=scan.scan_id, limit=10).completed == 2
+    stale_digest = b"\x7f" * hashlib.sha256().digest_size
+    assert stale_digest != hashlib.sha256(duplicate).digest()
+    for work in catalog.page_work_items(scan_id=scan.scan_id):
+        catalog.put_artifact(
+            work["content_version_id"],
+            "full_hash",
+            "sha256",
+            "1",
+            stale_digest,
+            verification_level="full",
+        )
+        catalog.put_artifact(
+            work["content_version_id"],
+            "perceptual_hash",
+            "test-phash",
+            "1",
+            b"stale-derived-artifact",
+        )
+    assert indexer.finalize_scan(scan.scan_id).outcome == IndexOutcome.FINISHED
+
+    with pytest.raises(ContentGenerationChanged, match="no longer match"):
+        worker.page_verified_exact_groups(
+            limit=10,
+            root_ids=(scan.root_id,),
+        )
+
+    states = [row["state"] for row in catalog._connection.execute("SELECT state FROM verification_records ORDER BY id")]
+    assert states == ["invalidated"]
+
+    for work in catalog.page_work_items(scan_id=scan.scan_id):
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "full_hash",
+                "sha256",
+                "1",
+            )
+            is None
+        )
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "perceptual_hash",
+                "test-phash",
+                "1",
+            )
+            is None
+        )
+        assert (
+            catalog.get_artifact(
+                work["content_version_id"],
+                "full_hash",
+                fs.HASH_ALGORITHM,
+                "1",
+            )
+            is None
+        )
+    with pytest.raises(CatalogStateError, match="no current fully complete scan"):
+        catalog.require_roots_projectable((scan.root_id,))
+
+    repair_scan = indexer.run()
+    assert repair_scan.work_enqueued == 2
+    assert worker.run_batch(scan_id=repair_scan.scan_id, limit=10).completed == 2
+    assert indexer.finalize_scan(repair_scan.scan_id).outcome == IndexOutcome.FINISHED
+    repaired = worker.page_verified_exact_groups(
+        limit=10,
+        root_ids=(repair_scan.root_id,),
+    )
+    assert len(repaired.groups) == 1
+    assert repaired.groups[0].full_digest == hashlib.sha256(duplicate).digest()
+    catalog.close()
+
+
+def test_retired_content_work_cannot_resume_or_recreate_artifacts(tmp_path):
+    catalog, indexer, scan, paths = create_catalog_scan(
+        tmp_path,
+        [b"retired payload"],
+    )
+    worker = CatalogWorker(catalog, owner="worker")
+    assert worker.run_batch(scan_id=scan.scan_id).completed == 1
+    assert indexer.finalize_scan(scan.scan_id).outcome == IndexOutcome.FINISHED
+    old_work = catalog.page_work_items(scan_id=scan.scan_id)[0]
+    content_version_id = old_work["content_version_id"]
+
+    interrupted_scan_id = catalog.start_scan((scan.root_id,))
+    interrupted_work_id = catalog.enqueue_work_item(
+        interrupted_scan_id,
+        content_version_id,
+        "exact_hash",
+        payload={"path": str(paths[0])},
+    )
+    claimed = catalog.claim_work_items(
+        "crashed-worker",
+        scan_id=interrupted_scan_id,
+        lease_seconds=0,
+    )
+    assert [row["id"] for row in claimed] == [interrupted_work_id]
+
+    catalog.retire_content_evidence((content_version_id,), now=2000)
+
+    retired = catalog.get_work_item(interrupted_work_id)
+    assert retired["status"] == "failed"
+    assert retired["lease_owner"] is None
+    assert retired["lease_until"] is None
+    assert "content evidence retired" in retired["last_error"]
+    assert catalog.get_scan(interrupted_scan_id)["status"] == "failed"
+    assert catalog.resume_expired_leases(now=3000)["work_items"] == 0
+    assert catalog.claim_work_items("replacement-worker", now=3000) == []
+
+    with pytest.raises(
+        (CatalogStateError, ContentGenerationChanged),
+        match="not in progress|no longer current",
+    ):
+        CatalogWorker(catalog, owner="crashed-worker")._process_claimed(
+            claimed[0],
+            cancel_check=None,
+        )
+    assert (
+        catalog.get_artifact(
+            content_version_id,
+            "full_hash",
+            "sha256",
+            "1",
+        )
+        is None
+    )
     catalog.close()
 
 

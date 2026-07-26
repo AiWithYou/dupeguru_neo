@@ -50,6 +50,18 @@ The CycloneDX SBOM is the validated union of the Linux, Windows, and macOS
 snapshots, so Windows-only `pywin32` remains visible when metadata is assembled
 on Linux.
 
+For macOS native extensions, the build passes `-reproducible` to Apple's
+linker, which zeros build-time object modification values in the `N_OSO` debug
+map. It deliberately does not pass `-no_uuid`. Apple documents that the
+linker's default `LC_UUID` is hash-based to support reproducible builds and
+that removing the build UUID is a bad idea in
+[TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems).
+This keeps each Mach-O image loadable and identifiable without introducing a
+random UUID. The rebuild gate still compares the complete wheel byte for byte
+and never excludes or normalizes a member after the build. Its UUID gate allows
+reuse only for a byte-identical Mach-O copy with the same architecture and
+complete member SHA-256; reuse by a different payload or architecture fails.
+
 The tagged source archive is generated from Git objects rather than the mutable
 working tree. Its paths, executable modes, symlink targets, sizes, and contents
 are revalidated against the tagged tree before publication. The ordinary sdist
@@ -90,6 +102,28 @@ testing. `scripts/source_companion.py` remains an experimental local research
 tool for the Python-distribution-level source set. Its local proof is not
 signed by the release workflow, is not an official release asset, and must not
 be described as complete corresponding source for a frozen executable.
+
+Portable verification is fail-closed before accepting archive contents. The
+input archive is limited to 512 MiB, 100,000 members, 4,096 UTF-8 bytes per
+member name, 256 MiB per regular member, 1 GiB total declared uncompressed
+payload, and a 200:1 per-member and whole-archive compression ratio. ZIP central
+directories are limited to 16 MiB before `ZipInfo` objects are materialized,
+and the complete decompressed TAR stream, including PAX metadata and padding,
+is limited to 2 GiB. Individual PAX and GNU long-name metadata records are
+limited to 16 MiB, and physical TAR metadata records count toward the same
+100,000-member ceiling. These limits leave substantial headroom over the
+locally smoke-tested PyInstaller bundles while bounding malformed archives and
+decompression bombs. Every logical member is included in the count, including
+zero-size directories and links.
+
+Member names are also checked against the extraction semantics of the named
+target platform. Windows archives reject case-insensitive collisions, trailing
+dots or spaces, device names, alternate-data-stream syntax, control characters,
+and other Win32-forbidden characters. macOS archives reject collisions after
+Unicode canonical decomposition and case folding. Linux archives retain
+case-sensitive POSIX names. All targets reject exact duplicates, unsafe POSIX
+paths, and file-versus-directory topology conflicts; ZIP special-file entries
+and escaping TAR links fail verification.
 
 Publishing a portable in the future requires all of the following:
 

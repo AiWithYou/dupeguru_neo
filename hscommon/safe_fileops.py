@@ -21,15 +21,20 @@ files are rejected rather than followed or silently copied.
 POSIX descriptor-relative rename and unlink syscalls do not offer an identity-conditional source
 operand. The implementation binds parent directories and rechecks identity immediately before
 those calls, but a hostile same-user process which can mutate the private staging directory retains
-a final name-race window. Such an attacker is outside this module's POSIX safety claim.
+a final name-race window. Likewise, a POSIX regular-file move hashes its live source descriptor
+immediately before rename, but cannot revoke writes through another process's already-open
+descriptor. Such active same-user races are outside this module's POSIX safety claim.
 """
 
 from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
+import hmac
 import os
 import stat
+import sys
 import uuid
 from dataclasses import dataclass
 from itertools import chain
@@ -55,6 +60,12 @@ MAX_TREE_DEPTH = 128
 MAX_TREE_ENTRIES = 100_000
 STAGING_PREFIX = ".dupeguru-copy-"
 STAGING_SUFFIX = ".tmp"
+_DARWIN_STANDARD_ROOT_ALIASES = {
+    "etc": Path("/private/etc"),
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
+_POSIX_DIRECTORY_TREE_TOKEN_PREFIX = b"dupeguru-posix-directory-tree-v1\0"
 
 RenameNoReplace = Callable[..., RenameCommit]
 
@@ -91,6 +102,14 @@ class _Snapshot:
 
 
 @dataclass(frozen=True)
+class _PublishSourceLease:
+    """Live proof handle plus the optional Windows rename capability."""
+
+    descriptor: int | None
+    preopened_source: PreopenedRenameSource | None
+
+
+@dataclass(frozen=True)
 class _TrackedEntry:
     """Minimum immutable identity needed for conservative staging cleanup."""
 
@@ -115,6 +134,11 @@ def _mtime_ns(value: os.stat_result) -> int:
     return int(result if result is not None else value.st_mtime * 1_000_000_000)
 
 
+def _ctime_ns(value: os.stat_result) -> int:
+    result = getattr(value, "st_ctime_ns", None)
+    return int(result if result is not None else value.st_ctime * 1_000_000_000)
+
+
 def _stat_identity(value: os.stat_result, path: Path) -> Tuple[int, int]:
     device = int(value.st_dev)
     inode = int(value.st_ino)
@@ -134,6 +158,12 @@ def _snapshot(
     tree_generation = stat.S_ISDIR(value.st_mode) and recursive_directory
     if stat.S_ISDIR(value.st_mode) and not recursive_directory:
         generation_token = b"dupeguru-safe-fileops-shallow-directory-v1"
+    elif tree_generation and os.name == "posix":
+        generation_token = _posix_directory_tree_generation(
+            path,
+            value,
+            handle=handle,
+        )
     elif handle is None:
         generation = get_entry_generation_token(path, stat_result=value)
         generation_token = generation.encoded
@@ -166,11 +196,80 @@ def _is_link_or_reparse(value: os.stat_result) -> bool:
     return stat.S_ISLNK(value.st_mode) or _is_reparse_point(value)
 
 
+def _darwin_alias_signature(value: os.stat_result) -> Tuple[int, ...]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_size),
+        _mtime_ns(value),
+        _ctime_ns(value),
+        int(getattr(value, "st_uid", -1)),
+        int(getattr(value, "st_gid", -1)),
+    )
+
+
+def _authenticated_darwin_root_alias(alias: Path) -> Path | None:
+    """Authenticate one fixed macOS root alias before using its physical target."""
+
+    if sys.platform != "darwin" or alias.parent != Path(alias.anchor):
+        return None
+    expected = _DARWIN_STANDARD_ROOT_ALIASES.get(alias.name)
+    if expected is None:
+        return None
+    try:
+        alias_before = os.lstat(alias)
+        root_before = os.lstat(alias.parent)
+        target_text = os.readlink(alias)
+        target = Path(os.path.abspath(os.path.join(os.fspath(alias.parent), target_text)))
+        target_before = os.lstat(expected)
+        followed_before = os.stat(alias)
+        resolved = Path(os.path.realpath(os.fspath(alias)))
+        alias_after = os.lstat(alias)
+        root_after = os.lstat(alias.parent)
+        target_after = os.lstat(expected)
+        followed_after = os.stat(alias)
+        target_text_after = os.readlink(alias)
+    except OSError:
+        return None
+    if (
+        target != expected
+        or resolved != expected
+        or target_text_after != target_text
+        or not stat.S_ISLNK(alias_before.st_mode)
+        or int(getattr(alias_before, "st_uid", -1)) != 0
+        or _darwin_alias_signature(alias_before) != _darwin_alias_signature(alias_after)
+        or int(getattr(root_before, "st_uid", -1)) != 0
+        or not stat.S_ISDIR(root_before.st_mode)
+        or stat.S_IMODE(root_before.st_mode) & 0o022
+        or _darwin_alias_signature(root_before) != _darwin_alias_signature(root_after)
+        or int(getattr(target_before, "st_uid", -1)) != 0
+        or not stat.S_ISDIR(target_before.st_mode)
+        or _is_link_or_reparse(target_before)
+        or _darwin_alias_signature(target_before) != _darwin_alias_signature(target_after)
+        or _stat_identity(target_before, expected) != _stat_identity(followed_before, alias)
+        or _stat_identity(target_after, expected) != _stat_identity(followed_after, alias)
+    ):
+        return None
+    return expected
+
+
+def _canonicalize_authenticated_root_alias(path: Path) -> Path:
+    parts = path.parts[1:] if path.anchor else path.parts
+    if not parts:
+        return path
+    lexical_root_entry = Path(path.anchor).joinpath(parts[0])
+    authenticated = _authenticated_darwin_root_alias(lexical_root_entry)
+    if authenticated is None:
+        return path
+    return authenticated.joinpath(*parts[1:])
+
+
 def _absolute(path: Path) -> Path:
     result = Path(os.path.abspath(os.fspath(path)))
     if os.name == "nt" and result.drive.startswith("\\\\"):
         raise OSError(errno.ENOTSUP, "Network paths do not provide the required local atomicity", str(result))
-    return result
+    return _canonicalize_authenticated_root_alias(result)
 
 
 def _existing_components(path: Path) -> Iterator[Path]:
@@ -213,6 +312,212 @@ def _ensure_plain_directory_by_path(path: Path) -> None:
 
 def _posix_directory_flags() -> int:
     return os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+
+
+def _posix_entry_flags(value: os.stat_result) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise OSError(errno.ENOTSUP, "No-follow POSIX entry opens are unavailable")
+    flags |= no_follow
+    if stat.S_ISDIR(value.st_mode):
+        flags |= getattr(os, "O_DIRECTORY", 0)
+    return flags
+
+
+def _posix_stat_signature(value: os.stat_result, path: Path) -> Tuple[int, ...]:
+    return (
+        *_stat_identity(value, path),
+        int(value.st_mode),
+        int(value.st_size),
+        _mtime_ns(value),
+        _ctime_ns(value),
+        int(value.st_nlink),
+    )
+
+
+def _tree_digest(fields: Iterable[bytes]) -> bytes:
+    digest = hashlib.sha256()
+    for field in fields:
+        digest.update(len(field).to_bytes(8, "big"))
+        digest.update(field)
+    return digest.digest()
+
+
+def _posix_regular_content_digest(handle: int) -> bytes:
+    digest = hashlib.sha256()
+    os.lseek(handle, 0, os.SEEK_SET)
+    while True:
+        data = os.read(handle, COPY_CHUNK_SIZE)
+        if not data:
+            return digest.digest()
+        digest.update(data)
+
+
+def _posix_tree_entry_digest(
+    parent_handle: int,
+    name: str,
+    parent_path: Path,
+    budget: _TreeBudget,
+    depth: int,
+) -> Tuple[bytes, bytes]:
+    child_path = parent_path.joinpath(name)
+    name_bytes = os.fsencode(name)
+    budget.claim(child_path, depth)
+    before = os.stat(name, dir_fd=parent_handle, follow_symlinks=False)
+    if _is_link_or_reparse(before):
+        raise OSError(errno.ELOOP, "Directory operations reject links", str(child_path))
+    if not (stat.S_ISREG(before.st_mode) or stat.S_ISDIR(before.st_mode)):
+        raise OSError(
+            errno.ENOTSUP,
+            "Directory operations only support regular files and directories",
+            str(child_path),
+        )
+    if stat.S_ISREG(before.st_mode) and int(before.st_nlink) != 1:
+        raise OSError(
+            errno.EMLINK,
+            "Directory operations reject multiply-linked regular files",
+            str(child_path),
+        )
+
+    handle = os.open(
+        name,
+        _posix_entry_flags(before),
+        dir_fd=parent_handle,
+    )
+    try:
+        opened_before = os.fstat(handle)
+        signature = _posix_stat_signature(before, child_path)
+        if _posix_stat_signature(opened_before, child_path) != signature:
+            raise OSError(
+                errno.ESTALE,
+                "A directory entry changed while its descriptor was opened",
+                str(child_path),
+            )
+        if stat.S_ISDIR(before.st_mode):
+            kind = b"directory"
+            descendants = _posix_directory_digest(
+                handle,
+                child_path,
+                budget,
+                depth,
+            )
+        else:
+            kind = b"regular-file"
+            # POSIX ctime can have filesystem- or scheduler-level granularity
+            # coarser than two adjacent writes. Hash the bound file contents so
+            # a same-size rewrite with restored mtime cannot reuse a tree token.
+            descendants = _posix_regular_content_digest(handle)
+        opened_after = os.fstat(handle)
+        path_after = os.stat(
+            name,
+            dir_fd=parent_handle,
+            follow_symlinks=False,
+        )
+        if (
+            _posix_stat_signature(opened_after, child_path) != signature
+            or _posix_stat_signature(path_after, child_path) != signature
+            or _is_link_or_reparse(path_after)
+        ):
+            raise OSError(
+                errno.ESTALE,
+                "A directory entry changed during recursive verification",
+                str(child_path),
+            )
+    finally:
+        os.close(handle)
+
+    metadata = tuple(str(field).encode("ascii") for field in signature)
+    return (
+        name_bytes,
+        _tree_digest(
+            (
+                b"dupeguru-posix-directory-tree-entry-v1",
+                name_bytes,
+                kind,
+                *metadata,
+                descendants,
+            )
+        ),
+    )
+
+
+def _posix_directory_digest(
+    directory_handle: int,
+    path: Path,
+    budget: _TreeBudget,
+    depth: int,
+) -> bytes:
+    before = os.fstat(directory_handle)
+    if not stat.S_ISDIR(before.st_mode) or _is_link_or_reparse(before):
+        raise OSError(errno.ENOTDIR, "A recursive proof root is not a plain directory", str(path))
+    signature = _posix_stat_signature(before, path)
+    records = []
+    with os.scandir(directory_handle) as entries:
+        for entry in entries:
+            records.append(
+                _posix_tree_entry_digest(
+                    directory_handle,
+                    entry.name,
+                    path,
+                    budget,
+                    depth + 1,
+                )
+            )
+    after = os.fstat(directory_handle)
+    if _posix_stat_signature(after, path) != signature:
+        raise OSError(
+            errno.ESTALE,
+            "A directory changed during recursive verification",
+            str(path),
+        )
+    metadata = tuple(str(field).encode("ascii") for field in signature)
+    children = tuple(record for _name, record in sorted(records, key=lambda item: item[0]))
+    return _tree_digest(
+        (
+            b"dupeguru-posix-directory-tree-node-v1",
+            *metadata,
+            *children,
+        )
+    )
+
+
+def _posix_directory_tree_generation(
+    path: Path,
+    expected_stat: os.stat_result,
+    *,
+    handle: int = None,
+) -> bytes:
+    if os.stat not in os.supports_dir_fd or os.stat not in os.supports_follow_symlinks:
+        raise OSError(
+            errno.ENOTSUP,
+            "Descriptor-relative no-follow directory verification is unavailable",
+            str(path),
+        )
+    owns_handle = handle is None
+    if handle is None:
+        handle = os.open(path, _posix_directory_flags())
+    try:
+        expected_signature = _posix_stat_signature(expected_stat, path)
+        if _posix_stat_signature(os.fstat(handle), path) != expected_signature:
+            raise OSError(
+                errno.ESTALE,
+                "A recursive proof root changed while it was opened",
+                str(path),
+            )
+        budget = _TreeBudget()
+        budget.claim(path, 0)
+        result = _posix_directory_digest(handle, path, budget, 0)
+        if _posix_stat_signature(os.fstat(handle), path) != expected_signature:
+            raise OSError(
+                errno.ESTALE,
+                "A recursive proof root changed during verification",
+                str(path),
+            )
+        return _POSIX_DIRECTORY_TREE_TOKEN_PREFIX + result
+    finally:
+        if owns_handle:
+            os.close(handle)
 
 
 def _open_plain_directory_posix(path: Path) -> int:
@@ -360,11 +665,15 @@ def _inspect_source(path: Path) -> _Snapshot:
     return result
 
 
-def _assert_expected_source_snapshot(path: Path, observed: _Snapshot, expected) -> None:
+def _assert_expected_source_snapshot(
+    path: Path,
+    observed: _Snapshot,
+    expected,
+) -> Tuple[str, bytes] | None:
     """Bind a generic file operation to a caller-supplied scan snapshot."""
 
     if expected is None:
-        return
+        return None
     required = ("device", "file_id", "size", "mtime_ns", "ctime_ns")
     if any(not hasattr(expected, name) for name in required):
         raise TypeError("expected_source_snapshot does not implement the file snapshot contract")
@@ -384,6 +693,16 @@ def _assert_expected_source_snapshot(path: Path, observed: _Snapshot, expected) 
     )
     if observed_values != expected_values:
         raise OSError(errno.ESTALE, "The source changed after it was reviewed", str(path))
+    if not stat.S_ISREG(observed.mode):
+        return None
+    proof_fields = ("content_digest_algorithm", "content_digest")
+    if any(not hasattr(expected, name) for name in proof_fields):
+        raise TypeError("expected_source_snapshot does not implement the content-proof contract")
+    algorithm = expected.content_digest_algorithm
+    digest = expected.content_digest
+    if algorithm != "sha256" or not isinstance(digest, bytes) or len(digest) != hashlib.sha256().digest_size:
+        raise OSError(errno.ESTALE, "The reviewed source has no valid SHA-256 content proof", str(path))
+    return algorithm, digest
 
 
 def _assert_snapshot(path: Path, expected: _Snapshot) -> None:
@@ -420,6 +739,8 @@ def _assert_bound_snapshot(
     name: str,
     expected: _Snapshot,
     label: Path,
+    *,
+    verify_tree: bool = True,
 ) -> None:
     try:
         current = directory.lstat(name)
@@ -435,6 +756,81 @@ def _assert_bound_snapshot(
             "The bound filesystem entry changed during the operation",
             str(label),
         )
+    if verify_tree and expected.tree_generation:
+        _assert_bound_tree_generation(
+            directory,
+            name,
+            expected,
+            label,
+        )
+
+
+def _assert_bound_tree_generation(
+    directory: BoundDirectory,
+    name: str,
+    expected: _Snapshot,
+    label: Path,
+) -> None:
+    """Re-prove one complete tree through its already-bound parent."""
+
+    if not expected.tree_generation or not stat.S_ISDIR(expected.mode):
+        raise ValueError("A recursive bound proof requires a directory-tree snapshot")
+    try:
+        if os.name == "nt":
+            # The Windows BoundDirectory lease excludes delete sharing for the
+            # full physical path. The recursive USN proof can therefore reopen
+            # that leased child by its canonical bound path.
+            bound_path = directory.path.joinpath(name)
+            observed = _snapshot(
+                directory.lstat(name),
+                bound_path,
+            )
+        else:
+            with directory.open_child(
+                name,
+                expected_identity=expected.identity,
+            ) as child_directory:
+                opened = os.fstat(child_directory.fileno())
+                observed = _snapshot(
+                    opened,
+                    label,
+                    handle=child_directory.fileno(),
+                )
+    except (FileNotFoundError, NotADirectoryError):
+        raise OSError(
+            errno.ESTALE,
+            "The bound directory tree disappeared during the operation",
+            str(label),
+        )
+    if observed != expected:
+        raise OSError(
+            errno.ESTALE,
+            "The bound directory tree changed during the operation",
+            str(label),
+        )
+
+
+def _assert_open_posix_directory_snapshot(
+    directory: BoundDirectory,
+    expected: _Snapshot,
+    label: Path,
+) -> None:
+    """Prove a tree through the same POSIX directory capability used to read it."""
+
+    if os.name != "posix":
+        raise OSError(errno.ENOTSUP, "Open-directory tree proof is POSIX-only", str(label))
+    observed = _snapshot(
+        os.fstat(directory.fileno()),
+        label,
+        handle=directory.fileno(),
+        recursive_directory=expected.tree_generation,
+    )
+    if observed != expected:
+        raise OSError(
+            errno.ESTALE,
+            "The open source directory changed during the operation",
+            str(label),
+        )
 
 
 def _assert_handle_snapshot(handle: int, path: Path, expected: _Snapshot) -> None:
@@ -448,13 +844,74 @@ def _assert_handle_snapshot(handle: int, path: Path, expected: _Snapshot) -> Non
         raise OSError(errno.ESTALE, "The open source changed during the operation", str(path))
 
 
-def _open_source(path: Path, expected: _Snapshot) -> int:
+def _assert_handle_content_digest(
+    handle: int,
+    path: Path,
+    expected_snapshot: _Snapshot,
+    expected_content_digest: Tuple[str, bytes],
+) -> None:
+    """Prove reviewed bytes through the same live handle used for publication."""
+
+    algorithm, expected_digest = expected_content_digest
+    if algorithm != "sha256":
+        raise ValueError("Unsupported source content-proof algorithm: {!r}".format(algorithm))
+    digest = hashlib.sha256()
+    bytes_read = 0
+    os.lseek(handle, 0, os.SEEK_SET)
+    while True:
+        block = os.read(handle, COPY_CHUNK_SIZE)
+        if not block:
+            break
+        digest.update(block)
+        bytes_read += len(block)
+    if bytes_read != expected_snapshot.size or not hmac.compare_digest(
+        digest.digest(),
+        expected_digest,
+    ):
+        raise OSError(errno.ESTALE, "The source bytes changed after they were reviewed", str(path))
+    _assert_handle_snapshot(handle, path, expected_snapshot)
+
+
+def _assert_source_snapshot(
+    path: Path,
+    expected: _Snapshot,
+    *,
+    directory: BoundDirectory = None,
+) -> None:
+    if directory is None:
+        _assert_snapshot(path, expected)
+        return
+    if path.parent != directory.path:
+        raise ValueError("A bound source file must be an immediate child of its directory")
+    _assert_bound_snapshot(
+        directory,
+        path.name,
+        expected,
+        path,
+    )
+
+
+def _open_source(
+    path: Path,
+    expected: _Snapshot,
+    *,
+    directory: BoundDirectory = None,
+) -> int:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
-    handle = os.open(path, flags)
+    if directory is None:
+        handle = os.open(path, flags)
+    else:
+        if path.parent != directory.path:
+            raise ValueError("A bound source file must be an immediate child of its directory")
+        handle = directory.open_entry(path.name, flags)
     try:
         _assert_handle_snapshot(handle, path, expected)
-        _assert_snapshot(path, expected)
+        _assert_source_snapshot(
+            path,
+            expected,
+            directory=directory,
+        )
     except BaseException:
         os.close(handle)
         raise
@@ -619,15 +1076,40 @@ def _verified_staging_reader(
         os.close(handle)
 
 
-def _compare_open_files(source_handle: int, destination_handle: int, destination: Path) -> None:
+def _compare_open_files(
+    source_handle: int,
+    destination_handle: int,
+    destination: Path,
+    *,
+    expected_source_snapshot: _Snapshot = None,
+    expected_content_digest: Tuple[str, bytes] = None,
+) -> None:
     os.lseek(source_handle, 0, os.SEEK_SET)
     os.lseek(destination_handle, 0, os.SEEK_SET)
+    source_digest = hashlib.sha256() if expected_content_digest is not None else None
+    bytes_read = 0
     while True:
         source_data = os.read(source_handle, COPY_CHUNK_SIZE)
         destination_data = os.read(destination_handle, COPY_CHUNK_SIZE)
         if source_data != destination_data:
             raise OSError(errno.EIO, "The staging copy failed byte-integrity verification", str(destination))
+        if source_digest is not None:
+            source_digest.update(source_data)
+            bytes_read += len(source_data)
         if not source_data:
+            if source_digest is not None:
+                algorithm, expected_digest = expected_content_digest
+                if (
+                    algorithm != "sha256"
+                    or expected_source_snapshot is None
+                    or bytes_read != expected_source_snapshot.size
+                    or not hmac.compare_digest(source_digest.digest(), expected_digest)
+                ):
+                    raise OSError(
+                        errno.ESTALE,
+                        "The copied source bytes changed after they were reviewed",
+                        str(destination),
+                    )
             return
 
 
@@ -637,9 +1119,15 @@ def _copy_regular(
     source_snapshot: _Snapshot,
     created: "_CreatedEntries",
     *,
+    source_directory: BoundDirectory = None,
     destination_directory: BoundDirectory = None,
+    expected_content_digest: Tuple[str, bytes] = None,
 ) -> _Snapshot:
-    source_handle = _open_source(source, source_snapshot)
+    source_handle = _open_source(
+        source,
+        source_snapshot,
+        directory=source_directory,
+    )
     destination_handle = -1
     destination_identity = None
     try:
@@ -655,7 +1143,11 @@ def _copy_regular(
                 break
             _write_all(destination_handle, data)
         _assert_handle_snapshot(source_handle, source, source_snapshot)
-        _assert_snapshot(source, source_snapshot)
+        _assert_source_snapshot(
+            source,
+            source_snapshot,
+            directory=source_directory,
+        )
         copied_stat = os.fstat(destination_handle)
         if (
             _stat_identity(copied_stat, destination) != destination_identity
@@ -679,14 +1171,28 @@ def _copy_regular(
             destination_identity,
             directory=destination_directory,
         ) as (verified_handle, copied):
-            _compare_open_files(source_handle, verified_handle, destination)
+            _compare_open_files(
+                source_handle,
+                verified_handle,
+                destination,
+                expected_source_snapshot=source_snapshot,
+                expected_content_digest=expected_content_digest,
+            )
             _assert_handle_snapshot(source_handle, source, source_snapshot)
-            _assert_snapshot(source, source_snapshot)
+            _assert_source_snapshot(
+                source,
+                source_snapshot,
+                directory=source_directory,
+            )
 
         if copied.identity != destination_identity or copied.size != source_snapshot.size:
             raise OSError(errno.EIO, "The staging copy changed during integrity verification", str(destination))
         _assert_handle_snapshot(source_handle, source, source_snapshot)
-        _assert_snapshot(source, source_snapshot)
+        _assert_source_snapshot(
+            source,
+            source_snapshot,
+            directory=source_directory,
+        )
         return copied
     finally:
         if destination_handle >= 0:
@@ -802,9 +1308,15 @@ def _copy_tree(
     budget: _TreeBudget,
     depth: int,
     *,
+    source_directory: BoundDirectory = None,
     destination_directory: BoundDirectory = None,
     verify_tree_root: bool = True,
 ) -> _Snapshot:
+    if source_directory is not None:
+        if os.name not in {"nt", "posix"}:
+            raise OSError(errno.ENOTSUP, "Bound source-tree traversal is unavailable", str(source))
+        if source != source_directory.path:
+            raise ValueError("A bound source tree path must match its open directory")
     budget.claim(source, depth)
     destination_snapshot = _create_directory(
         destination,
@@ -823,13 +1335,20 @@ def _copy_tree(
             expected_identity=destination_snapshot.identity,
         )
     with opened_destination as bound_destination:
-        with os.scandir(source) as entries:
+        if source_directory is not None and os.name == "posix":
+            source_scan = source_directory.fileno()
+        else:
+            source_scan = source
+        with os.scandir(source_scan) as entries:
             for entry in entries:
                 source_child = source.joinpath(entry.name)
                 destination_child = destination.joinpath(entry.name)
                 # CPython's Windows DirEntry cache can omit stable file IDs.  lstat() is also
                 # required here so the snapshot has the same identity contract on every platform.
-                child_stat = os.lstat(source_child)
+                if source_directory is None:
+                    child_stat = os.lstat(source_child)
+                else:
+                    child_stat = source_directory.lstat(entry.name)
                 if _is_link_or_reparse(child_stat):
                     raise OSError(
                         errno.ELOOP,
@@ -854,19 +1373,37 @@ def _copy_tree(
                         destination_child,
                         child_snapshot,
                         created,
+                        source_directory=source_directory,
                         destination_directory=bound_destination,
                     )
                 elif stat.S_ISDIR(child_snapshot.mode):
-                    _copy_tree(
-                        source_child,
-                        destination_child,
-                        child_snapshot,
-                        created,
-                        budget,
-                        depth + 1,
-                        destination_directory=bound_destination,
-                        verify_tree_root=False,
-                    )
+                    if source_directory is None:
+                        _copy_tree(
+                            source_child,
+                            destination_child,
+                            child_snapshot,
+                            created,
+                            budget,
+                            depth + 1,
+                            destination_directory=bound_destination,
+                            verify_tree_root=False,
+                        )
+                    else:
+                        with source_directory.open_child(
+                            entry.name,
+                            expected_identity=child_snapshot.identity,
+                        ) as bound_source_child:
+                            _copy_tree(
+                                source_child,
+                                destination_child,
+                                child_snapshot,
+                                created,
+                                budget,
+                                depth + 1,
+                                source_directory=bound_source_child,
+                                destination_directory=bound_destination,
+                                verify_tree_root=False,
+                            )
                 else:
                     raise OSError(
                         errno.ENOTSUP,
@@ -902,7 +1439,14 @@ def _copy_tree(
                 "The staging directory identity changed",
                 str(destination),
             )
-    _assert_snapshot(source, source_snapshot)
+    if source_directory is None or os.name == "nt":
+        _assert_snapshot(source, source_snapshot)
+    else:
+        _assert_open_posix_directory_snapshot(
+            source_directory,
+            source_snapshot,
+            source,
+        )
     return final_snapshot
 
 
@@ -923,7 +1467,7 @@ def _verified_publish_source(
     staged_path: Path,
     staged_snapshot: _Snapshot,
     parent_directory: BoundDirectory,
-) -> Iterator[PreopenedRenameSource | None]:
+) -> Iterator[_PublishSourceLease]:
     """Hold a no-write lease from final generation verification through commit."""
 
     if not stat.S_ISREG(staged_snapshot.mode):
@@ -932,9 +1476,9 @@ def _verified_publish_source(
             staged_path.name,
             staged_snapshot,
             staged_path,
+            verify_tree=False,
         )
-        _assert_snapshot(staged_path, staged_snapshot)
-        yield None
+        yield _PublishSourceLease(None, None)
         return
 
     if os.name == "nt":
@@ -959,7 +1503,10 @@ def _verified_publish_source(
             path_stat = parent_directory.lstat(staged_path.name)
             if observed != staged_snapshot or not _bound_stat_matches_snapshot(path_stat, staged_snapshot):
                 raise OSError(errno.ESTALE, "The staging file changed before publication", str(staged_path))
-            yield preopened_source
+            yield _PublishSourceLease(
+                preopened_source.descriptor,
+                preopened_source,
+            )
         return
 
     handle = _open_staging_readonly(
@@ -972,7 +1519,7 @@ def _verified_publish_source(
         path_stat = parent_directory.lstat(staged_path.name)
         if observed != staged_snapshot or not _bound_stat_matches_snapshot(path_stat, staged_snapshot):
             raise OSError(errno.ESTALE, "The staging file changed before publication", str(staged_path))
-        yield None
+        yield _PublishSourceLease(handle, None)
     finally:
         os.close(handle)
 
@@ -1023,7 +1570,8 @@ def _publish_candidates(
         staged_path,
         staged_snapshot,
         parent_directory,
-    ) as preopened_source:
+    ) as source_lease:
+        preopened_source = source_lease.preopened_source
         for destination in candidates:
             saw_candidate = True
             destination = _absolute(destination)
@@ -1034,8 +1582,16 @@ def _publish_candidates(
                 staged_path.name,
                 staged_snapshot,
                 staged_path,
+                verify_tree=False,
             )
-            if preopened_source is None:
+            if staged_snapshot.tree_generation:
+                _assert_bound_tree_generation(
+                    parent_directory,
+                    staged_path.name,
+                    staged_snapshot,
+                    staged_path,
+                )
+            if preopened_source is None and not staged_snapshot.tree_generation:
                 _assert_snapshot(staged_path, staged_snapshot)
             try:
                 if preopened_source is None:
@@ -1082,8 +1638,13 @@ def copy_to_first_available(
     """Copy ``source`` once, then atomically publish it at the first available candidate."""
 
     source = _absolute(source)
+    source_parent_identity = _validate_directory(source.parent)
     source_snapshot = _inspect_source(source)
-    _assert_expected_source_snapshot(source, source_snapshot, expected_source_snapshot)
+    expected_content_digest = _assert_expected_source_snapshot(
+        source,
+        source_snapshot,
+        expected_source_snapshot,
+    )
     candidates_iterator = iter(candidates)
     try:
         first = _absolute(next(candidates_iterator))
@@ -1107,17 +1668,66 @@ def copy_to_first_available(
                     source_snapshot,
                     created,
                     destination_directory=destination_directory,
+                    expected_content_digest=expected_content_digest,
                 )
             else:
-                staged_snapshot = _copy_tree(
-                    source,
-                    staging_path,
-                    source_snapshot,
-                    created,
-                    budget,
-                    0,
-                    destination_directory=destination_directory,
-                )
+                if os.name == "posix":
+                    with open_bound_directory(
+                        source.parent,
+                        expected_identity=source_parent_identity,
+                    ) as source_parent_directory:
+                        _assert_bound_snapshot(
+                            source_parent_directory,
+                            source.name,
+                            source_snapshot,
+                            source,
+                            verify_tree=False,
+                        )
+                        with source_parent_directory.open_child(
+                            source.name,
+                            expected_identity=source_snapshot.identity,
+                        ) as source_directory:
+                            _assert_open_posix_directory_snapshot(
+                                source_directory,
+                                source_snapshot,
+                                source,
+                            )
+                            staged_snapshot = _copy_tree(
+                                source,
+                                staging_path,
+                                source_snapshot,
+                                created,
+                                budget,
+                                0,
+                                source_directory=source_directory,
+                                destination_directory=destination_directory,
+                            )
+                elif os.name == "nt":
+                    with open_bound_directory(
+                        source,
+                        expected_identity=source_snapshot.identity,
+                    ) as source_directory:
+                        _assert_snapshot(source, source_snapshot)
+                        staged_snapshot = _copy_tree(
+                            source,
+                            staging_path,
+                            source_snapshot,
+                            created,
+                            budget,
+                            0,
+                            source_directory=source_directory,
+                            destination_directory=destination_directory,
+                        )
+                else:
+                    staged_snapshot = _copy_tree(
+                        source,
+                        staging_path,
+                        source_snapshot,
+                        created,
+                        budget,
+                        0,
+                        destination_directory=destination_directory,
+                    )
             published = _publish_candidates(
                 staging_path,
                 staged_snapshot,
@@ -1179,7 +1789,11 @@ def move_to_first_available(
     source = _absolute(source)
     source_parent_identity = _validate_directory(source.parent)
     source_snapshot = _inspect_source(source)
-    _assert_expected_source_snapshot(source, source_snapshot, expected_source_snapshot)
+    expected_content_digest = _assert_expected_source_snapshot(
+        source,
+        source_snapshot,
+        expected_source_snapshot,
+    )
     _preflight_move_tree(source, source_snapshot, _TreeBudget(), 0)
     with open_bound_directory(
         source.parent,
@@ -1195,7 +1809,8 @@ def move_to_first_available(
             source,
             source_snapshot,
             source_directory,
-        ) as preopened_source:
+        ) as source_lease:
+            preopened_source = source_lease.preopened_source
             saw_candidate = False
             for destination in candidates:
                 saw_candidate = True
@@ -1211,9 +1826,35 @@ def move_to_first_available(
                         source.name,
                         source_snapshot,
                         source,
+                        verify_tree=False,
                     )
-                    if preopened_source is None:
+                    if source_snapshot.tree_generation:
+                        _assert_bound_tree_generation(
+                            source_directory,
+                            source.name,
+                            source_snapshot,
+                            source,
+                        )
+                    if preopened_source is None and not source_snapshot.tree_generation:
                         _assert_snapshot(source, source_snapshot)
+                    if expected_content_digest is not None:
+                        if source_lease.descriptor is None:
+                            raise OSError(
+                                errno.ESTALE,
+                                "The reviewed source has no live content-proof handle",
+                                str(source),
+                            )
+                        _assert_handle_content_digest(
+                            source_lease.descriptor,
+                            source,
+                            source_snapshot,
+                            expected_content_digest,
+                        )
+                        _assert_source_snapshot(
+                            source,
+                            source_snapshot,
+                            directory=source_directory,
+                        )
                     try:
                         if preopened_source is None:
                             commit = rename_no_replace(
