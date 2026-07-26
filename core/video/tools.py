@@ -335,19 +335,33 @@ class SubprocessCommandRunner:
         except subprocess.TimeoutExpired:
             _terminate_process_tree(process, process_job)
             returncode = process.wait(timeout=2)
-        if output_limit_reached.is_set() and forced_state is None:
-            forced_state = CommandState.OUTPUT_LIMIT
-            forced_error = "captured output exceeded {} bytes".format(max_output_bytes)
-            _terminate_process_tree(process, process_job)
         if os.name != "nt":
             _terminate_posix_process_group(process)
         process_job.close()
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
+
+        # A short-lived process can exit before the pipe readers have consumed
+        # the final kernel-buffered output.  Drain those readers before deciding
+        # whether the command respected its combined output limit.
         for reader in readers:
             reader.join(timeout=2)
+        if any(reader.is_alive() for reader in readers):
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            for reader in readers:
+                reader.join(timeout=2)
+        capture_drain_incomplete = any(reader.is_alive() for reader in readers)
+        if output_limit_reached.is_set() and forced_state is None:
+            forced_state = CommandState.OUTPUT_LIMIT
+            forced_error = "captured output exceeded {} bytes".format(max_output_bytes)
+        elif capture_drain_incomplete and forced_state is None:
+            forced_state = CommandState.OUTPUT_LIMIT
+            forced_error = "captured output could not be drained within the bounded shutdown interval"
+        if process.stdout is not None and not process.stdout.closed:
+            process.stdout.close()
+        if process.stderr is not None and not process.stderr.closed:
+            process.stderr.close()
         duration = time.monotonic() - started
         if forced_state is not None:
             return CommandOutcome(
