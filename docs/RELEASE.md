@@ -52,9 +52,12 @@ on Linux.
 
 For macOS native extensions, the build passes `-reproducible` to Apple's
 linker, which zeros build-time object modification values in the `N_OSO` debug
-map. It deliberately does not pass `-no_uuid`. Apple documents that the
-linker's default `LC_UUID` is hash-based to support reproducible builds and
-that removing the build UUID is a bad idea in
+map. It also passes `-oso_prefix .`, which strips the build working directory
+from those object-file debug-map paths. Both are required because release
+wheels and their verification rebuild use different temporary source roots.
+It deliberately does not pass `-no_uuid`. Apple documents that the linker's
+default `LC_UUID` is hash-based to support reproducible builds and that
+removing the build UUID is a bad idea in
 [TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems).
 This keeps each Mach-O image loadable and identifiable without introducing a
 random UUID. The rebuild gate still compares the complete wheel byte for byte

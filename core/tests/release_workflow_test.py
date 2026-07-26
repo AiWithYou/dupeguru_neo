@@ -405,6 +405,8 @@ def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
     assert "retained for 30 days" in release_doc
     assert "does not pass `-no_uuid`" in release_doc
     assert "default `LC_UUID` is hash-based" in release_doc
+    assert "`-oso_prefix .`" in release_doc
+    assert "different temporary source roots" in release_doc
     assert "complete wheel byte for byte" in release_doc
     assert "byte-identical Mach-O copy" in release_doc
     assert "hash-before-install authentication" in readme
@@ -567,6 +569,7 @@ def test_release_metadata_and_reproducible_build_inputs_are_pinned():
         'if sys.platform == "darwin":',
         "self._configure_darwin()",
         '"-Wl,-reproducible"',
+        '"-Wl,-oso_prefix,."',
         "def byte_compile(self, files):",
         'build_root.rglob("__pycache__")',
     ):
@@ -596,4 +599,5 @@ def test_deterministic_darwin_native_builds_preserve_hash_based_uuid():
         1,
     )[0]
     assert '"-Wl,-reproducible"' in darwin_configuration
+    assert '"-Wl,-oso_prefix,."' in darwin_configuration
     assert "-Wl,-no_uuid" not in darwin_configuration

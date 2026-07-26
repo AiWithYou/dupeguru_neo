@@ -150,7 +150,10 @@ class ReproducibleBuildExt(build_ext):
         for extension in self.extensions:
             extension.extra_link_args = _append_unique(
                 extension.extra_link_args,
-                ("-Wl,-reproducible",),
+                (
+                    "-Wl,-reproducible",
+                    "-Wl,-oso_prefix,.",
+                ),
             )
 
     def _supported_compile_args(self, candidates):
