@@ -6,6 +6,7 @@
 
 import os
 import stat
+import sys
 
 from dataclasses import replace
 from pathlib import Path
@@ -53,6 +54,52 @@ def test_walk_emits_identified_files_directories_and_complete_coverage(tmpdir):
     assert events[0].kind == WalkEventKind.ROOT_STARTED
     assert events[-1].kind == WalkEventKind.ROOT_COMPLETED
     assert events[-1].coverage == coverage
+
+
+def test_walk_switches_to_an_authenticated_root_alias_target(tmp_path, monkeypatch):
+    lexical_root = Path(tmp_path.anchor) / "dupeguru-lexical-root-alias"
+    canonical_root = tmp_path / "canonical-root"
+    canonical_root.mkdir()
+    lexical_path = lexical_root / "nested"
+    canonical_path = canonical_root / "nested"
+    canonical_path.mkdir()
+    canonical_path.joinpath("duplicate.bin").write_bytes(b"payload")
+    observed = []
+
+    def authenticate(candidate):
+        observed.append(candidate)
+        if candidate == lexical_root:
+            return canonical_root
+        return None
+
+    monkeypatch.setattr(
+        safe_walk_module,
+        "_authenticated_darwin_root_alias",
+        authenticate,
+    )
+
+    events = list(walk_no_follow(lexical_path))
+
+    assert observed[0] == lexical_root
+    assert [event.path for event in _events_of_kind(events, WalkEventKind.FILE)] == [canonical_path / "duplicate.bin"]
+    assert _coverage(events).complete
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS standard root aliases")
+def test_walk_accepts_authenticated_darwin_var_alias(tmp_path):
+    canonical_root = tmp_path.resolve(strict=True)
+    try:
+        relative = canonical_root.relative_to(Path("/private/var"))
+    except ValueError:
+        pytest.skip("temporary directory is not below /private/var")
+    lexical_root = Path("/var").joinpath(relative)
+    file_path = canonical_root / "duplicate.bin"
+    file_path.write_bytes(b"darwin alias payload")
+
+    events = list(walk_no_follow(lexical_root))
+
+    assert [event.path for event in _events_of_kind(events, WalkEventKind.FILE)] == [file_path]
+    assert _coverage(events).complete
 
 
 def test_intentional_directory_prune_happens_before_enumeration_and_keeps_complete_coverage(tmpdir, monkeypatch):

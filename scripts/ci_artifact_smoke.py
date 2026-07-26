@@ -28,20 +28,37 @@ import zipfile
 
 EXPECTED_HELP_LANGUAGES = ("de", "en", "fr", "hy", "ru", "uk")
 EXPECTED_GETTEXT_CATALOGS = 63
+MAX_COMMAND_DIAGNOSTIC_CHARACTERS = 4000
 DARWIN_BUILD_UUID = re.compile(
     r"^UUID: (?P<uuid>[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}) " r"\((?P<architecture>[A-Za-z0-9_]+)\) .+$"
 )
 
 
 def _run(command, *, cwd=None, env=None, capture_output=False):
-    return subprocess.run(
-        [str(item) for item in command],
-        cwd=cwd,
-        env=env,
-        check=True,
-        text=True,
-        capture_output=capture_output,
-    )
+    command = [str(item) for item in command]
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=True,
+            text=True,
+            capture_output=capture_output,
+        )
+    except subprocess.CalledProcessError as error:
+        if not capture_output:
+            raise
+        stdout = (error.stdout or "")[-MAX_COMMAND_DIAGNOSTIC_CHARACTERS:]
+        stderr = (error.stderr or "")[-MAX_COMMAND_DIAGNOSTIC_CHARACTERS:]
+        raise RuntimeError(
+            "captured command failed with exit code {}: {!r}; stdout tail={!r}; "
+            "stderr tail={!r}".format(
+                error.returncode,
+                command,
+                stdout,
+                stderr,
+            )
+        ) from error
 
 
 def _extract_validated_tar(archive, destination: Path, *, members) -> None:

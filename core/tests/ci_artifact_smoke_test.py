@@ -7,6 +7,33 @@ import pytest
 from scripts import ci_artifact_smoke
 
 
+def test_captured_command_failure_reports_bounded_stdout_and_stderr(monkeypatch):
+    stdout = "x" * (ci_artifact_smoke.MAX_COMMAND_DIAGNOSTIC_CHARACTERS + 10)
+    stderr = "scan root is incomplete"
+
+    def fail(*_args, **_kwargs):
+        raise ci_artifact_smoke.subprocess.CalledProcessError(
+            4,
+            ["dupeguru", "scan"],
+            output=stdout,
+            stderr=stderr,
+        )
+
+    monkeypatch.setattr(ci_artifact_smoke.subprocess, "run", fail)
+
+    with pytest.raises(RuntimeError) as caught:
+        ci_artifact_smoke._run(
+            ["dupeguru", "scan"],
+            capture_output=True,
+        )
+
+    message = str(caught.value)
+    assert "exit code 4" in message
+    assert "scan root is incomplete" in message
+    assert "x" * ci_artifact_smoke.MAX_COMMAND_DIAGNOSTIC_CHARACTERS in message
+    assert "x" * (ci_artifact_smoke.MAX_COMMAND_DIAGNOSTIC_CHARACTERS + 1) not in message
+
+
 def test_console_script_uses_sysconfig_scripts_directory(tmp_path, monkeypatch):
     scripts = tmp_path / "Scripts"
     scripts.mkdir()

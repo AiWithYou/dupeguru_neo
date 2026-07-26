@@ -15,6 +15,7 @@ an incomplete scan as authoritative.
 
 import os
 import stat
+import sys
 
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -165,6 +166,11 @@ class _CoverageCounter:
 
 IdentityGetter = Callable[..., FileIdentity]
 DirectoryPruner = Callable[[Path], Optional[Union[bool, str]]]
+_DARWIN_STANDARD_ROOT_ALIASES = {
+    "etc": Path("/private/etc"),
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 class _DirectoryHandleChanged(Exception):
@@ -501,8 +507,87 @@ def walk_no_follow(
     yield from _completion_events(root_path, coverage)
 
 
+def _darwin_alias_signature(value: os.stat_result) -> Tuple[int, ...]:
+    mtime_ns = getattr(value, "st_mtime_ns", None)
+    if mtime_ns is None:
+        mtime_ns = int(value.st_mtime * 1_000_000_000)
+    ctime_ns = getattr(value, "st_ctime_ns", None)
+    if ctime_ns is None:
+        ctime_ns = int(value.st_ctime * 1_000_000_000)
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_size),
+        int(mtime_ns),
+        int(ctime_ns),
+        int(getattr(value, "st_uid", -1)),
+        int(getattr(value, "st_gid", -1)),
+    )
+
+
+def _authenticated_darwin_root_alias(alias: Path) -> Optional[Path]:
+    """Authenticate one fixed macOS root alias before using its physical target."""
+
+    if sys.platform != "darwin" or alias.parent != Path(alias.anchor):
+        return None
+    expected = _DARWIN_STANDARD_ROOT_ALIASES.get(alias.name)
+    if expected is None:
+        return None
+    try:
+        alias_before = os.lstat(alias)
+        root_before = os.lstat(alias.parent)
+        target_text = os.readlink(alias)
+        target = Path(os.path.abspath(os.path.join(os.fspath(alias.parent), target_text)))
+        target_before = os.lstat(expected)
+        followed_before = os.stat(alias)
+        resolved = Path(os.path.realpath(os.fspath(alias)))
+        alias_after = os.lstat(alias)
+        root_after = os.lstat(alias.parent)
+        target_after = os.lstat(expected)
+        followed_after = os.stat(alias)
+        target_text_after = os.readlink(alias)
+    except OSError:
+        return None
+    if (
+        target != expected
+        or resolved != expected
+        or target_text_after != target_text
+        or not stat.S_ISLNK(alias_before.st_mode)
+        or int(getattr(alias_before, "st_uid", -1)) != 0
+        or _darwin_alias_signature(alias_before) != _darwin_alias_signature(alias_after)
+        or int(getattr(root_before, "st_uid", -1)) != 0
+        or not stat.S_ISDIR(root_before.st_mode)
+        or stat.S_IMODE(root_before.st_mode) & 0o022
+        or _darwin_alias_signature(root_before) != _darwin_alias_signature(root_after)
+        or int(getattr(target_before, "st_uid", -1)) != 0
+        or not stat.S_ISDIR(target_before.st_mode)
+        or stat.S_ISLNK(target_before.st_mode)
+        or is_reparse_point(target_before)
+        or _darwin_alias_signature(target_before) != _darwin_alias_signature(target_after)
+        or (int(target_before.st_dev), int(target_before.st_ino))
+        != (int(followed_before.st_dev), int(followed_before.st_ino))
+        or (int(target_after.st_dev), int(target_after.st_ino))
+        != (int(followed_after.st_dev), int(followed_after.st_ino))
+    ):
+        return None
+    return expected
+
+
+def _canonicalize_authenticated_root_alias(path: Path) -> Path:
+    parts = path.parts[1:] if path.anchor else path.parts
+    if not parts:
+        return path
+    lexical_root_entry = Path(path.anchor).joinpath(parts[0])
+    authenticated = _authenticated_darwin_root_alias(lexical_root_entry)
+    if authenticated is None:
+        return path
+    return authenticated.joinpath(*parts[1:])
+
+
 def _absolute_path(path) -> Path:
-    return Path(os.path.abspath(os.fspath(path)))
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    return _canonicalize_authenticated_root_alias(absolute)
 
 
 def _directory_prune_detail(directory_pruner, path):
