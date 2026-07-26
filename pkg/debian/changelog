@@ -1,3 +1,11 @@
+dupeguru (5.0.0-1) unstable; urgency=medium
+
+  * Add byte-verified exact matching and recoverable file operations.
+  * Add persistent catalog, large-library media review, and automation CLI.
+  * Update the desktop application and packaging for Python 3.10+ and PyQt6.
+
+ -- AiWithYou contributors <noreply@github.com>  Sun, 26 Jul 2026 00:00:00 +0000
+
 dupeguru (4.0.4-1) unstable; urgency=low
 
   * Update qt/platform.py to support other Unix style OSes (#444)
@@ -197,7 +205,7 @@ dupeguru (3.3.0-1) unstable; urgency=low
   * Fixed a crash in the prioritize dialog. (#178)
   * Fixed a bug where mass marking with a filter would mark more than filtered duplicates. (#181)
   * Fixed random hard crashes. [Mac OS X] (#183 #184)
-  * Added Czech localization by Aleö Nehyba.
+  * Added Czech localization by Ale≈° Nehyba.
   * Added Italian localization by Paolo Rossi.
 
  -- Virgil Dupras <hsoft@hardcoded.net>  Wed, 30 Nov 2011 00:00:00 +0000
@@ -229,7 +237,7 @@ dupeguru (3.1.2-1) unstable; urgency=low
 
 dupeguru (3.1.1-1) unstable; urgency=low
 
-  * Added German localization by Gregor T‰tzner.
+  * Added German localization by Gregor T√§tzner.
   * Improved OS X Lion compatibility. [Mac OS X]
   * Made the file collection phase cancellable. (#168)
   * Fixed glitch in folder window upon selecting a folder state. [Windows, Linux] (#165)

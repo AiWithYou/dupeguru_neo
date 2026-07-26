@@ -10,18 +10,21 @@
 this module that deals with conflicts by prepending unique numbers in ``[]`` brackets to the name.
 """
 
-import re
+import errno
 import os
-import shutil
+import re
+import stat
 
-from errno import EISDIR, EACCES
 from pathlib import Path
-from typing import Callable, List
+from typing import Iterator, List
+
+from hscommon.safe_fileops import RenameNoReplace, copy_to_first_available, move_to_first_available
 
 # This matches [123], but not [12] (3 digits being the minimum).
 # It also matches [1234] [12345] etc..
 # And only at the start of the string
 re_conflict = re.compile(r"^\[\d{3}\d*\] ")
+MAX_CONFLICT_CANDIDATES = 100_001
 
 
 def get_conflicted_name(other_names: List[str], name: str) -> str:
@@ -54,30 +57,74 @@ def is_conflicted(name: str) -> bool:
     return re_conflict.match(name) is not None
 
 
-def _smart_move_or_copy(operation: Callable, source_path: Path, dest_path: Path) -> None:
-    """Use move() or copy() to move and copy file with the conflict management."""
-    if dest_path.is_dir() and not source_path.is_dir():
-        dest_path = dest_path.joinpath(source_path.name)
-    if dest_path.exists():
-        filename = dest_path.name
-        dest_dir_path = dest_path.parent
-        newname = get_conflicted_name(os.listdir(str(dest_dir_path)), filename)
-        dest_path = dest_dir_path.joinpath(newname)
-    operation(str(source_path), str(dest_path))
+def _is_reparse_point(value: os.stat_result) -> bool:
+    attributes = int(getattr(value, "st_file_attributes", 0))
+    marker = int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+    return bool(marker and attributes & marker)
 
 
-def smart_move(source_path: Path, dest_path: Path) -> None:
-    """Same as :func:`smart_copy`, but it moves files instead."""
-    _smart_move_or_copy(shutil.move, source_path, dest_path)
-
-
-def smart_copy(source_path: Path, dest_path: Path) -> None:
-    """Copies ``source_path`` to ``dest_path``, recursively and with conflict resolution."""
+def _destination_base(source_path: Path, dest_path: Path) -> Path:
+    source_stat = os.lstat(source_path)
+    if stat.S_ISLNK(source_stat.st_mode) or _is_reparse_point(source_stat):
+        raise OSError(errno.ELOOP, "The source must not be a link or reparse point", str(source_path))
     try:
-        _smart_move_or_copy(shutil.copy, source_path, dest_path)
-    except OSError as e:
-        # It's a directory, code is 21 on OS X / Linux (EISDIR) and 13 on Windows (EACCES)
-        if e.errno in (EISDIR, EACCES):
-            _smart_move_or_copy(shutil.copytree, source_path, dest_path)
-        else:
-            raise
+        destination_stat = os.lstat(dest_path)
+    except FileNotFoundError:
+        return dest_path
+    if stat.S_ISLNK(destination_stat.st_mode) or _is_reparse_point(destination_stat):
+        raise OSError(errno.ELOOP, "The destination must not be a link or reparse point", str(dest_path))
+    if not stat.S_ISDIR(source_stat.st_mode) and stat.S_ISDIR(destination_stat.st_mode):
+        return dest_path.joinpath(source_path.name)
+    return dest_path
+
+
+def _destination_candidates(destination: Path) -> Iterator[Path]:
+    """Yield the legacy conflict-name order without trusting a directory snapshot."""
+
+    yielded = {destination.name}
+    yield destination
+    base_name = get_unconflicted_name(destination.name)
+    if base_name not in yielded:
+        yielded.add(base_name)
+        yield destination.with_name(base_name)
+    for index in range(MAX_CONFLICT_CANDIDATES - len(yielded)):
+        name = "[%03d] %s" % (index, base_name)
+        if name in yielded:
+            continue
+        yield destination.with_name(name)
+
+
+def smart_move(
+    source_path: Path,
+    dest_path: Path,
+    *,
+    rename_no_replace: RenameNoReplace,
+    expected_source_snapshot=None,
+) -> Path:
+    """Move with conflict resolution and an injected atomic no-replace primitive."""
+
+    destination = _destination_base(source_path, dest_path)
+    return move_to_first_available(
+        source_path,
+        _destination_candidates(destination),
+        rename_no_replace,
+        expected_source_snapshot=expected_source_snapshot,
+    )
+
+
+def smart_copy(
+    source_path: Path,
+    dest_path: Path,
+    *,
+    rename_no_replace: RenameNoReplace,
+    expected_source_snapshot=None,
+) -> Path:
+    """Copy through a flushed sibling staging entry, then atomically publish without replacement."""
+
+    destination = _destination_base(source_path, dest_path)
+    return copy_to_first_available(
+        source_path,
+        _destination_candidates(destination),
+        rename_no_replace,
+        expected_source_snapshot=expected_source_snapshot,
+    )

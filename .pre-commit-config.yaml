@@ -1,24 +1,34 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
     hooks:
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-json
+        exclude: ^\.vscode/.*\.json$
+      - id: check-merge-conflict
+      - id: detect-private-key
       - id: check-yaml
       - id: check-toml
       - id: end-of-file-fixer
         exclude: ".*.json"
       - id: trailing-whitespace
   - repo: https://github.com/psf/black
-    rev: 24.2.0
+    rev: 87928e6d6761a4a6d22250e1fee5601b3998086e # 26.5.1
     hooks:
       - id: black
   - repo: https://github.com/PyCQA/flake8
-    rev: 7.0.0
+    rev: d93590f5be797aabb60e3b09f2f52dddb02f349f # 7.3.0
     hooks:
       - id: flake8
-        exclude: ^(.tox|env|build|dist|help|qt/dg_rc.py|pkg).*
+        exclude: ^(.tox|env|build|dist|help|pkg).*
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+    hooks:
+      - id: actionlint
   - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
-    rev: v9.11.0
+    rev: 87d7b51771509a127827d8fe8d5e2451f90ce688 # v9.11.0
     hooks:
       - id: commitlint
         stages: [commit-msg]
-        additional_dependencies: ["@commitlint/config-conventional"]
+        additional_dependencies: ["@commitlint/config-conventional@19.8.1"]

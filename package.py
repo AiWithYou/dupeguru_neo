@@ -14,9 +14,9 @@ from argparse import ArgumentParser
 import platform
 import distro
 import re
+import subprocess
 
 from hscommon.build import (
-    print_and_do,
     copy_packages,
     build_debian_changelog,
     get_module_version,
@@ -26,9 +26,104 @@ from hscommon.build import (
     copy_all,
 )
 
-ENTRY_SCRIPT = "run.py"
+GUI_ENTRY_SCRIPT = "run.py"
+CLI_ENTRY_SCRIPT = "run_cli.py"
+WINDOWS_CLI_BINARY = "dupeguru"
 LOCALE_DIR = "build/locale"
 HELP_DIR = "build/help"
+FROZEN_NOTICE_DATA = (
+    ("LICENSE", "."),
+    ("THIRD_PARTY_NOTICES.md", "."),
+    (op.join("hscommon", "LICENSE"), "hscommon"),
+    ("release-sources.json", "."),
+    ("requirements-release.txt", "."),
+    (op.join("docs", "PORTABLE-NOTICE.txt"), "."),
+)
+
+
+def run_checked(args, *, cwd=None):
+    """Run a packaging command and abort immediately on a non-zero exit."""
+
+    printable = subprocess.list2cmdline([str(arg) for arg in args])
+    print(printable)
+    return subprocess.run([str(arg) for arg in args], cwd=cwd, check=True)
+
+
+def _frozen_notice_pyinstaller_arguments(data_separator):
+    return [f"--add-data={source}{data_separator}{destination}" for source, destination in FROZEN_NOTICE_DATA]
+
+
+def _windows_cli_pyinstaller_arguments():
+    return [
+        f"--name={WINDOWS_CLI_BINARY}",
+        "--onefile",
+        "--console",
+        "--noconfirm",
+        "--clean",
+        "--noupx",
+        "--exclude-module=PyQt6",
+        "--exclude-module=qt",
+        CLI_ENTRY_SCRIPT,
+    ]
+
+
+def _smoke_windows_cli(executable, version):
+    environment = os.environ.copy()
+    environment["PYTHONUTF8"] = "1"
+
+    def run_cli(*arguments):
+        try:
+            return subprocess.run(
+                [str(executable), *arguments],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=90,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(f"Windows CLI smoke timed out: {arguments[0]}") from error
+
+    version_result = run_cli("--version")
+    if version_result.returncode != 0 or version_result.stdout.strip() != version:
+        raise RuntimeError(
+            "Windows CLI --version smoke failed: " f"{version_result.stdout.strip()!r} {version_result.stderr[-1000:]}"
+        )
+
+    doctor_result = run_cli("doctor")
+    if doctor_result.returncode != 0:
+        raise RuntimeError(
+            f"Windows CLI doctor smoke failed ({doctor_result.returncode}): " f"{doctor_result.stderr[-1000:]}"
+        )
+    try:
+        doctor = json.loads(doctor_result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Windows CLI doctor smoke did not emit JSON") from error
+    if doctor.get("schema") != "dupeguru.doctor-report" or doctor.get("pyqt_imported") is not False:
+        raise RuntimeError("Windows CLI doctor smoke did not prove the Qt-free CLI boundary")
+
+    schema_result = run_cli("schema", "deletion-plan")
+    if schema_result.returncode != 0:
+        raise RuntimeError(
+            f"Windows CLI schema smoke failed ({schema_result.returncode}): " f"{schema_result.stderr[-1000:]}"
+        )
+    try:
+        schema = json.loads(schema_result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("Windows CLI schema smoke did not emit JSON") from error
+    if (
+        schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema"
+        or schema.get("$id") != "urn:dupeguru-neo:schema:deletion-plan:1"
+    ):
+        raise RuntimeError("Windows CLI schema smoke returned an unexpected schema")
+
+
+def _stage_windows_cli(cli_source, cli_destination):
+    if not op.isfile(cli_source) or op.islink(cli_source):
+        raise RuntimeError(f"frozen Windows CLI output is not a regular file: {cli_source}")
+    if op.lexists(cli_destination):
+        raise RuntimeError(f"refusing to overwrite frozen Windows CLI destination: {cli_destination}")
+    shutil.copy2(cli_source, cli_destination)
 
 
 def parse_args():
@@ -53,7 +148,8 @@ def copy_files_to_package(destpath, packages, with_so):
     if op.exists(destpath):
         shutil.rmtree(destpath)
     os.makedirs(destpath)
-    shutil.copy(ENTRY_SCRIPT, op.join(destpath, ENTRY_SCRIPT))
+    for entry_script in (GUI_ENTRY_SCRIPT, CLI_ENTRY_SCRIPT):
+        shutil.copy(entry_script, op.join(destpath, entry_script))
     extra_ignores = ["*.so"] if not with_so else None
     copy_packages(packages, destpath, extra_ignores=extra_ignores)
     # include locale files if they are built otherwise exit as it will break
@@ -71,7 +167,7 @@ def package_debian_distribution(distribution):
     version = "{}~{}".format(app_version, distribution)
     destpath = op.join("build", "dupeguru-{}".format(version))
     srcpath = op.join(destpath, "src")
-    packages = ["hscommon", "core", "qt", "send2trash"]
+    packages = ["hscommon", "core", "qt", "images"]
     copy_files_to_package(srcpath, packages, with_so=False)
     os.mkdir(op.join(destpath, "modules"))
     copy_all(op.join("core", "pe", "modules", "*.*"), op.join(destpath, "modules"))
@@ -87,7 +183,7 @@ def package_debian_distribution(distribution):
     debskel = op.join("pkg", "debian")
     os.makedirs(debdest)
     debopts = json.load(open(op.join(debskel, "dupeguru.json")))
-    for fn in ["compat", "copyright", "dirs", "rules", "source"]:
+    for fn in ["copyright", "dirs", "rules", "source"]:
         copy(op.join(debskel, fn), op.join(debdest, fn))
     filereplace(op.join(debskel, "control"), op.join(debdest, "control"), **debopts)
     filereplace(op.join(debskel, "Makefile"), op.join(destpath, "Makefile"), **debopts)
@@ -104,10 +200,7 @@ def package_debian_distribution(distribution):
         distribution=distribution,
     )
     shutil.copy(op.join("images", "dgse_logo_128.png"), srcpath)
-    os.chdir(destpath)
-    cmd = "dpkg-buildpackage -F -us -uc"
-    os.system(cmd)
-    os.chdir("../..")
+    run_checked(["dpkg-buildpackage", "-F", "-us", "-uc"], cwd=destpath)
 
 
 def package_debian():
@@ -122,7 +215,7 @@ def package_arch():
     # need to include them).
     print("Packaging for Arch")
     srcpath = op.join("build", "dupeguru-arch")
-    packages = ["hscommon", "core", "qt"]
+    packages = ["hscommon", "core", "qt", "images"]
     copy_files_to_package(srcpath, packages, with_so=True)
     shutil.copy(op.join("images", "dgse_logo_128.png"), srcpath)
     debopts = json.load(open(op.join("pkg", "arch", "dupeguru.json")))
@@ -136,8 +229,8 @@ def package_source_txz():
     base_path = os.getcwd()
     build_path = op.join(base_path, "build")
     dest = op.join(build_path, name)
-    print_and_do("git archive -o {} HEAD".format(dest))
-    print_and_do("xz {}".format(dest))
+    run_checked(["git", "archive", "--format=tar", "--output", dest, "HEAD"])
+    run_checked(["xz", "--force", dest])
 
 
 def package_windows():
@@ -148,54 +241,62 @@ def package_windows():
     version_array = match.group(0).split(".")
     match = re.search("[0-9]+", arch)
     bits = match.group(0)
-    if bits == "64":
-        arch = "x64"
-    else:
-        arch = "x86"
     # include locale files if they are built otherwise exit as it will break
     # the localization
     if not check_loc_doc():
         print("Exiting...")
         return
     # create version information file from template
-    try:
-        version_template = open("win_version_info.temp", "r")
+    with open("win_version_info.temp", "r", encoding="utf-8") as version_template:
         version_info = version_template.read()
-        version_template.close()
-        version_info_file = open("win_version_info.txt", "w")
+    with open("win_version_info.txt", "w", encoding="utf-8", newline="\n") as version_info_file:
         version_info_file.write(version_info.format(version_array[0], version_array[1], version_array[2], bits))
-        version_info_file.close()
-    except Exception:
-        print("Error creating version info file, exiting...")
-        return
     # run pyinstaller from here:
     import PyInstaller.__main__
 
     # UCRT dlls are included if the system has the windows kit installed
-    PyInstaller.__main__.run(
+    try:
+        PyInstaller.__main__.run(
+            [
+                "--name=dupeguru-neo-win{0}".format(bits),
+                "--windowed",
+                "--noconfirm",
+                "--icon=images/dgse_logo.ico",
+                "--add-data={0};locale".format(LOCALE_DIR),
+                "--add-data={0};help".format(HELP_DIR),
+                *_frozen_notice_pyinstaller_arguments(";"),
+                "--collect-data=images",
+                "--version-file=win_version_info.txt",
+                GUI_ENTRY_SCRIPT,
+            ]
+        )
+        PyInstaller.__main__.run(_windows_cli_pyinstaller_arguments())
+    finally:
+        os.remove("win_version_info.txt")
+    cli_source = op.join("dist", f"{WINDOWS_CLI_BINARY}.exe")
+    cli_destination = op.join(
+        "dist",
+        "dupeguru-neo-win{0}".format(bits),
+        f"{WINDOWS_CLI_BINARY}.exe",
+    )
+    _smoke_windows_cli(cli_source, app_version)
+    _stage_windows_cli(cli_source, cli_destination)
+    makensis = shutil.which("makensis")
+    if makensis is None:
+        raise RuntimeError("makensis is required to build the Windows installer")
+    run_checked(
         [
-            "--name=dupeguru-win{0}".format(bits),
-            "--windowed",
-            "--noconfirm",
-            "--icon=images/dgse_logo.ico",
-            "--add-data={0};locale".format(LOCALE_DIR),
-            "--add-data={0};help".format(HELP_DIR),
-            "--version-file=win_version_info.txt",
-            "--paths=C:\\Program Files (x86)\\Windows Kits\\10\\Redist\\ucrt\\DLLs\\{0}".format(arch),
-            ENTRY_SCRIPT,
+            makensis,
+            f"/DVERSIONMAJOR={version_array[0]}",
+            f"/DVERSIONMINOR={version_array[1]}",
+            f"/DVERSIONPATCH={version_array[2]}",
+            f"/DBITS={bits}",
+            "setup.nsi",
         ]
     )
-    # remove version info file
-    os.remove("win_version_info.txt")
-    # Call NSIS (TODO update to not use hardcoded path)
-    cmd = (
-        '"C:\\Program Files (x86)\\NSIS\\Bin\\makensis.exe" '
-        "/DVERSIONMAJOR={0} /DVERSIONMINOR={1} /DVERSIONPATCH={2} /DBITS={3} setup.nsi"
-    )
-    print_and_do(cmd.format(version_array[0], version_array[1], version_array[2], bits))
 
 
-def package_macos():
+def package_macos(args):
     # include locale files if they are built otherwise exit as it will break
     # the localization
     if not check_loc_doc():
@@ -204,31 +305,34 @@ def package_macos():
     # run pyinstaller from here:
     import PyInstaller.__main__
 
-    PyInstaller.__main__.run(
-        [
-            "--name=dupeguru",
-            "--windowed",
-            "--noconfirm",
-            "--icon=images/dupeguru.icns",
-            "--osx-bundle-identifier=com.hardcoded-software.dupeguru",
-            "--add-data={0}:locale".format(LOCALE_DIR),
-            "--add-data={0}:help".format(HELP_DIR),
-            "{0}".format(ENTRY_SCRIPT),
-        ]
-    )
+    pyinstaller_args = [
+        "--name=dupeguru-neo",
+        "--windowed",
+        "--noconfirm",
+        "--icon=images/dupeguru.icns",
+        "--osx-bundle-identifier=io.github.AiWithYou.dupeguru_neo",
+        "--add-data={0}:locale".format(LOCALE_DIR),
+        "--add-data={0}:help".format(HELP_DIR),
+        *_frozen_notice_pyinstaller_arguments(":"),
+        "--collect-data=images",
+    ]
+    if args.sign_identity:
+        pyinstaller_args.append(f"--codesign-identity={args.sign_identity}")
+    pyinstaller_args.append(GUI_ENTRY_SCRIPT)
+    PyInstaller.__main__.run(pyinstaller_args)
 
 
 def main():
     args = parse_args()
     if args.src_pkg:
-        print("Creating source package for dupeGuru")
+        print("Creating source package for dupeGuru Neo")
         package_source_txz()
         return
-    print("Packaging dupeGuru with UI qt")
+    print("Packaging dupeGuru Neo with UI qt")
     if sys.platform == "win32":
         package_windows()
     elif sys.platform == "darwin":
-        package_macos()
+        package_macos(args)
     else:
         if not args.arch_pkg:
             distname = distro.id()

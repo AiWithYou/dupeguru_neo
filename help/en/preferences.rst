@@ -31,17 +31,38 @@ Preferences
     you don't check it, well, they aren't!
 
 **Ignore duplicates hardlinking to the same file:**
-    If this option is enabled, dupeGuru will verify duplicates to see if they refer to the same
-    `inode`_. If they do, they will not be considered duplicates. (Only for OS X and Linux)
+    If this option is enabled, dupeGuru uses the platform's volume-scoped
+    physical file identity to avoid reporting two directory entries for the
+    same underlying file. A path is not used as an identity fallback.
+
+**Compare files only between different folder pools:**
+    Suppress a group when all of its members belong to one comparison pool.
+    This is useful when checking Incoming Files against a Protected Library
+    while ignoring internal duplicates in either collection.
+
+**Direct scan resource limits:**
+    Filename, folder, tag, and picture scans enumerate the selected filesystem
+    directly before matching. The Advanced preferences cap one pass at
+    1,000,000 files, 250,000 folders, 100,000 filesystem issues, and 14,400
+    seconds; each value may be lowered but not raised above that hard ceiling.
+    Reaching a limit or running out of memory discards the entire partial input
+    list before matching. The result receipt is marked resource-limited and
+    bulk file actions remain disabled.
+
+    For a very large exact-match library, use the Standard mode
+    **Contents** scan. Its Persistent Catalog processes the library in bounded,
+    resumable batches instead of materializing one direct-discovery input list.
 
 **Use regular expressions when filtering:**
     If you check this box, the filtering feature will treat your filter query as a
     **regular expression**. Explaining them is beyond the scope of this document. A good place to
     start learning it is `regular-expressions.info`_.
 
-**Remove empty folders after delete or move:**
-    When this option is enabled, folders are deleted after a file is deleted or moved and the folder
-    is empty.
+**Remove empty folders after move:**
+    When this option is enabled, source folders are removed if a move leaves
+    them empty. Quarantining a duplicate deliberately leaves its former folder
+    in place; this option never broadens a quarantine operation into directory
+    deletion.
 
 **Copy and Move:**
     Determines how the Copy and Move operations (in the Action menu) will behave.
@@ -66,7 +87,10 @@ filename if the filename already exists in the destination.
 **Custom Command:**
     This preference determines the command that will be invoked by the "Invoke Custom Command"
     action. You can invoke any external application through this action. This can be useful if,
-    for example, you have a nice diffing application installed.
+    for example, you have a nice diffing application installed. A custom
+    command is not covered by dupeGuru's verification, protected-folder,
+    quarantine, or restore guarantees. You must confirm that boundary before
+    each invocation.
 
 The format of the command is the same as what you would write in the command line, except that there
 are 2 placeholders: **%d** and **%r**. These placeholders will be replaced by the path of the
@@ -78,5 +102,4 @@ will contain spaces. Here's an example custom command::
 
     "C:\Program Files\SuperDiffProg\SuperDiffProg.exe" "%d" "%r"
 
-.. _inode: http://en.wikipedia.org/wiki/Inode
 .. _regular-expressions.info: http://www.regular-expressions.info

@@ -8,13 +8,20 @@ from xml.etree import ElementTree as ET
 # TODO: perhaps use regex module for better Unicode support? https://pypi.org/project/regex/
 # also https://pypi.org/project/re2/
 # TODO update the Result list with newly added regexes if possible
+import io
 import re
 from os import sep
 import logging
 import functools
-from hscommon.util import FileOrPath
 from hscommon.plat import ISWINDOWS
 import time
+from core.safe_xml import parse_xml, write_xml
+
+EXCLUDE_XML_MAX_BYTES = 4 * 1024 * 1024
+EXCLUDE_XML_MAX_ITEMS = 4096
+EXCLUDE_XML_MAX_REGEX_CHARS = 4096
+EXCLUDE_XML_MAX_TOTAL_REGEX_CHARS = 256 * 1024
+EXCLUDE_XML_MAX_TOTAL_CHARS = 2 * 1024 * 1024
 
 default_regexes = [
     r"^thumbs\.db$",  # Obsolete after WindowsXP
@@ -59,6 +66,14 @@ class AlreadyThereException(Exception):
         super().__init__(arg)
 
 
+class ExcludeListLoadError(ValueError):
+    """An exclusion-list document failed bounded schema validation."""
+
+
+class ExcludeListLimitError(ValueError):
+    """A runtime mutation would create an exclusion list the loader rejects."""
+
+
 class ExcludeList(Markable):
     """A list of lists holding regular expression strings and the compiled re.Pattern"""
 
@@ -73,6 +88,7 @@ class ExcludeList(Markable):
     # ---Override
     def __init__(self, union_regex=True):
         Markable.__init__(self)
+        self.revision = 0
         self._use_union = union_regex
         # list([str regex, bool iscompilable, re.error exception, Pattern compiled], ...)
         self._excluded = []
@@ -123,9 +139,11 @@ class ExcludeList(Markable):
 
     def _did_mark(self, regex):
         self._add_compiled(regex)
+        self.revision += 1
 
     def _did_unmark(self, regex):
         self._remove_compiled(regex)
+        self.revision += 1
 
     def _add_compiled(self, regex):
         self._dirty = True
@@ -234,13 +252,14 @@ class ExcludeList(Markable):
         if regex in forbidden_regexes:
             raise ValueError("Forbidden (dangerous) expression.")
 
-        iscompilable, exception, compiled = self.compile_re(regex)
+        iscompilable, exception, _compiled = self.compile_re(regex)
         if not iscompilable and not forced:
             # This exception can be ignored, but taken into account
             # to avoid adding to compiled set
             raise exception
-        else:
-            self._do_add(regex, iscompilable, exception, compiled)
+        candidate = [(False, regex), *list(self)]
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
 
     def _do_add(self, regex, iscompilable, exception, compiled):
         # We need to insert at the top
@@ -273,33 +292,104 @@ class ExcludeList(Markable):
         return matched
 
     def remove(self, regex):
-        for item in self._excluded:
-            if item[0] == regex:
-                self._excluded.remove(item)
-        self._remove_compiled(regex)
+        candidate = [(marked, item_regex) for marked, item_regex in self if item_regex != regex]
+        if len(candidate) == len(self._excluded):
+            return
+        self._replace_runtime_entries(candidate)
 
     def rename(self, regex, newregex):
         if regex == newregex:
             return
-        found = False
-        was_marked = False
-        is_compilable = False
-        for item in self._excluded:
-            if item[0] == regex:
-                found = True
-                was_marked = self.is_marked(regex)
-                is_compilable, exception, compiled = self.compile_re(newregex)
-                # We overwrite the found entry
-                self._excluded[self._excluded.index(item)] = [newregex, is_compilable, exception, compiled]
-                self._remove_compiled(regex)
-                break
-        if not found:
+        if not self.has_entry(regex):
             return
-        if is_compilable:
-            self._add_compiled(newregex)
-            if was_marked:
-                # Not marked by default when added, add it back
-                self.mark(newregex)
+        candidate = [(marked, newregex if item_regex == regex else item_regex) for marked, item_regex in self]
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    def mark(self, regex):
+        """Mark *regex* only if the complete persisted union remains loadable."""
+
+        if self.is_marked(regex) or not self.is_markable(regex):
+            return False
+        candidate = [(marked or item_regex == regex, item_regex) for marked, item_regex in self]
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+        return True
+
+    def unmark(self, regex):
+        if not self.is_marked(regex):
+            return False
+        candidate = [(False if item_regex == regex else marked, item_regex) for marked, item_regex in self]
+        self._replace_runtime_entries(candidate)
+        return True
+
+    def mark_toggle(self, regex):
+        if not self.is_markable(regex):
+            return False
+        candidate = [(not marked if item_regex == regex else marked, item_regex) for marked, item_regex in self]
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+        return True
+
+    def mark_multiple(self, regexes):
+        requested = set(regexes)
+        markable = self._markable_regexes()
+        candidate = [
+            (marked or (item_regex in requested and item_regex in markable), item_regex) for marked, item_regex in self
+        ]
+        if candidate == list(self):
+            return
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    def unmark_multiple(self, regexes):
+        requested = set(regexes)
+        candidate = [(marked and item_regex not in requested, item_regex) for marked, item_regex in self]
+        if candidate == list(self):
+            return
+        self._replace_runtime_entries(candidate)
+
+    def mark_toggle_multiple(self, regexes):
+        requested = set()
+        for regex in regexes:
+            if regex in requested:
+                requested.remove(regex)
+            else:
+                requested.add(regex)
+        markable = self._markable_regexes()
+        candidate = [
+            (
+                not marked if item_regex in requested and item_regex in markable else marked,
+                item_regex,
+            )
+            for marked, item_regex in self
+        ]
+        if candidate == list(self):
+            return
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    def mark_all(self):
+        markable = self._markable_regexes()
+        candidate = [(regex in markable, regex) for _marked, regex in self]
+        if candidate == list(self):
+            return
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    def mark_invert(self):
+        markable = self._markable_regexes()
+        candidate = [(not marked and regex in markable, regex) for marked, regex in self]
+        if candidate == list(self):
+            return
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    def mark_none(self):
+        candidate = [(False, regex) for _marked, regex in self]
+        if candidate == list(self):
+            return
+        self._replace_runtime_entries(candidate)
 
     # def change_index(self, regex, new_index):
     # """Internal list must be a list, not dict."""
@@ -307,59 +397,208 @@ class ExcludeList(Markable):
     #     self._excluded.insert(new_index, item)
 
     def restore_defaults(self):
-        for _, regex in self:
-            if regex not in default_regexes:
-                self.unmark(regex)
+        current = list(self)
+        present = {regex for _marked, regex in current}
+        candidate = [(regex in default_regexes, regex) for _marked, regex in current]
         for default_regex in default_regexes:
-            if not self.has_entry(default_regex):
-                self.add(default_regex)
-            self.mark(default_regex)
+            if default_regex not in present:
+                candidate.insert(0, (True, default_regex))
+        if candidate == current:
+            return
+        self._validate_runtime_entries(candidate)
+        self._replace_runtime_entries(candidate)
+
+    @staticmethod
+    def _require_whitespace(value, description):
+        if value and value.strip():
+            raise ExcludeListLoadError(f"{description} must not contain text")
+
+    @staticmethod
+    def _compile_loaded_regex(regex, item_number):
+        if not regex:
+            raise ExcludeListLoadError(f"exclude item {item_number} has an empty regex")
+        if len(regex) > EXCLUDE_XML_MAX_REGEX_CHARS:
+            raise ExcludeListLoadError(f"exclude item {item_number} regex is too long")
+        if regex in forbidden_regexes:
+            raise ExcludeListLoadError(f"exclude item {item_number} contains a forbidden regex")
+        try:
+            return re.compile(regex)
+        except re.error as error:
+            raise ExcludeListLoadError(f"exclude item {item_number} contains an invalid regex") from error
+
+    def _replace_loaded_entries(self, records):
+        """Install validated ``(regex, marked, compiled)`` records in O(n)."""
+
+        # XML is saved in reverse display order because entries are normally
+        # inserted at index zero. Reversing once restores the original order
+        # without repeatedly inserting or updating dictionary indices.
+        ordered = list(reversed(records))
+        marked = {regex for regex, is_marked, _compiled in ordered if is_marked}
+        if isinstance(self._excluded, dict):
+            replacement = {
+                regex: {
+                    "index": index,
+                    "compilable": True,
+                    "error": None,
+                    "compiled": compiled,
+                }
+                for index, (regex, _is_marked, compiled) in enumerate(ordered)
+            }
+        else:
+            replacement = [[regex, True, None, compiled] for regex, _is_marked, compiled in ordered]
+        compiled = set() if self._use_union else {compiled for regex, is_marked, compiled in ordered if is_marked}
+
+        self._replace_marked_state(marked)
+        self._excluded = replacement
+        self._excluded_compiled = compiled
+        self._dirty = True
+        self.revision += 1
+
+    def _replace_runtime_entries(self, entries):
+        """Install already validated display-order entries transactionally."""
+
+        records = [(regex, marked, re.compile(regex)) for marked, regex in reversed(entries)]
+        self._replace_loaded_entries(records)
+
+    def _ordered_regexes(self):
+        return [item[0] for item in self._excluded]
+
+    def _markable_regexes(self):
+        if isinstance(self._excluded, dict):
+            return {regex for regex, value in self._excluded.items() if value["compilable"]}
+        return {item[0] for item in self._excluded if item[1]}
+
+    def _tree_for_entries(self, entries):
+        root = ET.Element("exclude_list")
+        # Reverse display order so loading restores the same top-to-bottom order.
+        for marked, regex in reversed(entries):
+            exclude_node = ET.SubElement(root, "exclude")
+            exclude_node.set("regex", regex)
+            exclude_node.set("marked", "y" if marked else "n")
+        return ET.ElementTree(root)
+
+    def _validate_runtime_entries(self, entries):
+        """Apply the exact bounded loader contract before a runtime mutation."""
+
+        entries = list(entries)
+        try:
+            tree = self._tree_for_entries(entries)
+            payload = ET.tostring(
+                tree.getroot(),
+                encoding="utf-8",
+                xml_declaration=True,
+            )
+            self._parse_loaded_entries(io.BytesIO(payload))
+        except Exception as error:
+            failure = (
+                error
+                if isinstance(error, ExcludeListLoadError)
+                else ExcludeListLoadError("could not validate exclusion-list XML: {}".format(type(error).__name__))
+            )
+            raise ExcludeListLimitError(str(failure)) from error
+        return tree
+
+    def _parse_loaded_entries(self, infile):
+        root = parse_xml(
+            infile,
+            max_bytes=EXCLUDE_XML_MAX_BYTES,
+            max_elements=EXCLUDE_XML_MAX_ITEMS + 1,
+            max_depth=2,
+            max_attributes_per_element=2,
+            max_attributes=EXCLUDE_XML_MAX_ITEMS * 2,
+            max_name_chars=32,
+            max_attribute_chars=EXCLUDE_XML_MAX_REGEX_CHARS,
+            max_text_chars=4096,
+            max_tail_chars=4096,
+            max_total_chars=EXCLUDE_XML_MAX_TOTAL_CHARS,
+        )
+        if root.tag != "exclude_list":
+            raise ExcludeListLoadError("exclusion-list XML has the wrong root element")
+        if root.attrib:
+            raise ExcludeListLoadError("exclude_list must not have attributes")
+        self._require_whitespace(root.text, "exclude_list")
+        self._require_whitespace(root.tail, "exclude_list")
+
+        records = []
+        seen = set()
+        total_regex_chars = 0
+        for item_number, element in enumerate(root, 1):
+            if item_number > EXCLUDE_XML_MAX_ITEMS:
+                raise ExcludeListLoadError("exclusion-list item count exceeds the supported limit")
+            if element.tag != "exclude":
+                raise ExcludeListLoadError(f"exclude item {item_number} has an unknown element")
+            if set(element.attrib) != {"regex", "marked"}:
+                raise ExcludeListLoadError(f"exclude item {item_number} has invalid attributes")
+            if len(element):
+                raise ExcludeListLoadError(f"exclude item {item_number} must not have child elements")
+            self._require_whitespace(element.text, f"exclude item {item_number}")
+            self._require_whitespace(element.tail, f"exclude item {item_number}")
+
+            regex = element.attrib["regex"]
+            marked_value = element.attrib["marked"]
+            if marked_value not in {"y", "n"}:
+                raise ExcludeListLoadError(f"exclude item {item_number} has an invalid marked value")
+            if regex in seen:
+                raise ExcludeListLoadError(f"exclude item {item_number} duplicates an earlier regex")
+            seen.add(regex)
+            total_regex_chars += len(regex)
+            if total_regex_chars > EXCLUDE_XML_MAX_TOTAL_REGEX_CHARS:
+                raise ExcludeListLoadError("exclusion-list regex content exceeds the supported total limit")
+            records.append(
+                (
+                    regex,
+                    marked_value == "y",
+                    self._compile_loaded_regex(regex, item_number),
+                )
+            )
+        if self._use_union:
+            marked = [regex for regex, is_marked, _compiled in records if is_marked]
+            try:
+                if marked:
+                    re.compile("|".join(marked))
+                marked_files = [regex for regex in marked if not has_sep(regex)]
+                if marked_files:
+                    re.compile("|".join(marked_files))
+                marked_paths = [regex for regex in marked if has_sep(regex)]
+                if marked_paths:
+                    re.compile("|".join(marked_paths))
+            except re.error as error:
+                raise ExcludeListLoadError("marked regexes cannot be safely combined") from error
+        return records
 
     def load_from_xml(self, infile):
-        """Loads the ignore list from a XML created with save_to_xml.
+        """Transactionally load an exclusion list from bounded, strict XML.
 
         infile can be a file object or a filename.
         """
         try:
-            root = ET.parse(infile).getroot()
-        except Exception as e:
-            logging.warning(f"Error while loading {infile}: {e}")
-            self.restore_defaults()
-            return e
+            records = self._parse_loaded_entries(infile)
+        except Exception as error:
+            failure = (
+                error
+                if isinstance(error, ExcludeListLoadError)
+                else ExcludeListLoadError(f"could not load exclusion-list XML: {type(error).__name__}")
+            )
+            logging.warning("Error while loading exclusion-list XML: %s", failure)
+            # A missing first-run preference file historically initializes the
+            # default exclusions. Other failures preserve the current state.
+            if isinstance(error, FileNotFoundError) and not self._excluded:
+                defaults = [
+                    (regex, True, self._compile_loaded_regex(regex, index))
+                    for index, regex in enumerate(default_regexes, 1)
+                ]
+                self._replace_loaded_entries(defaults)
+            return failure
 
-        marked = set()
-        exclude_elems = (e for e in root if e.tag == "exclude")
-        for exclude_item in exclude_elems:
-            regex_string = exclude_item.get("regex")
-            if not regex_string:
-                continue
-            try:
-                # "forced" avoids compilation exceptions and adds anyway
-                self.add(regex_string, forced=True)
-            except AlreadyThereException:
-                logging.error(
-                    f'Regex "{regex_string}" \
-loaded from XML was already present in the list.'
-                )
-                continue
-            if exclude_item.get("marked") == "y":
-                marked.add(regex_string)
-
-        for item in marked:
-            self.mark(item)
+        self._replace_loaded_entries(records)
+        return None
 
     def save_to_xml(self, outfile):
         """Create a XML file that can be used by load_from_xml.
         outfile can be a file object or a filename."""
-        root = ET.Element("exclude_list")
-        # reversed in order to keep order of entries when reloading from xml later
-        for item in reversed(self._excluded):
-            exclude_node = ET.SubElement(root, "exclude")
-            exclude_node.set("regex", str(item[0]))
-            exclude_node.set("marked", ("y" if self.is_marked(item[0]) else "n"))
-        tree = ET.ElementTree(root)
-        with FileOrPath(outfile, "wb") as fp:
-            tree.write(fp, encoding="utf-8")
+        entries = [(self.is_marked(regex), regex) for regex in self._ordered_regexes()]
+        tree = self._validate_runtime_entries(entries)
+        write_xml(tree, outfile)
 
 
 class ExcludeDict(ExcludeList):
@@ -372,6 +611,7 @@ class ExcludeDict(ExcludeList):
 
     def __init__(self, union_regex=False):
         Markable.__init__(self)
+        self.revision = 0
         self._use_union = union_regex
         # { "regex string":
         #   {
@@ -440,54 +680,20 @@ class ExcludeDict(ExcludeList):
         return False
 
     def remove(self, regex):
-        old_value = self._excluded.pop(regex)
-        # Bring down all indices which where above it
-        index = old_value["index"]
-        if index == len(self._excluded) - 1:  # we start at 0...
-            # Old index was at the end, no need to update other indices
-            self._remove_compiled(regex)
-            return
-
-        for value in self._excluded.values():
-            if value.get("index") > old_value["index"]:
-                value["index"] -= 1
-        self._remove_compiled(regex)
+        super().remove(regex)
 
     def rename(self, regex, newregex):
-        if regex == newregex or regex not in self._excluded.keys():
-            return
-        was_marked = self.is_marked(regex)
-        previous = self._excluded.pop(regex)
-        iscompilable, error, compiled = self.compile_re(newregex)
-        self._excluded[newregex] = {
-            "index": previous.get("index"),
-            "compilable": iscompilable,
-            "error": error,
-            "compiled": compiled,
-        }
-        self._remove_compiled(regex)
-        if iscompilable:
-            self._add_compiled(newregex)
-            if was_marked:
-                self.mark(newregex)
+        super().rename(regex, newregex)
+
+    def _ordered_regexes(self):
+        return list(ordered_keys(self._excluded))
 
     def save_to_xml(self, outfile):
         """Create a XML file that can be used by load_from_xml.
 
         outfile can be a file object or a filename.
         """
-        root = ET.Element("exclude_list")
-        # reversed in order to keep order of entries when reloading from xml later
-        reversed_list = []
-        for key in ordered_keys(self._excluded):
-            reversed_list.append(key)
-        for item in reversed(reversed_list):
-            exclude_node = ET.SubElement(root, "exclude")
-            exclude_node.set("regex", str(item))
-            exclude_node.set("marked", ("y" if self.is_marked(item) else "n"))
-        tree = ET.ElementTree(root)
-        with FileOrPath(outfile, "wb") as fp:
-            tree.write(fp, encoding="utf-8")
+        super().save_to_xml(outfile)
 
 
 def ordered_keys(_dict):

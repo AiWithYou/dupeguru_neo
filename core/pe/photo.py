@@ -10,6 +10,7 @@ from hscommon.util import get_file_ext, format_size
 from core.util import format_timestamp, format_perc, format_dupe_count
 from core import fs
 from core.pe import exif
+from core.pe.image_features import read_image_quality
 
 # This global value is set by the platform-specific subclasser of the Photo base class
 PLAT_SPECIFIC_PHOTO_CLASS = None
@@ -25,7 +26,16 @@ def get_delta_dimensions(value, ref_value):
 
 class Photo(fs.File):
     INITIAL_INFO = fs.File.INITIAL_INFO.copy()
-    INITIAL_INFO.update({"dimensions": (0, 0), "exif_timestamp": ""})
+    INITIAL_INFO.update(
+        {
+            "dimensions": (0, 0),
+            "exif_timestamp": "",
+            "bit_depth": 0,
+            "exif_count": 0,
+            "metadata_count": 0,
+            "jpeg_artifact_score": 0.0,
+        }
+    )
     __slots__ = fs.File.__slots__ + tuple(INITIAL_INFO.keys())
 
     # These extensions are supported on all platforms
@@ -99,6 +109,17 @@ class Photo(fs.File):
                 self.dimensions = (self.dimensions[1], self.dimensions[0])
         elif field == "exif_timestamp":
             self.exif_timestamp = self._get_exif_timestamp()
+        elif field in {
+            "bit_depth",
+            "exif_count",
+            "metadata_count",
+            "jpeg_artifact_score",
+        }:
+            quality = read_image_quality(self.path)
+            self.bit_depth = quality.bit_depth
+            self.exif_count = quality.exif_count
+            self.metadata_count = quality.metadata_count
+            self.jpeg_artifact_score = quality.jpeg_artifact_score
 
     def get_blocks(self, block_count_per_side, orientation: int = None):
         if orientation is None:

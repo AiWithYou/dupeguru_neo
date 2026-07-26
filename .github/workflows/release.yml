@@ -1,0 +1,597 @@
+name: Tagged release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+  PYTHONUTF8: "1"
+
+jobs:
+  validate:
+    name: Validate immutable release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      stable: ${{ steps.gate.outputs.stable }}
+      version: ${{ steps.gate.outputs.version }}
+      source_date_epoch: ${{ steps.gate.outputs.source_date_epoch }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+      - name: Install release-gate dependency
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "packaging==26.2"
+      - name: Match tag, version, commit, and reproducible epoch
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python -c 'from core import __version__; print(__version__)')"
+          python scripts/release_metadata.py gate \
+            --tag "${GITHUB_REF_NAME}" \
+            --version "${version}" \
+            --commit "${GITHUB_SHA}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --github-env "${GITHUB_ENV}"
+
+  quality:
+    name: Release tests / ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install test dependencies
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "setuptools==83.0.0"
+          "wheel==0.47.0"
+          "pytest==9.1.1"
+          --editable .
+      - name: Build native modules
+        run: python build.py --modules
+      - name: Check installed dependency consistency
+        run: python -m pip check
+      - name: Run release tests with pytest 9
+        run: python -m pytest core hscommon qt/tests
+
+  build:
+    name: Build the canonical Python source distribution
+    needs: [validate, quality]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the exact frozen CPython runtime
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12.13"
+          cache: pip
+      - name: Install pinned packaging tools
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "build==1.5.0"
+          "twine==6.2.0"
+          "packaging==26.2"
+      - name: Build the one canonical source distribution
+        run: pyproject-build --sdist --outdir dist
+      - name: Validate the source-distribution metadata
+        run: python -m twine check --strict dist/*.tar.gz
+      - name: Upload the canonical source distribution
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  package:
+    name: Python package / ${{ matrix.target }} / CPython 3.12
+    needs: [validate, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x86_64
+          - os: windows-2022
+            target: windows-x86_64
+          - os: macos-15
+            target: macos-arm64
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up the exact frozen CPython runtime
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12.13"
+          cache: pip
+      - name: Install pinned package-verification tools
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "build==1.5.0"
+          "twine==6.2.0"
+          "packaging==26.2"
+      - name: Download the exact same canonical source distribution
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-sdist
+          path: dist
+      - name: Build this target's CPython 3.12 wheel from the canonical sdist
+        run: >-
+          python -m pip wheel
+          --no-deps
+          --wheel-dir dist
+          "dist/dupeguru_neo-${{ needs.validate.outputs.version }}.tar.gz"
+      - name: Validate this target's wheel and the canonical sdist
+        run: python scripts/ci_artifact_smoke.py --artifacts dist --twine-check
+      - name: Rebuild this target's wheel byte-for-byte from the canonical sdist
+        run: python scripts/ci_artifact_smoke.py --artifacts dist --reproducible-wheel
+      - name: Install the wheel and canonical sdist in separate clean environments
+        run: >-
+          python scripts/ci_artifact_smoke.py
+          --artifacts dist
+          --constraints requirements-release.txt
+          --qt-requirement "PyQt6==6.11.0"
+      - name: Install the canonical sdist for an exact runtime dependency snapshot
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          --force-reinstall
+          "dist/dupeguru_neo-${{ needs.validate.outputs.version }}.tar.gz"
+      - name: Check the dependency-snapshot environment for conflicts
+        run: python -m pip check
+      - name: Capture this target's installed runtime dependency closure
+        run: >-
+          python scripts/release_metadata.py dependency-snapshot
+          --distribution dupeguru-neo
+          --target "${{ matrix.target }}"
+          --output "dependency-snapshots/dependency-snapshot-${{ matrix.target }}.json"
+      - name: Upload this target's checked CPython 3.12 wheel
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Upload this target's exact runtime dependency snapshot
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-dependency-snapshot-${{ matrix.target }}
+          path: dependency-snapshots/*.json
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  portable:
+    name: Non-published portable smoke / ${{ matrix.platform }}
+    needs: [validate, quality]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2022
+            platform: windows
+          - os: macos-15
+            platform: macos
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12.13"
+          cache: pip
+      - name: Install pinned portable-build tools
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "setuptools==83.0.0"
+          "wheel==0.47.0"
+          "polib==1.2.0"
+          "sphinx==8.1.3"
+          "pyinstaller==6.21.0"
+          "packaging==26.2"
+          --editable .
+      - name: Build native modules, translations, and help
+        run: python build.py --clean
+      - name: Build and smoke the local frozen GUI without publishing it
+        run: >-
+          python scripts/portable_bundle.py build
+          --version "${{ needs.validate.outputs.version }}"
+          --output-directory portable-dist
+          --build-root portable-build
+
+  assemble:
+    name: Assemble and inventory the complete release payload
+    needs: [validate, build, package, portable]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install pinned release metadata tools
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "packaging==26.2"
+      - name: Download the canonical Python source distribution
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-sdist
+          path: dist
+      - name: Download all checked target-specific Python wheels
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-wheel-*
+          path: dist
+          merge-multiple: true
+      - name: Download every target's runtime dependency closure
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: release-dependency-snapshot-*
+          path: dependency-snapshots
+          merge-multiple: true
+      - name: Add signed top-level trust and license notices
+        run: |
+          cp LICENSE dist/LICENSE
+          cp THIRD_PARTY_NOTICES.md dist/THIRD_PARTY_NOTICES.md
+          cp hscommon/LICENSE dist/HSCOMMON-BSD-3-CLAUSE.txt
+          cp release-sources.json dist/release-sources.json
+          cp requirements-release.txt dist/requirements-release.txt
+      - name: Build and verify the exact tagged application source
+        run: >-
+          python scripts/release_metadata.py source-archive
+          --output "dist/dupeguru-neo-${RELEASE_VERSION}-source.tar.gz"
+          --commit "${GITHUB_SHA}"
+          --version "${RELEASE_VERSION}"
+      - name: Forbid unproven portable and native artifacts in the public payload
+        run: >-
+          python scripts/portable_bundle.py enforce-release-policy
+          --directory dist
+          --version "${RELEASE_VERSION}"
+      - name: Generate the aggregate cross-platform CycloneDX SBOM
+        run: >-
+          python scripts/release_metadata.py sbom
+          --distribution dupeguru-neo
+          --artifacts-directory dist
+          --dependency-snapshots-directory dependency-snapshots
+          --lock requirements-release.txt
+          --output "dist/dupeguru-neo-${RELEASE_VERSION}.cdx.json"
+      - name: Generate deterministic build manifest
+        run: >-
+          python scripts/release_metadata.py manifest
+          --directory dist
+          --output dist/BUILD-METADATA.json
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${GITHUB_SHA}"
+          --ref "${GITHUB_REF}"
+          --version "${RELEASE_VERSION}"
+          --lock requirements-release.txt
+      - name: Generate and verify SHA-256 inventory
+        run: |
+          python scripts/release_metadata.py checksums \
+            --directory dist \
+            --output dist/SHA256SUMS
+          python scripts/release_metadata.py verify-checksums \
+            --directory dist \
+            --checksums dist/SHA256SUMS
+          python scripts/release_metadata.py verify-payload \
+            --directory dist \
+            --version "${RELEASE_VERSION}" \
+            --payload-kind release \
+            --signature-mode forbidden
+      - name: Upload unsigned release payload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-unsigned
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  attest-and-sign:
+    name: Attest, sign, and verify release payload
+    needs: [validate, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+      - name: Install the pinned metadata verifier
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "packaging==26.2"
+      - name: Download the exact release payload
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-unsigned
+          path: dist
+      - name: Verify downloaded SHA-256 inventory
+        run: >-
+          python scripts/release_metadata.py verify-checksums
+          --directory dist
+          --checksums dist/SHA256SUMS
+      - name: Generate signed SLSA build provenance
+        id: provenance
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Generate signed CycloneDX SBOM attestation
+        id: sbom-attestation
+        uses: actions/attest@c32b4b8b198b65d0bd9d63490e847ff7b53989d4 # v4.0.0
+        with:
+          subject-checksums: dist/SHA256SUMS
+          sbom-path: dist/dupeguru-neo-${{ needs.validate.outputs.version }}.cdx.json
+      - name: Sign every release file and verify its Sigstore identity
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
+        with:
+          inputs: dist/*
+          verify: true
+          verify-cert-identity: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+          release-signing-artifacts: false
+          upload-signing-artifacts: false
+      - name: Require one validly structured bundle per release file
+        run: python scripts/release_metadata.py verify-signatures --directory dist
+      - name: Upload signed release payload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-signed
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  publish:
+    name: Publish only the verified signed payload
+    needs: [validate, attest-and-sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment:
+      name: ${{ needs.validate.outputs.stable == 'true' && 'stable-release' || 'prerelease' }}
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_ENVIRONMENT: ${{ needs.validate.outputs.stable == 'true' && 'stable-release' || 'prerelease' }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      SOURCE_DATE_EPOCH: ${{ needs.validate.outputs.source_date_epoch }}
+    steps:
+      - name: Check out the tagged revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Require protected publication settings and the original tag target
+        run: >-
+          python scripts/release_publication_gate.py
+          --repository "${GITHUB_REPOSITORY}"
+          --environment "${RELEASE_ENVIRONMENT}"
+          --tag "${GITHUB_REF_NAME}"
+          --commit "${GITHUB_SHA}"
+      - name: Set up the exact frozen CPython runtime
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12.13"
+      - name: Install the pinned source and Sigstore verifiers
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "packaging==26.2"
+          "sigstore==4.4.0"
+      - name: Download the signed release payload
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-signed
+          path: dist
+      - name: Revalidate hashes and mandatory signature bundles
+        run: |
+          python scripts/release_metadata.py verify-payload \
+            --directory dist \
+            --version "${RELEASE_VERSION}" \
+            --payload-kind release \
+            --signature-mode required
+          python scripts/release_metadata.py verify-checksums \
+            --directory dist \
+            --checksums dist/SHA256SUMS
+          python scripts/release_metadata.py verify-signatures --directory dist
+          python scripts/release_metadata.py verify-sigstore \
+            --directory dist \
+            --cert-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}" \
+            --cert-oidc-issuer "https://token.actions.githubusercontent.com"
+          python scripts/release_metadata.py verify-source-archive \
+            --archive "dist/dupeguru-neo-${RELEASE_VERSION}-source.tar.gz" \
+            --commit "${GITHUB_SHA}" \
+            --version "${RELEASE_VERSION}"
+          python scripts/portable_bundle.py enforce-release-policy \
+            --directory dist \
+            --version "${RELEASE_VERSION}"
+      - name: Verify GitHub provenance for every checksummed subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS=' ' read -r digest marked_name; do
+            test -n "${digest}"
+            name="${marked_name#\*}"
+            gh attestation verify "dist/${name}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+          done < dist/SHA256SUMS
+      - name: Upload every stable asset to a non-public draft
+        if: needs.validate.outputs.stable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_sha="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" \
+              --jq .sha
+          )"
+          test "${resolved_sha}" = "${GITHUB_SHA}"
+          gh release create "${GITHUB_REF_NAME}" \
+          dist/* \
+          --verify-tag \
+          --generate-notes \
+          --draft \
+          --title "${GITHUB_REF_NAME}" \
+          --notes "Portable GUI archives are intentionally not release assets until their complete native source, license, and SBOM closure can be proven. Build them locally only after reviewing docs/RELEASE.md."
+      - name: Upload every pre-release asset to a non-public draft
+        if: needs.validate.outputs.stable != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolved_sha="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF_NAME}" \
+              --jq .sha
+          )"
+          test "${resolved_sha}" = "${GITHUB_SHA}"
+          gh release create "${GITHUB_REF_NAME}" \
+          dist/* \
+          --verify-tag \
+          --generate-notes \
+          --draft \
+          --prerelease \
+          --title "${GITHUB_REF_NAME}" \
+          --notes "Portable GUI archives are intentionally not release assets until their complete native source, license, and SBOM closure can be proven. Build them locally only after reviewing docs/RELEASE.md."
+      - name: Publish the complete stable release
+        if: needs.validate.outputs.stable == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_publication_gate.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --environment "${RELEASE_ENVIRONMENT}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}" \
+            --release-assets-directory dist \
+            --require-draft \
+            --expected-prerelease false
+          gh release edit "${GITHUB_REF_NAME}" \
+          --draft=false \
+          --latest
+      - name: Publish the complete pre-release
+        if: needs.validate.outputs.stable != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release_publication_gate.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --environment "${RELEASE_ENVIRONMENT}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}" \
+            --release-assets-directory dist \
+            --require-draft \
+            --expected-prerelease true
+          gh release edit "${GITHUB_REF_NAME}" \
+          --draft=false \
+          --prerelease \
+          --latest=false

@@ -11,7 +11,12 @@ from hscommon.gui.tree import Tree, Node
 from core.directories import DirectoryState
 from core.gui.base import DupeGuruGUIObject
 
-STATE_ORDER = [DirectoryState.NORMAL, DirectoryState.REFERENCE, DirectoryState.EXCLUDED]
+STATE_ORDER = [
+    DirectoryState.NORMAL,
+    DirectoryState.REFERENCE,
+    DirectoryState.COMPARE_ONLY,
+    DirectoryState.EXCLUDED,
+]
 
 
 # Lazily loads children
@@ -87,10 +92,12 @@ class DirectoryTree(Tree, DupeGuruGUIObject):
             # All selected nodes or on second-or-more level, exclude them.
             nodes = self.selected_nodes
             newstate = DirectoryState.EXCLUDED
-            if all(node.state == DirectoryState.EXCLUDED for node in nodes):
+            excluded_index = STATE_ORDER.index(DirectoryState.EXCLUDED)
+            if all(node.state == excluded_index for node in nodes):
                 newstate = DirectoryState.NORMAL
+            newstate_index = STATE_ORDER.index(newstate)
             for node in nodes:
-                node.state = newstate
+                node.state = newstate_index
 
     def select_all(self):
         self.selected_nodes = list(self)

@@ -6,8 +6,8 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -28,7 +28,7 @@ tr = trget("ui")
 
 class ProblemDialog(QDialog):
     def __init__(self, parent, model, **kwargs):
-        flags = Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+        flags = Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint
         super().__init__(parent, flags, **kwargs)
         self._setupUi()
         self.model = model
@@ -52,9 +52,9 @@ class ProblemDialog(QDialog):
         self.label.setWordWrap(True)
         self.verticalLayout.addWidget(self.label)
         self.tableView = QTableView(self)
-        self.tableView.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tableView.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.tableView.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tableView.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tableView.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tableView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tableView.setShowGrid(False)
         self.tableView.horizontalHeader().setStretchLastSection(True)
         self.tableView.verticalHeader().setDefaultSectionSize(18)
@@ -64,7 +64,12 @@ class ProblemDialog(QDialog):
         self.revealButton = QPushButton(self)
         self.revealButton.setText(tr("Reveal Selected"))
         self.horizontalLayout.addWidget(self.revealButton)
-        spacer_item = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        spacer_item = QSpacerItem(
+            40,
+            20,
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
         self.horizontalLayout.addItem(spacer_item)
         self.closeButton = QPushButton(self)
         self.closeButton.setText(tr("Close"))

@@ -1,3 +1,25 @@
+=== 5.0.0 (2026-07-26)
+* Introduce the Verified Exact engine: sample hashes only filter candidates; full hashes and final stable-handle byte comparisons establish exact groups.
+* Separate duplicate-removal authority from explicit organizer Copy/Move: only green Verified Exact results can enter quarantine, while green, yellow, or blue Incoming Files from a complete current scan may be copied or moved with no-replace publication.
+* Replace quadratic exact-match storage with linear exact groups and a lazy compatibility match view.
+* Add SHA-256-bound immutable action plans, recoverable same-volume quarantine, durable journals, restore, crash recovery, and separately revalidated permanent finalization.
+* Give yellow approximate and blue related results no deletion authority; saved reports, partial or stale scans, gray unknown evidence, protected pools, and unsupported filesystems cannot enter quarantine or organizer mutation.
+* Add a no-follow, coverage-reporting walker and native Windows/POSIX physical file identities.
+* Add a local SQLite library catalog with content generations, rename-aware paths, derived artifacts, resumable scans, leases, and action history.
+* Add indexed image candidates using deterministic EXIF/ICC/alpha normalization and pHash MultiIndex lookup before 15x15 block refinement.
+* Add a virtualized picture review gallery with lazy thumbnails, relation colors, metadata overlays, keyboard review, and synchronized comparison.
+* Add explainable keeper scoring and Incoming, Protected Library, Compare Only, and Excluded folder pools.
+* Keep Folder-scan matches as gray aggregate manifest evidence with no quarantine or program-managed organizer authority, rather than presenting them as byte-verified exact groups.
+* Add sidecar-aware dataset planning, cluster-safe train/validation/test splits, and transactional bundle execution.
+* Isolate every dataset executor journal beneath a reserved state namespace, prune all program-owned state from later scans, and bind recovery documents to their physical namespace.
+* Add bounded FFmpeg/ffprobe/Chromaprint video fingerprints and temporal relation classification.
+* Add a Qt-free versioned JSON/JSONL CLI with dry-run-by-default actions.
+* Migrate the desktop application and build system to PyQt6 and packaged filesystem resources.
+* Add Python 3.10-3.14 CI, clean artifact installation tests, SBOM, SHA-256 inventory, provenance, Sigstore verification, and non-published local portable GUI smoke builds.
+* Fail closed against official portable and source-companion assets until every bundled native component has proven source, license, and SBOM coverage.
+* Harden XML parsing, custom command execution, diagnostic redaction, schema validation, release identity, and dependency constraints.
+* Start a marker-owned ``hash_cache_v3.sqlite3`` without opening or modifying the legacy ``hash_cache.db``; the first scan rebuilds exact hashes.
+
 === 4.3.1 (2022-07-08)
 * Fix issue where cache db exceptions could prevent files being hashed (#1015)
 * Add extra guard for non-zero length files without digests to prevent false duplicates
@@ -139,7 +161,6 @@
 * Bump Python requirement to v3.4.
 * Bump OS X requirement to 10.8
 * Drop Windows support, maybe temporarily.
-  `Details <https://www.hardcoded.net/archive2015#2015-11-01>`_
 * cocoa: Drop iPhoto, Aperture and iTunes support. Was unmaintained and obsolete.
 * Drop "Audio Contents" scan type. Was confusing and seldom useful.
 * Change license to GPLv3
@@ -162,7 +183,7 @@
 * ... But with a couple of little improvements.
 * Improved documentation.
 * Overwrite subfolders' state when setting states in folder dialog (#248)
-* The error report dialog now brings the user to Github issues.
+* The diagnostics dialog now links to GitHub issues.
 
 === 3.8.0 (2013-12-07)
 
@@ -174,7 +195,7 @@
 * Improved documentation.
 * Important internal refactorings.
 * Dropped Ubuntu 12.04 and 12.10 support.
-* Removed the fairware dialog ([More Info](http://www.hardcoded.net/articles/phasing-out-fairware)).
+* Removed the fairware dialog.
 
 === 3.7.1 (2013-08-19)
 
@@ -193,7 +214,7 @@
 * Improved "Make Selection Reference" to make it clearer. (#222)
 * Improved "Open Selected" to allow opening more than one file at once. (#142)
 * Fixed a few typos here and there. (#216 #225)
-* Tweaked the fairware dialog ([More Info](http://www.hardcoded.net/articles/phasing-out-fairware)).
+* Tweaked the fairware dialog.
 * Added Arch Linux packaging
 * Added a 64-bit build for Windows.
 * Improved Russian localization by Kyrill Detinov.
@@ -230,7 +251,7 @@
 * Fixed "Open with default application". (#190)
 * Fixed a bug where there would be a false reporting of discarded matches. (#195)
 * Fixed various localization glitches.
-* Fixed hard crashes on crash reporting. (#196)
+* Fixed hard failures while preparing diagnostic reports. (#196)
 * Fixed bug where the details panel would show up at inconvenient places in the screen. [Windows, Linux]
 
 === 3.3.3 (2012-02-01)
@@ -330,7 +351,7 @@
 * Fixed occasional crash during scan. (#106)
 
 === 2.12.1 (2010-09-30)
-*  Re-licensed dupeGuru to BSD and made it [Fairware](http://open.hardcoded.net/about/).
+*  Re-licensed dupeGuru to BSD and made it Fairware.
 
 === 2.12.0 (2010-09-26)
 *  Improved UI with a little revamp.

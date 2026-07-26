@@ -6,37 +6,57 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import heapq
 import logging
+import math
 import multiprocessing
-from itertools import combinations
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass
 
-from hscommon.util import extract, iterconsume
 from hscommon.trans import tr
 from hscommon.jobprogress import job
 
 from core.engine import Match
+from core.scan_receipt import ScanIssue, ScanReceipt, ScanStatus
 from core.pe.block import avgdiff, DifferentBlockCountError, NoBlocksError
-from core.pe.cache_sqlite import SqliteCache
+from core.pe.candidate_index import MultiIndexHamming, hamming_distance
+from core.pe.cache_sqlite import SqliteCache, capture_source_binding
+from core.pe.image_features import (
+    DecoderUnavailableError,
+    FEATURE_VERSION,
+    ImageDecodeError,
+    ImageResourceLimitError,
+    decode_image_features,
+)
 
-# OPTIMIZATION NOTES:
-# The bottleneck of the matching phase is CPU, which is why we use multiprocessing. However, another
-# bottleneck that shows up when a lot of pictures are involved is Disk IO's because blocks
-# constantly have to be read from disks by subprocesses. This problem is especially big on CPUs
-# with a lot of cores. Therefore, we must minimize Disk IOs. The best way to achieve that is to
-# separate the files to scan in "chunks" and it's by chunk that blocks are read in memory and
-# compared to each other. Each file in a chunk has to be compared to each other, of course, but also
-# to files in other chunks. So chunkifying doesn't save us any actual comparison, but the advantage
-# is that instead of reading blocks from disk number_of_files**2 times, we read it
-# number_of_files*number_of_chunks times.
-# Determining the right chunk size is tricky, because if it's too big, too many blocks will be in
-# memory at the same time and we might end up with memory trashing, which is awfully slow. So,
-# because our *real* bottleneck is CPU, the chunk size must simply be enough so that the CPU isn't
-# starved by Disk IOs.
+# pHash is only a candidate-generation accelerator.  Every emitted Match still passes through the
+# established 15x15 block comparison below.  The multi-index query is exact within its configured
+# Hamming radius, and candidate batches stay bounded while worker processes read cached blocks.
 
 MIN_ITERATIONS = 3
 BLOCK_COUNT_PER_SIDE = 15
-DEFAULT_CHUNK_SIZE = 1000
-MIN_CHUNK_SIZE = 100
+CANDIDATE_BATCH_SIZE = 2048
+DEFAULT_PHASH_DISTANCE = 8
+DEFAULT_DHASH_DISTANCE = 24
+DEFAULT_COLOR_HISTOGRAM_DISTANCE = 0.55
+DEFAULT_MAX_CANDIDATE_PAIRS = 250_000
+DEFAULT_MAX_REFINED_PAIRS = 250_000
+DEFAULT_MAX_MATCHES = 50_000
+MIN_MULTIPROCESS_PICTURES = 200
+
+
+@dataclass(frozen=True)
+class _WorstRankedPath:
+    path: str
+    rank: tuple
+
+    def __lt__(self, other):
+        if not isinstance(other, _WorstRankedPath):
+            return NotImplemented
+        return self.rank > other.rank
+
 
 # Enough so that we're sure that the main thread will not wait after a result.get() call
 # cpucount+1 should be enough to be sure that the spawned process will not wait after the results
@@ -50,72 +70,204 @@ except Exception:
     RESULTS_QUEUE_LIMIT = 8
 
 
+@dataclass(frozen=True)
+class ImageCandidateStats:
+    indexed_images: int
+    possible_pairs: int
+    candidate_pairs: int
+    refined_pairs: int
+    match_count: int
+    phash_distance: int
+    max_candidate_pairs: int
+    max_refined_pairs: int
+    max_matches: int
+    candidate_limit_reached: bool = False
+    refinement_limit_reached: bool = False
+    match_limit_reached: bool = False
+
+    def __post_init__(self):
+        counts = (
+            self.indexed_images,
+            self.possible_pairs,
+            self.candidate_pairs,
+            self.refined_pairs,
+            self.match_count,
+        )
+        if any(count < 0 for count in counts):
+            raise ValueError("candidate statistics must not be negative")
+        if self.candidate_pairs > self.possible_pairs:
+            raise ValueError("candidate pairs cannot exceed possible pairs")
+        if self.refined_pairs > self.candidate_pairs:
+            raise ValueError("refined pairs cannot exceed candidate pairs")
+        if self.match_count > self.refined_pairs:
+            raise ValueError("matches cannot exceed refined pairs")
+        if not 0 <= self.phash_distance <= 64:
+            raise ValueError("pHash distance must be between 0 and 64")
+        for name in (
+            "max_candidate_pairs",
+            "max_refined_pairs",
+            "max_matches",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError("{} must be a positive integer".format(name))
+        for name in (
+            "candidate_limit_reached",
+            "refinement_limit_reached",
+            "match_limit_reached",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError("{} must be boolean".format(name))
+
+    @property
+    def reduction_ratio(self):
+        if not self.possible_pairs:
+            return 1.0
+        return 1 - (self.candidate_pairs / self.possible_pairs)
+
+
+class ImageMatchResult(list):
+    """List-compatible fuzzy matches with explicit scan coverage and candidate statistics."""
+
+    def __init__(self, matches=(), scan_receipt=None, candidate_stats=None):
+        super().__init__(matches)
+        self.scan_receipt = scan_receipt
+        self.candidate_stats = candidate_stats
+
+
+@dataclass
+class _PreparationResult:
+    pictures: list
+    features_by_path: dict
+    volatile_blocks_by_id: dict
+    issues: list
+    skipped: int = 0
+    resource_limited: bool = False
+    fatal: bool = False
+
+
 def get_cache(cache_path, readonly=False):
-    return SqliteCache(cache_path, readonly=readonly)
+    return SqliteCache(cache_path or ":memory:", readonly=readonly)
+
+
+def _uses_memory_cache(cache_path):
+    return not cache_path or cache_path == ":memory:"
 
 
 def prepare_pictures(pictures, cache_path, with_dimensions, match_rotated, j=job.nulljob):
-    # The MemoryError handlers in there use logging without first caring about whether or not
-    # there is enough memory left to carry on the operation because it is assumed that the
-    # MemoryError happens when trying to read an image file, which is freed from memory by the
-    # time that MemoryError is raised.
+    """Normalize and cache image features without presenting skipped inputs as analyzed."""
+
     cache = get_cache(cache_path)
-    cache.purge_outdated()
-    prepared = []  # only pictures for which there was no error getting blocks
+    prepared = []
+    features_by_path = {}
+    volatile_blocks_by_id = {}
+    issues = []
+    skipped = 0
+    resource_limited = False
+    fatal = False
     try:
+        cache.purge_outdated()
         for picture in j.iter_with_progress(pictures, tr("Analyzed %d/%d pictures")):
             if not picture.path:
-                # XXX Find the root cause of this. I've received reports of crashes where we had
-                # "Analyzing picture at " (without a path) in the debug log. It was an iPhoto scan.
-                # For now, I'm simply working around the crash by ignoring those, but it would be
-                # interesting to know exactly why this happens. I'm suspecting a malformed
-                # entry in iPhoto library.
                 logging.warning("We have a picture with a null path here")
+                skipped += 1
+                issues.append(ScanIssue("missing_path", "Picture has no filesystem path"))
                 continue
-            logging.debug("Analyzing picture at %s", picture.unicode_path)
-            if with_dimensions:
-                picture.dimensions  # pre-read dimensions
+            path_str = picture.unicode_path
+            logging.debug("Analyzing picture at %s", path_str)
             try:
-                if picture.unicode_path not in cache or (
-                    match_rotated and any(block == [] for block in cache[picture.unicode_path])
+                try:
+                    features = cache.get_feature_metadata(path_str)
+                    if features.feature_version != FEATURE_VERSION:
+                        raise KeyError(path_str)
+                    if match_rotated and features.orientation_count != 8:
+                        raise KeyError(path_str)
+                except (KeyError, ValueError):
+                    before = capture_source_binding(path_str)
+                    decoded = decode_image_features(
+                        path_str,
+                        block_count_per_side=BLOCK_COUNT_PER_SIDE,
+                        include_orientations=match_rotated,
+                    )
+                    expected_orientations = 8 if match_rotated else 1
+                    if decoded.feature_version != FEATURE_VERSION or decoded.orientation_count != expected_orientations:
+                        raise ImageDecodeError("decoder returned incompatible image feature policy")
+                    after = capture_source_binding(path_str)
+                    if before.generation != after.generation or before.identity_json != after.identity_json:
+                        raise ImageDecodeError("image changed while its features were being calculated")
+                    cache.put_features(
+                        path_str,
+                        decoded,
+                        expected_binding=after,
+                    )
+                    features = cache.get_feature_metadata(path_str)
+                    if _uses_memory_cache(cache_path):
+                        volatile_blocks_by_id[features.rowid] = decoded.blocks
+                try:
+                    picture.dimensions = features.dimensions
+                except (AttributeError, TypeError):
+                    # Some non-Qt test doubles expose dimensions as a read-only property.  Matching
+                    # still uses the normalized dimensions from the cache record.
+                    pass
+                for name, value in (
+                    ("bit_depth", features.quality.bit_depth),
+                    ("exif_count", features.quality.exif_count),
+                    ("metadata_count", features.quality.metadata_count),
+                    (
+                        "jpeg_artifact_score",
+                        features.quality.jpeg_artifact_score,
+                    ),
                 ):
-                    if match_rotated:
-                        blocks = [picture.get_blocks(BLOCK_COUNT_PER_SIDE, orientation) for orientation in range(1, 9)]
-                    else:
-                        blocks = [[]] * 8
-                        blocks[max(picture.get_orientation() - 1, 0)] = picture.get_blocks(BLOCK_COUNT_PER_SIDE)
-                    cache[picture.unicode_path] = blocks
+                    try:
+                        setattr(picture, name, value)
+                    except (AttributeError, TypeError):
+                        # Test doubles and foreign frontends may expose read-only
+                        # properties.  Matching does not depend on keeper metadata.
+                        pass
                 prepared.append(picture)
-            except (OSError, ValueError) as e:
-                logging.warning(str(e))
+                features_by_path[path_str] = features
+            except DecoderUnavailableError as error:
+                logging.error("%s", error)
+                issues.append(ScanIssue(error.code, str(error), path_str))
+                fatal = True
+                break
+            except ImageResourceLimitError as error:
+                logging.warning("Resource limit while reading %s: %s", path_str, error)
+                issues.append(ScanIssue(error.code, str(error), path_str))
+                resource_limited = True
+                break
+            except ImageDecodeError as error:
+                logging.warning("Could not analyze %s: %s", path_str, error)
+                issues.append(ScanIssue(error.code, str(error), path_str))
             except MemoryError:
-                logging.warning(
-                    "Ran out of memory while reading %s of size %d",
-                    picture.unicode_path,
-                    picture.size,
+                logging.warning("Ran out of memory while reading %s", path_str)
+                issues.append(
+                    ScanIssue(
+                        "resource_limit",
+                        "Not enough memory to cache normalized image features",
+                        path_str,
+                    )
                 )
-                if picture.size < 10 * 1024 * 1024:  # We're really running out of memory
-                    raise
+                resource_limited = True
+                break
+            except (OSError, ValueError, sqlite3.DatabaseError) as error:
+                logging.warning("Could not cache image features for %s: %s", path_str, error)
+                issues.append(ScanIssue("feature_cache_failure", str(error), path_str))
     except MemoryError:
         logging.warning("Ran out of memory while preparing pictures")
-    cache.close()
-    return prepared
-
-
-def get_chunks(pictures):
-    min_chunk_count = multiprocessing.cpu_count() * 2  # have enough chunks to feed all subprocesses
-    chunk_count = len(pictures) // DEFAULT_CHUNK_SIZE
-    chunk_count = max(min_chunk_count, chunk_count)
-    chunk_size = (len(pictures) // chunk_count) + 1
-    chunk_size = max(MIN_CHUNK_SIZE, chunk_size)
-    logging.info(
-        "Creating %d chunks with a chunk size of %d for %d pictures",
-        chunk_count,
-        chunk_size,
-        len(pictures),
+        issues.append(ScanIssue("resource_limit", "Not enough memory to prepare the picture scan"))
+        resource_limited = True
+    finally:
+        cache.close()
+    return _PreparationResult(
+        pictures=prepared,
+        features_by_path=features_by_path,
+        volatile_blocks_by_id=volatile_blocks_by_id,
+        issues=issues,
+        skipped=skipped,
+        resource_limited=resource_limited,
+        fatal=fatal,
     )
-    chunks = [pictures[i : i + chunk_size] for i in range(0, len(pictures), chunk_size)]
-    return chunks
 
 
 def get_match(first, second, percentage):
@@ -124,140 +276,470 @@ def get_match(first, second, percentage):
     return Match(first, second, percentage)
 
 
-def async_compare(ref_ids, other_ids, dbname, threshold, picinfo, match_rotated=False):
-    # The list of ids in ref_ids have to be compared to the list of ids in other_ids. other_ids
-    # can be None. In this case, ref_ids has to be compared with itself
-    # picinfo is a dictionary {pic_id: (dimensions, is_ref)}
-    cache = get_cache(dbname, readonly=True)
+def _dimensions_compatible(first, second, match_scaled, match_rotated):
+    if match_scaled or first == second:
+        return True
+    return bool(match_rotated and (first[1], first[0]) == second)
+
+
+def _histogram_distance(first, second):
+    return sum(abs(left - right) for left, right in zip(first, second)) / (2 * 32 * 32)
+
+
+def _compare_blocks(first_blocks, second_blocks, threshold, match_rotated):
     limit = 100 - threshold
-    ref_pairs = list(cache.get_multiple(ref_ids))  # (rowid, [b, b2, ..., b8])
-    if other_ids is not None:
-        other_pairs = list(cache.get_multiple(other_ids))
-        comparisons_to_do = [(r, o) for r in ref_pairs for o in other_pairs]
-    else:
-        comparisons_to_do = list(combinations(ref_pairs, 2))
-    results = []
-    for (ref_id, ref_blocks), (other_id, other_blocks) in comparisons_to_do:
-        ref_dimensions, ref_is_ref = picinfo[ref_id]
-        other_dimensions, other_is_ref = picinfo[other_id]
-        if ref_is_ref and other_is_ref:
-            continue
-        if ref_dimensions != other_dimensions:
-            if match_rotated:
-                rotated_ref_dimensions = (ref_dimensions[1], ref_dimensions[0])
-                if rotated_ref_dimensions != other_dimensions:
-                    continue
-            else:
-                continue
-
-        orientation_range = 1
-        if match_rotated:
-            orientation_range = 8
-
-        for orientation_ref in range(orientation_range):
-            try:
-                diff = avgdiff(ref_blocks[orientation_ref], other_blocks[0], limit, MIN_ITERATIONS)
-                percentage = 100 - diff
-            except (DifferentBlockCountError, NoBlocksError):
-                percentage = 0
-            if percentage >= threshold:
-                results.append((ref_id, other_id, percentage))
-                break
-
-    cache.close()
-    return results
-
-
-def getmatches(pictures, cache_path, threshold, match_scaled=False, match_rotated=False, j=job.nulljob):
-    def get_picinfo(p):
-        if match_scaled:
-            return ((None, None), p.is_ref)
-        else:
-            return (p.dimensions, p.is_ref)
-
-    def collect_results(collect_all=False):
-        # collect results and wait until the queue is small enough to accomodate a new results.
-        nonlocal async_results, matches, comparison_count, comparisons_to_do
-        limit = 0 if collect_all else RESULTS_QUEUE_LIMIT
-        while len(async_results) > limit:
-            ready, working = extract(lambda r: r.ready(), async_results)
-            for result in ready:
-                matches += result.get()
-                async_results.remove(result)
-                comparison_count += 1
-        # About the NOQA below: I think there's a bug in pyflakes. To investigate...
-        progress_msg = tr("Performed %d/%d chunk matches") % (
-            comparison_count,
-            len(comparisons_to_do),
-        )  # NOQA
-        j.set_progress(comparison_count, progress_msg)
-
-    j = j.start_subjob([3, 7])
-    pictures = prepare_pictures(pictures, cache_path, not match_scaled, match_rotated, j=j)
-    j = j.start_subjob([9, 1], tr("Preparing for matching"))
-    cache = get_cache(cache_path)
-    id2picture = {}
-    for picture in pictures:
+    orientation_count = 8 if match_rotated else 1
+    for orientation in range(orientation_count):
         try:
-            picture.cache_id = cache.get_id(picture.unicode_path)
-            id2picture[picture.cache_id] = picture
-        except ValueError:
-            pass
-    cache.close()
-    pictures = [p for p in pictures if hasattr(p, "cache_id")]
-    pool = multiprocessing.Pool()
-    async_results = []
-    matches = []
-    chunks = get_chunks(pictures)
-    # We add a None element at the end of the chunk list because each chunk has to be compared
-    # with itself. Thus, each chunk will show up as a ref_chunk having other_chunk set to None once.
-    comparisons_to_do = list(combinations(chunks + [None], 2))
-    comparison_count = 0
-    j.start_job(len(comparisons_to_do))
-    try:
-        for ref_chunk, other_chunk in comparisons_to_do:
-            picinfo = {p.cache_id: get_picinfo(p) for p in ref_chunk}
-            ref_ids = [p.cache_id for p in ref_chunk]
-            if other_chunk is not None:
-                other_ids = [p.cache_id for p in other_chunk]
-                picinfo.update({p.cache_id: get_picinfo(p) for p in other_chunk})
-            else:
-                other_ids = None
-            args = (ref_ids, other_ids, cache_path, threshold, picinfo, match_rotated)
-            async_results.append(pool.apply_async(async_compare, args))
-            collect_results()
-        collect_results(collect_all=True)
-    except MemoryError:
-        # Rare, but possible, even in 64bit situations (ref #264). What do we do now? We free us
-        # some wiggle room, log about the incident, and stop matching right here. We then process
-        # the matches we have. The rest of the process doesn't allocate much and we should be
-        # alright.
-        del (
-            comparisons_to_do,
-            chunks,
-            pictures,
-        )  # some wiggle room for the next statements
-        logging.warning("Ran out of memory when scanning! We had %d matches.", len(matches))
-        del matches[-len(matches) // 3 :]  # some wiggle room to ensure we don't run out of memory again.
-    pool.close()
-    result = []
-    myiter = j.iter_with_progress(
-        iterconsume(matches, reverse=False),
-        tr("Verified %d/%d matches"),
-        every=10,
-        count=len(matches),
-    )
-    for ref_id, other_id, percentage in myiter:
-        ref = id2picture[ref_id]
-        other = id2picture[other_id]
-        if percentage == 100 and ref.digest != other.digest:
-            percentage = 99
+            diff = avgdiff(first_blocks[orientation], second_blocks[0], limit, MIN_ITERATIONS)
+            percentage = 100 - diff
+        except (DifferentBlockCountError, NoBlocksError):
+            percentage = 0
         if percentage >= threshold:
-            ref.dimensions  # pre-read dimensions for display in results
-            other.dimensions
-            result.append(get_match(ref, other, percentage))
-    pool.join()
-    return result
+            # A fuzzy picture scan never proves byte identity.  Exact groups are exclusively
+            # created by the verified contents engine.
+            return min(percentage, 99)
+    return None
+
+
+def async_compare_candidates(candidate_pairs, dbname, threshold, match_rotated=False):
+    """Refine a bounded candidate batch in a worker process."""
+
+    cache = get_cache(dbname, readonly=True)
+    try:
+        ids = sorted({cache_id for pair in candidate_pairs for cache_id in pair})
+        blocks_by_id = dict(cache.get_multiple(ids))
+        results = []
+        for first_id, second_id in candidate_pairs:
+            percentage = _compare_blocks(
+                blocks_by_id[first_id],
+                blocks_by_id[second_id],
+                threshold,
+                match_rotated,
+            )
+            if percentage is not None:
+                results.append((first_id, second_id, percentage))
+        return results, len(candidate_pairs)
+    finally:
+        cache.close()
+
+
+def _build_candidate_index(pictures, features_by_path, max_distance, j):
+    index = MultiIndexHamming(bit_width=64, max_distance=max_distance)
+    ordered = sorted(pictures, key=lambda picture: picture.unicode_path)
+    j.start_job(len(ordered), tr("Indexing picture fingerprints"))
+    for picture in ordered:
+        path_str = picture.unicode_path
+        index.add(path_str, features_by_path[path_str].phashes[0])
+        j.add_progress()
+    return index, ordered
+
+
+def _iter_candidate_batches(
+    ordered,
+    features_by_path,
+    index,
+    max_distance,
+    match_scaled,
+    match_rotated,
+    counters,
+    j,
+    max_candidate_pairs=DEFAULT_MAX_CANDIDATE_PAIRS,
+    dhash_distance=DEFAULT_DHASH_DISTANCE,
+    color_histogram_distance=DEFAULT_COLOR_HISTOGRAM_DISTANCE,
+):
+    batch = []
+    j.start_job(len(ordered), tr("Finding and verifying picture candidates"))
+    for picture in ordered:
+        remaining = max_candidate_pairs - counters["candidate_pairs"]
+        if remaining <= 0:
+            counters["candidate_limit_reached"] = True
+            return
+        first_path = picture.unicode_path
+        first_features = features_by_path[first_path]
+        candidates_by_path = {}
+        worst_first = []
+
+        def clean_heap():
+            while worst_first:
+                retained = candidates_by_path.get(worst_first[0].path)
+                if retained == worst_first[0].rank:
+                    break
+                heapq.heappop(worst_first)
+
+        def retain(second_path, rank):
+            nonlocal worst_first
+            previous = candidates_by_path.get(second_path)
+            if previous is not None:
+                if rank >= previous:
+                    return
+                candidates_by_path[second_path] = rank
+                heapq.heappush(
+                    worst_first,
+                    _WorstRankedPath(second_path, rank),
+                )
+            elif len(candidates_by_path) < remaining:
+                candidates_by_path[second_path] = rank
+                heapq.heappush(
+                    worst_first,
+                    _WorstRankedPath(second_path, rank),
+                )
+            else:
+                clean_heap()
+                worst = worst_first[0]
+                if rank >= worst.rank:
+                    return
+                heapq.heappop(worst_first)
+                del candidates_by_path[worst.path]
+                candidates_by_path[second_path] = rank
+                heapq.heappush(
+                    worst_first,
+                    _WorstRankedPath(second_path, rank),
+                )
+            if len(worst_first) > max(64, len(candidates_by_path) * 2 + 16):
+                worst_first = [
+                    _WorstRankedPath(path, retained_rank) for path, retained_rank in candidates_by_path.items()
+                ]
+                heapq.heapify(worst_first)
+
+        fingerprints = first_features.phashes if match_rotated else first_features.phashes[:1]
+        dhashes = first_features.dhashes if match_rotated else first_features.dhashes[:1]
+        for orientation, (fingerprint, first_dhash) in enumerate(zip(fingerprints, dhashes)):
+            for candidate in index.iter_query(
+                fingerprint,
+                max_distance=max_distance,
+                exclude_id=first_path,
+            ):
+                second_path = candidate.asset_id
+                if first_path >= second_path:
+                    continue
+                second_picture = counters["pictures_by_path"][second_path]
+                if picture.is_ref and second_picture.is_ref:
+                    continue
+                second_features = features_by_path[second_path]
+                if not _dimensions_compatible(
+                    first_features.dimensions,
+                    second_features.dimensions,
+                    match_scaled,
+                    match_rotated,
+                ):
+                    continue
+                second_dhash = second_features.dhashes[0]
+                cheap_dhash_distance = hamming_distance(
+                    first_dhash,
+                    second_dhash,
+                    64,
+                )
+                histogram_distance = _histogram_distance(
+                    first_features.color_histogram,
+                    second_features.color_histogram,
+                )
+                if cheap_dhash_distance > dhash_distance and histogram_distance > color_histogram_distance:
+                    continue
+                rank = (
+                    candidate.distance / 64 + cheap_dhash_distance / 64 + histogram_distance,
+                    candidate.distance,
+                    cheap_dhash_distance,
+                    histogram_distance,
+                    orientation,
+                    second_path,
+                )
+                retain(second_path, rank)
+        for second_path, _rank in sorted(
+            candidates_by_path.items(),
+            key=lambda item: item[1],
+        ):
+            second_features = features_by_path[second_path]
+            counters["candidate_pairs"] += 1
+            batch.append((first_features.rowid, second_features.rowid))
+            if counters["candidate_pairs"] >= max_candidate_pairs:
+                counters["candidate_limit_reached"] = True
+                yield tuple(batch)
+                return
+            if len(batch) >= CANDIDATE_BATCH_SIZE:
+                yield tuple(batch)
+                batch = []
+        j.add_progress()
+    if batch:
+        yield tuple(batch)
+
+
+def getmatches(
+    pictures,
+    cache_path,
+    threshold,
+    match_scaled=False,
+    match_rotated=False,
+    j=job.nulljob,
+    phash_distance=DEFAULT_PHASH_DISTANCE,
+    dhash_distance=DEFAULT_DHASH_DISTANCE,
+    color_histogram_distance=DEFAULT_COLOR_HISTOGRAM_DISTANCE,
+    max_candidate_pairs=DEFAULT_MAX_CANDIDATE_PAIRS,
+    max_refined_pairs=DEFAULT_MAX_REFINED_PAIRS,
+    max_matches=DEFAULT_MAX_MATCHES,
+):
+    """Find visual duplicates through exact-radius pHash candidates and 15x15 refinement."""
+
+    if not isinstance(phash_distance, int) or isinstance(phash_distance, bool) or not 0 <= phash_distance <= 64:
+        raise ValueError("phash_distance must be an integer between 0 and 64")
+    if not isinstance(dhash_distance, int) or isinstance(dhash_distance, bool) or not 0 <= dhash_distance <= 64:
+        raise ValueError("dhash_distance must be an integer between 0 and 64")
+    if (
+        isinstance(color_histogram_distance, bool)
+        or not isinstance(color_histogram_distance, (int, float))
+        or not math.isfinite(color_histogram_distance)
+        or not 0 <= color_histogram_distance <= 1
+    ):
+        raise ValueError("color_histogram_distance must be between 0 and 1")
+    for name, value in (
+        ("max_candidate_pairs", max_candidate_pairs),
+        ("max_refined_pairs", max_refined_pairs),
+        ("max_matches", max_matches),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError("{} must be a positive integer".format(name))
+    pictures = list(pictures)
+    started_at_ns = time.time_ns()
+    scan_id = str(uuid.uuid4())
+    issues = []
+    resource_limited = False
+    j = j.start_subjob([3, 1, 6])
+    preparation = prepare_pictures(
+        pictures,
+        cache_path,
+        not match_scaled,
+        match_rotated,
+        j=j,
+    )
+    issues.extend(preparation.issues)
+    prepared = preparation.pictures
+    features_by_path = preparation.features_by_path
+    resource_limited = preparation.resource_limited
+
+    raw_matches = []
+    candidate_pairs = 0
+    refined_pairs = 0
+    candidate_limit_reached = False
+    refinement_limit_reached = False
+    match_limit_reached = False
+    if prepared and not preparation.fatal and not resource_limited:
+        try:
+            index, ordered = _build_candidate_index(prepared, features_by_path, phash_distance, j)
+            pictures_by_path = {picture.unicode_path: picture for picture in ordered}
+            id2picture = {}
+            for path_str, picture in pictures_by_path.items():
+                features = features_by_path[path_str]
+                picture.cache_id = features.rowid
+                id2picture[features.rowid] = picture
+            counters = {
+                "candidate_pairs": 0,
+                "candidate_limit_reached": False,
+                "pictures_by_path": pictures_by_path,
+            }
+            batches = _iter_candidate_batches(
+                ordered,
+                features_by_path,
+                index,
+                phash_distance,
+                match_scaled,
+                match_rotated,
+                counters,
+                j,
+                max_candidate_pairs=max_candidate_pairs,
+                dhash_distance=dhash_distance,
+                color_histogram_distance=color_histogram_distance,
+            )
+            use_multiprocessing = len(ordered) >= MIN_MULTIPROCESS_PICTURES and not _uses_memory_cache(cache_path)
+            pool = None
+            pool_finalized = False
+            sequential_cache = None
+            pending = []
+            scheduled_pairs = 0
+            try:
+                for batch in batches:
+                    remaining_refinements = max_refined_pairs - scheduled_pairs
+                    if remaining_refinements <= 0:
+                        refinement_limit_reached = True
+                        break
+                    if len(batch) >= remaining_refinements:
+                        batch = batch[:remaining_refinements]
+                        refinement_limit_reached = True
+                    scheduled_pairs += len(batch)
+                    if use_multiprocessing:
+                        if pool is None:
+                            worker_count = min(max(1, RESULTS_QUEUE_LIMIT - 1), 8)
+                            pool = multiprocessing.Pool(processes=worker_count)
+                        pending.append(
+                            pool.apply_async(
+                                async_compare_candidates,
+                                (batch, cache_path, threshold, match_rotated),
+                            )
+                        )
+                        if len(pending) >= RESULTS_QUEUE_LIMIT:
+                            batch_matches, batch_count = pending.pop(0).get()
+                            refined_pairs += batch_count
+                            available = max_matches - len(raw_matches)
+                            raw_matches.extend(batch_matches[:available])
+                            if len(raw_matches) >= max_matches:
+                                match_limit_reached = True
+                                break
+                    else:
+                        if _uses_memory_cache(cache_path):
+                            blocks_by_id = preparation.volatile_blocks_by_id
+                        else:
+                            if sequential_cache is None:
+                                sequential_cache = get_cache(cache_path, readonly=True)
+                            ids = sorted({cache_id for pair in batch for cache_id in pair})
+                            blocks_by_id = dict(sequential_cache.get_multiple(ids))
+                        for first_id, second_id in batch:
+                            percentage = _compare_blocks(
+                                blocks_by_id[first_id],
+                                blocks_by_id[second_id],
+                                threshold,
+                                match_rotated,
+                            )
+                            refined_pairs += 1
+                            if percentage is not None:
+                                raw_matches.append((first_id, second_id, percentage))
+                                if len(raw_matches) >= max_matches:
+                                    match_limit_reached = True
+                                    break
+                    if refinement_limit_reached or match_limit_reached:
+                        break
+                if not match_limit_reached:
+                    for async_result in pending:
+                        batch_matches, batch_count = async_result.get()
+                        refined_pairs += batch_count
+                        available = max_matches - len(raw_matches)
+                        raw_matches.extend(batch_matches[:available])
+                        if len(raw_matches) >= max_matches:
+                            match_limit_reached = True
+                            break
+                if pool is not None:
+                    if match_limit_reached:
+                        pool.terminate()
+                    else:
+                        pool.close()
+                    pool_finalized = True
+            except MemoryError:
+                resource_limited = True
+                issues.append(
+                    ScanIssue(
+                        "resource_limit",
+                        "Not enough memory to finish picture candidate refinement",
+                    )
+                )
+                logging.warning(
+                    "Picture candidate refinement stopped at %d verified candidates",
+                    refined_pairs,
+                )
+                if pool is not None:
+                    pool.terminate()
+                    pool_finalized = True
+            except BaseException:
+                if pool is not None:
+                    pool.terminate()
+                    pool_finalized = True
+                raise
+            finally:
+                if sequential_cache is not None:
+                    sequential_cache.close()
+                if pool is not None:
+                    if not pool_finalized:
+                        pool.terminate()
+                    pool.join()
+            candidate_pairs = counters["candidate_pairs"]
+            candidate_limit_reached = counters["candidate_limit_reached"]
+        except MemoryError:
+            resource_limited = True
+            issues.append(
+                ScanIssue(
+                    "resource_limit",
+                    "Not enough memory to build the picture candidate index",
+                )
+            )
+            logging.warning("Picture candidate indexing stopped because of a memory limit")
+            id2picture = {}
+            raw_matches = []
+    else:
+        id2picture = {}
+
+    if candidate_limit_reached:
+        resource_limited = True
+        issues.append(
+            ScanIssue(
+                "candidate_pair_limit",
+                "Picture scan reached max_candidate_pairs ({})".format(max_candidate_pairs),
+            )
+        )
+    if refinement_limit_reached:
+        resource_limited = True
+        issues.append(
+            ScanIssue(
+                "refinement_pair_limit",
+                "Picture scan reached max_refined_pairs ({})".format(max_refined_pairs),
+            )
+        )
+    if match_limit_reached:
+        resource_limited = True
+        issues.append(
+            ScanIssue(
+                "match_limit",
+                "Picture scan reached max_matches ({})".format(max_matches),
+            )
+        )
+
+    result = []
+    try:
+        for ref_id, other_id, percentage in raw_matches:
+            if percentage >= threshold:
+                result.append(get_match(id2picture[ref_id], id2picture[other_id], percentage))
+    except MemoryError:
+        resource_limited = True
+        issues.append(
+            ScanIssue(
+                "resource_limit",
+                "Not enough memory to materialize all refined picture matches",
+            )
+        )
+        logging.warning("Picture result materialization stopped at %d matches", len(result))
+
+    failed = sum(1 for issue in issues if issue.path)
+    if preparation.fatal:
+        status = ScanStatus.FAILED
+    elif resource_limited:
+        status = ScanStatus.RESOURCE_LIMIT
+    elif issues:
+        status = ScanStatus.COMPLETE_WITH_SKIPS
+    else:
+        status = ScanStatus.COMPLETE
+    receipt = ScanReceipt(
+        scan_id=scan_id,
+        status=status,
+        discovered=len(pictures),
+        analyzed=len(prepared),
+        skipped=preparation.skipped,
+        failed=failed,
+        started_at_ns=started_at_ns,
+        finished_at_ns=time.time_ns(),
+        issues=tuple(issues),
+    )
+    possible_pairs = len(prepared) * (len(prepared) - 1) // 2
+    stats = ImageCandidateStats(
+        indexed_images=len(prepared),
+        possible_pairs=possible_pairs,
+        candidate_pairs=candidate_pairs,
+        refined_pairs=refined_pairs,
+        match_count=len(result),
+        phash_distance=phash_distance,
+        max_candidate_pairs=max_candidate_pairs,
+        max_refined_pairs=max_refined_pairs,
+        max_matches=max_matches,
+        candidate_limit_reached=candidate_limit_reached,
+        refinement_limit_reached=refinement_limit_reached,
+        match_limit_reached=match_limit_reached,
+    )
+    return ImageMatchResult(result, scan_receipt=receipt, candidate_stats=stats)
 
 
 multiprocessing.freeze_support()

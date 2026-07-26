@@ -51,7 +51,7 @@ escapes = []
 
 
 def make_escapes(pass_iso8859):
-    global escapes
+    escapes.clear()
     if pass_iso8859:
         # Allow iso-8859 characters to pass through so that e.g. 'msgid
         # "H?he"' would result not result in 'msgid "H\366he"'.  Otherwise we
@@ -72,11 +72,14 @@ def make_escapes(pass_iso8859):
 
 
 def escape(s):
-    global escapes
-    s = list(s)
-    for i in range(len(s)):
-        s[i] = escapes[ord(s[i])]
-    return EMPTYSTRING.join(s)
+    escaped = []
+    for character in s:
+        ordinal = ord(character)
+        # The generated catalogs declare UTF-8. Keep every non-ASCII
+        # character as Unicode instead of emitting a single-byte octal escape,
+        # which would not be valid UTF-8 for Latin-1 code points.
+        escaped.append(escapes[ordinal] if ordinal < 128 else character)
+    return EMPTYSTRING.join(escaped)
 
 
 def safe_eval(s):
@@ -262,10 +265,13 @@ class TokenEater:
             keys = sorted(v.keys())
             reverse.setdefault(tuple(keys), []).append((k, v))
         rkeys = sorted(reverse.keys())
+        wrote_entry = False
         for rkey in rkeys:
             rentries = reverse[rkey]
             rentries.sort()
             for k, v in rentries:
+                if wrote_entry:
+                    print(file=fp)
                 # If the entry was gleaned out of a docstring, then add a
                 # comment stating so.  This is to aid translators who may wish
                 # to skip translating some unimportant docstrings.
@@ -298,12 +304,11 @@ class TokenEater:
                 if isdocstring:
                     print("#, docstring", file=fp)
                 print("msgid", normalize(k), file=fp)
-                print('msgstr ""\n', file=fp)
+                print('msgstr ""', file=fp)
+                wrote_entry = True
 
 
 def main(source_files, outpath, keywords=None):
-    global default_keywords
-
     # for holding option values
     class Options:
         # constants

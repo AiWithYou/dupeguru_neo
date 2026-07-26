@@ -6,8 +6,8 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt, QRect
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QRect
+from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QLabel,
@@ -20,7 +20,6 @@ from PyQt5.QtWidgets import (
     QDialog,
     QPushButton,
     QCheckBox,
-    QDesktopWidget,
 )
 
 from hscommon.trans import trget
@@ -34,6 +33,7 @@ from qt.prioritize_dialog import PrioritizeDialog
 from qt.se.results_model import ResultsModel as ResultsModelStandard
 from qt.me.results_model import ResultsModel as ResultsModelMusic
 from qt.pe.results_model import ResultsModel as ResultsModelPicture
+from qt.file_formats import RESULTS_EXTENSION, ensure_extension, translated_results_filter
 
 tr = trget("ui")
 
@@ -80,8 +80,15 @@ class ResultWindow(QMainWindow):
                 "actionDeleteMarked",
                 "Ctrl+D",
                 "",
-                tr("Send Marked to Recycle Bin..."),
+                tr("Quarantine Verified Marked Files..."),
                 self.deleteTriggered,
+            ),
+            (
+                "actionRestoreLastQuarantine",
+                "Ctrl+Shift+Z",
+                "",
+                tr("Restore Last Quarantine Batch..."),
+                self.restoreLastQuarantineTriggered,
             ),
             (
                 "actionMoveMarked",
@@ -170,7 +177,7 @@ class ResultWindow(QMainWindow):
             ),
             (
                 "actionMarkSelected",
-                Qt.Key_Space,
+                Qt.Key.Key_Space,
                 "",
                 tr("Mark Selected"),
                 self.markSelectedTriggered,
@@ -200,7 +207,7 @@ class ResultWindow(QMainWindow):
                 "actionInvokeCustomCommand",
                 "Ctrl+Alt+I",
                 "",
-                tr("Invoke Custom Command"),
+                tr("Invoke External Custom Command..."),
                 self.app.invokeCustomCommand,
             ),
         ]
@@ -243,6 +250,7 @@ class ResultWindow(QMainWindow):
             menubar = self.app.main_window.menubar
 
         self.menuActions.addAction(self.actionDeleteMarked)
+        self.menuActions.addAction(self.actionRestoreLastQuarantine)
         self.menuActions.addAction(self.actionMoveMarked)
         self.menuActions.addAction(self.actionCopyMarked)
         self.menuActions.addAction(self.actionRemoveMarked)
@@ -272,12 +280,18 @@ class ResultWindow(QMainWindow):
         self.menuView.addSeparator()
         self.menuView.addAction(self.app.actionPreferences)
 
-        self.menuHelp.addAction(self.app.actionShowHelp)
-        self.menuHelp.addAction(self.app.actionOpenDebugLog)
-        self.menuHelp.addAction(self.app.actionAbout)
+        for action in (
+            self.app.actionShowHelp,
+            self.app.actionShowVideoWorkflow,
+            self.app.actionOpenDebugLog,
+            self.app.actionAbout,
+        ):
+            if action not in self.menuHelp.actions():
+                self.menuHelp.addAction(action)
         self.menuFile.addAction(self.actionSaveResults)
         self.menuFile.addAction(self.actionExportToHTML)
         self.menuFile.addAction(self.actionExportToCSV)
+        self.menuFile.addAction(self.app.actionFindSimilarImage)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.app.actionQuit)
 
@@ -308,6 +322,7 @@ class ResultWindow(QMainWindow):
         # Action menu
         action_menu = QMenu(tr("Actions"), menubar)
         action_menu.addAction(self.actionDeleteMarked)
+        action_menu.addAction(self.actionRestoreLastQuarantine)
         action_menu.addAction(self.actionMoveMarked)
         action_menu.addAction(self.actionCopyMarked)
         action_menu.addAction(self.actionRemoveMarked)
@@ -350,8 +365,8 @@ class ResultWindow(QMainWindow):
         self.horizontalLayout.setSpacing(8)
         self.verticalLayout.addLayout(self.horizontalLayout)
         self.resultsView = ResultsView(self.centralwidget)
-        self.resultsView.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.resultsView.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.resultsView.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.resultsView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.resultsView.setSortingEnabled(True)
         self.resultsView.setWordWrap(False)
         self.resultsView.verticalHeader().setVisible(False)
@@ -359,7 +374,7 @@ class ResultWindow(QMainWindow):
         h.setHighlightSections(False)
         h.setSectionsMovable(True)
         h.setStretchLastSection(False)
-        h.setDefaultAlignment(Qt.AlignLeft)
+        h.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft)
         self.verticalLayout.addWidget(self.resultsView)
         self.setCentralWidget(self.centralwidget)
         self._setupActions()
@@ -371,18 +386,13 @@ class ResultWindow(QMainWindow):
         self.statusbar.addPermanentWidget(self.statusLabel, 1)
 
         if self.app.prefs.resultWindowIsMaximized:
-            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+            self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         else:
             if self.app.prefs.resultWindowRect is not None:
                 self.setGeometry(self.app.prefs.resultWindowRect)
-                # if not on any screen move to center of default screen
-                # moves to center of closest screen if partially off screen
-                frame = self.frameGeometry()
-                if QDesktopWidget().screenNumber(self) == -1:
-                    move_to_screen_center(self)
-                elif QDesktopWidget().availableGeometry(self).contains(frame) is False:
-                    frame.moveCenter(QDesktopWidget().availableGeometry(self).center())
-                    self.move(frame.topLeft())
+                # Move to the default/closest screen when the restored geometry
+                # is no longer fully visible.
+                move_to_screen_center(self)
             else:
                 move_to_screen_center(self)
 
@@ -405,6 +415,9 @@ class ResultWindow(QMainWindow):
 
     def deleteTriggered(self):
         self.app.model.delete_marked()
+
+    def restoreLastQuarantineTriggered(self):
+        self.app.model.restore_last_quarantine()
 
     def deltaTriggered(self, state=None):
         # The sender can be either the action or the checkbox, but both have a isChecked() method.
@@ -458,7 +471,7 @@ class ResultWindow(QMainWindow):
     def reprioritizeTriggered(self):
         dlg = PrioritizeDialog(self, self.app)
         result = dlg.exec()
-        if result == QDialog.Accepted:
+        if result == QDialog.DialogCode.Accepted:
             dlg.model.perform_reprioritization()
 
     def revealTriggered(self):
@@ -466,11 +479,10 @@ class ResultWindow(QMainWindow):
 
     def saveResultsTriggered(self):
         title = tr("Select a file to save your results to")
-        files = tr("dupeGuru Results (*.dupeguru)")
+        files = translated_results_filter()
         destination, chosen_filter = QFileDialog.getSaveFileName(self, title, "", files)
         if destination:
-            if not destination.endswith(".dupeguru"):
-                destination = f"{destination}.dupeguru"
+            destination = ensure_extension(destination, RESULTS_EXTENSION)
             self.app.model.save_as(destination)
             self.app.recentResults.insertItem(destination)
 
@@ -490,7 +502,7 @@ class ResultWindow(QMainWindow):
             action.setChecked(visible)
 
     def contextMenuEvent(self, event):
-        self.actionActions.menu().exec_(event.globalPos())
+        self.actionActions.menu().exec(event.globalPos())
 
     def resultsDoubleClicked(self, model_index):
         self.app.model.open_selected()

@@ -1,24 +1,21 @@
-dupeGuru help
-=============
+dupeGuru Neo help
+=================
 
-This help document is also available in these languages:
+Translations inherited from dupeGuru are bundled with the application. Some
+new Neo safety and media features may remain in English until their
+translations are updated.
 
-* `French <http://dupeguru.voltaicideas.net/help/fr>`__
-* `German <http://dupeguru.voltaicideas.net/help/de>`__
-* `Armenian <http://dupeguru.voltaicideas.net/help/hy>`__
-* `Russian <http://dupeguru.voltaicideas.net/help/ru>`__
-* `Ukrainian <http://dupeguru.voltaicideas.net/help/uk>`__
-
-dupeGuru is a tool to find duplicate files on your computer. It has three
-modes, Standard, Music and Picture, with each mode having its own scan types
-and little features.
+dupeGuru Neo finds verified byte-for-byte duplicates and helps review similar
+media. It has Standard, Music, and Picture modes, a persistent library catalog,
+recoverable quarantine, and a Qt-free automation CLI.
 
 Although dupeGuru can easily be used without documentation, reading this file
 will help you to master it. If you are looking for guidance for your first
 duplicate scan, you can take a look at the :doc:`Quick Start <quick_start>`
 section.
 
-It is a good idea to keep dupeGuru updated. You can download the latest version on its `homepage`_.
+Use builds from the `project repository`_ and verify release checksums and
+provenance before running them.
 
 Contents:
 
@@ -31,6 +28,11 @@ Contents:
     preferences
     scan
     results
+    catalog
+    media_review
+    automation
+    dataset
+    video
     reprioritize
     faq
     developer/index
@@ -42,4 +44,4 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`search`
 
-.. _homepage: https://dupeguru.voltaicideas.net/
+.. _project repository: https://github.com/AiWithYou/dupeguru_neo

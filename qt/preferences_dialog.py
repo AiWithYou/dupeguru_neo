@@ -4,8 +4,8 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt, QSize, pyqtSlot
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QSize, pyqtSlot
+from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QVBoxLayout,
@@ -28,11 +28,17 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QFormLayout,
 )
-from PyQt5.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap, QIcon
 from hscommon import desktop, plat
 
 from hscommon.trans import trget
 from hscommon.plat import ISLINUX
+from core.directories import (
+    DIRECT_DISCOVERY_MAX_FILES,
+    DIRECT_DISCOVERY_MAX_FOLDERS,
+    DIRECT_DISCOVERY_MAX_ISSUES,
+    DIRECT_DISCOVERY_MAX_SECONDS,
+)
 from qt.util import horizontal_wrap, move_to_screen_center
 from qt.preferences import get_langnames
 from enum import Flag, auto
@@ -54,7 +60,7 @@ class Sections(Flag):
 
 class PreferencesDialogBase(QDialog):
     def __init__(self, parent, app, **kwargs):
-        flags = Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+        flags = Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint
         super().__init__(parent, flags, **kwargs)
         self.app = app
         self.supportedLanguages = dict(sorted(get_langnames().items(), key=lambda item: item[1]))
@@ -77,7 +83,10 @@ class PreferencesDialogBase(QDialog):
         self.filterHardnessHLayoutSub1 = QHBoxLayout()
         self.filterHardnessHLayoutSub1.setSpacing(12)
         self.filterHardnessSlider = QSlider(self)
-        size_policy = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
         size_policy.setHorizontalStretch(0)
         size_policy.setVerticalStretch(0)
         size_policy.setHeightForWidth(self.filterHardnessSlider.sizePolicy().hasHeightForWidth())
@@ -85,7 +94,7 @@ class PreferencesDialogBase(QDialog):
         self.filterHardnessSlider.setMinimum(1)
         self.filterHardnessSlider.setMaximum(100)
         self.filterHardnessSlider.setTracking(True)
-        self.filterHardnessSlider.setOrientation(Qt.Horizontal)
+        self.filterHardnessSlider.setOrientation(Qt.Orientation.Horizontal)
         self.filterHardnessHLayoutSub1.addWidget(self.filterHardnessSlider)
         self.filterHardnessLabel = QLabel(self)
         self.filterHardnessLabel.setText("100")
@@ -97,7 +106,12 @@ class PreferencesDialogBase(QDialog):
         self.moreResultsLabel = QLabel(self)
         self.moreResultsLabel.setText(tr("More Results"))
         self.filterHardnessHLayoutSub2.addWidget(self.moreResultsLabel)
-        spacer_item = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        spacer_item = QSpacerItem(
+            40,
+            20,
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
         self.filterHardnessHLayoutSub2.addItem(spacer_item)
         self.fewerResultsLabel = QLabel(self)
         self.fewerResultsLabel.setText(tr("Fewer Results"))
@@ -133,23 +147,15 @@ class PreferencesDialogBase(QDialog):
             "tabs_default_pos",
             tr("Use default position for tab bar (requires restart)"),
         )
-        self.tabs_default_pos.setToolTip(
-            tr(
-                "Place the tab bar below the main menu instead of next to it\n\
-On MacOS, the tab bar will fill up the window's width instead."
-            )
-        )
+        self.tabs_default_pos.setToolTip(tr("Place the tab bar below the main menu instead of next to it\n\
+On MacOS, the tab bar will fill up the window's width instead."))
         layout.addWidget(self.tabs_default_pos)
         self._setupAddCheckbox(
             "use_native_dialogs",
             tr("Use native OS dialogs"),
         )
-        self.use_native_dialogs.setToolTip(
-            tr(
-                "For actions such as file/folder selection use the OS native dialogs.\n\
-Some native dialogs have limited functionality."
-            )
-        )
+        self.use_native_dialogs.setToolTip(tr("For actions such as file/folder selection use the OS native dialogs.\n\
+Some native dialogs have limited functionality."))
         layout.addWidget(self.use_native_dialogs)
         if plat.ISWINDOWS:
             self._setupAddCheckbox("use_dark_style", tr("Use dark style"))
@@ -173,7 +179,7 @@ Some native dialogs have limited functionality."
         formlayout.addRow(tr("Reference background color:"), self.result_table_ref_background_color)
         self.result_table_delta_foreground_color = ColorPickerButton(self)
         formlayout.addRow(tr("Delta foreground color:"), self.result_table_delta_foreground_color)
-        formlayout.setLabelAlignment(Qt.AlignLeft)
+        formlayout.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
 
         # Keep same vertical spacing as parent layout for consistency
         formlayout.setVerticalSpacing(self.displayVLayout.spacing())
@@ -188,10 +194,8 @@ Some native dialogs have limited functionality."
             tr("Show the title bar and can be docked"),
         )
         self.details_dialog_titlebar_enabled.setToolTip(
-            tr(
-                "While the title bar is hidden, \
-use the modifier key to drag the floating window around"
-            )
+            tr("While the title bar is hidden, \
+use the modifier key to drag the floating window around")
             if ISLINUX
             else tr("The title bar can only be disabled while the window is docked")
         )
@@ -217,17 +221,51 @@ use the modifier key to drag the floating window around"
 
     def _setup_advanced_page(self):
         tab_label = QLabel(
-            tr(
-                "These options are for advanced users or for very specific situations, \
-most users should not have to modify these."
-            ),
+            tr("These options are for advanced users or for very specific situations, \
+most users should not have to modify these."),
             wordWrap=True,
         )
         self.advanced_vlayout.addWidget(tab_label)
         self._setupAddCheckbox("include_exists_check_box", tr("Include existence check after scan completion"))
         self.advanced_vlayout.addWidget(self.include_exists_check_box)
+        self._setupAddCheckbox(
+            "cross_pool_only_box",
+            tr("Compare files only between different folder pools"),
+        )
+        self.cross_pool_only_box.setToolTip(
+            tr(
+                "Ignore duplicates contained entirely within one pool. "
+                "Use this to compare Incoming Files against a Protected Library "
+                "without reporting duplicates internal to either pool."
+            )
+        )
+        self.advanced_vlayout.addWidget(self.cross_pool_only_box)
         self._setupAddCheckbox("rehash_ignore_mtime_box", tr("Ignore difference in mtime when loading cached digests"))
         self.advanced_vlayout.addWidget(self.rehash_ignore_mtime_box)
+
+        discovery_groupbox = QGroupBox("&" + tr("Direct scan resource limits"))
+        discovery_form = QFormLayout()
+        self.direct_scan_max_files_box = QSpinBox(self)
+        self.direct_scan_max_files_box.setRange(1, DIRECT_DISCOVERY_MAX_FILES)
+        self.direct_scan_max_folders_box = QSpinBox(self)
+        self.direct_scan_max_folders_box.setRange(1, DIRECT_DISCOVERY_MAX_FOLDERS)
+        self.direct_scan_max_issues_box = QSpinBox(self)
+        self.direct_scan_max_issues_box.setRange(1, DIRECT_DISCOVERY_MAX_ISSUES)
+        self.direct_scan_max_seconds_box = QSpinBox(self)
+        self.direct_scan_max_seconds_box.setRange(1, DIRECT_DISCOVERY_MAX_SECONDS)
+        discovery_form.addRow(tr("Maximum files:"), self.direct_scan_max_files_box)
+        discovery_form.addRow(tr("Maximum folders:"), self.direct_scan_max_folders_box)
+        discovery_form.addRow(tr("Maximum filesystem issues:"), self.direct_scan_max_issues_box)
+        discovery_form.addRow(tr("Maximum discovery seconds:"), self.direct_scan_max_seconds_box)
+        discovery_groupbox.setToolTip(
+            tr(
+                "These limits apply to filename, folder, tag, and picture scans that "
+                "discover files directly. For a very large exact-match library, use "
+                "the Contents scan and its Persistent Catalog."
+            )
+        )
+        discovery_groupbox.setLayout(discovery_form)
+        self.advanced_vlayout.addWidget(discovery_groupbox)
 
     def _setupDebugPage(self):
         self._setupAddCheckbox("debugModeBox", tr("Debug mode (restart required)"))
@@ -278,11 +316,13 @@ most users should not have to modify these."
         # self.mainVLayout.addLayout(self.widgetsVLayout)
         self.buttonBox = QDialogButtonBox(self)
         self.buttonBox.setStandardButtons(
-            QDialogButtonBox.Cancel | QDialogButtonBox.Ok | QDialogButtonBox.RestoreDefaults
+            QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.RestoreDefaults
         )
         self.mainVLayout.addWidget(self.tabwidget)
         self.mainVLayout.addWidget(self.buttonBox)
-        self.layout().setSizeConstraint(QLayout.SetFixedSize)
+        self.layout().setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         self.tabwidget.addTab(self.page_general, tr("General"))
         self.tabwidget.addTab(self.page_display, tr("Display"))
         self.tabwidget.addTab(self.page_advanced, tr("Advanced"))
@@ -305,7 +345,7 @@ most users should not have to modify these."
             prefs = self.app.prefs
 
         def setchecked(cb, b):
-            cb.setCheckState(Qt.Checked if b else Qt.Unchecked)
+            cb.setCheckState(Qt.CheckState.Checked if b else Qt.CheckState.Unchecked)
 
         if section & Sections.GENERAL:
             self.filterHardnessSlider.setValue(prefs.filter_hardness)
@@ -343,6 +383,11 @@ most users should not have to modify these."
         if section & Sections.ADVANCED:
             setchecked(self.rehash_ignore_mtime_box, prefs.rehash_ignore_mtime)
             setchecked(self.include_exists_check_box, prefs.include_exists_check)
+            setchecked(self.cross_pool_only_box, prefs.cross_pool_only)
+            self.direct_scan_max_files_box.setValue(prefs.direct_scan_max_files)
+            self.direct_scan_max_folders_box.setValue(prefs.direct_scan_max_folders)
+            self.direct_scan_max_issues_box.setValue(prefs.direct_scan_max_issues)
+            self.direct_scan_max_seconds_box.setValue(prefs.direct_scan_max_seconds)
         if section & Sections.DEBUG:
             setchecked(self.debugModeBox, prefs.debug_mode)
             setchecked(self.profile_scan_box, prefs.profile_scan)
@@ -353,7 +398,7 @@ most users should not have to modify these."
         prefs.filter_hardness = self.filterHardnessSlider.value()
 
         def ischecked(cb):
-            return cb.checkState() == Qt.Checked
+            return cb.checkState() == Qt.CheckState.Checked
 
         prefs.mix_file_kind = ischecked(self.mixFileKindBox)
         prefs.use_regexp = ischecked(self.useRegexpBox)
@@ -361,6 +406,11 @@ most users should not have to modify these."
         prefs.ignore_hardlink_matches = ischecked(self.ignoreHardlinkMatches)
         prefs.rehash_ignore_mtime = ischecked(self.rehash_ignore_mtime_box)
         prefs.include_exists_check = ischecked(self.include_exists_check_box)
+        prefs.cross_pool_only = ischecked(self.cross_pool_only_box)
+        prefs.direct_scan_max_files = self.direct_scan_max_files_box.value()
+        prefs.direct_scan_max_folders = self.direct_scan_max_folders_box.value()
+        prefs.direct_scan_max_issues = self.direct_scan_max_issues_box.value()
+        prefs.direct_scan_max_seconds = self.direct_scan_max_seconds_box.value()
         prefs.debug_mode = ischecked(self.debugModeBox)
         prefs.profile_scan = ischecked(self.profile_scan_box)
         prefs.reference_bold_font = ischecked(self.reference_bold_font)
@@ -396,7 +446,7 @@ most users should not have to modify these."
     # --- Events
     def buttonClicked(self, button):
         role = self.buttonBox.buttonRole(button)
-        if role == QDialogButtonBox.ResetRole:
+        if role == QDialogButtonBox.ButtonRole.ResetRole:
             current_tab = self.tabwidget.currentWidget()
             section_to_update = Sections.ALL
             if current_tab is self.page_general:
@@ -422,7 +472,10 @@ class ColorPickerButton(QPushButton):
 
     @pyqtSlot()
     def onClicked(self):
-        color = QColorDialog.getColor(self.color if self.color is not None else Qt.white, self.parent)
+        color = QColorDialog.getColor(
+            self.color if self.color is not None else Qt.GlobalColor.white,
+            self.parent,
+        )
         self.setColor(color)
 
     def setColor(self, color):

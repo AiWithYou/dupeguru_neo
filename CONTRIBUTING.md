@@ -1,88 +1,151 @@
-# Contributing to dupeGuru
+# Contributing to dupeGuru Neo
 
-The following is a set of guidelines and information for contributing to dupeGuru.
+Thank you for helping improve dupeGuru Neo. This document describes the
+project's contribution and public-reporting expectations.
 
-#### Table of Contents
+## Things to know before starting
 
-[Things to Know Before Starting](#things-to-know-before-starting)
+- The canonical repository is
+  [AiWithYou/dupeguru_neo](https://github.com/AiWithYou/dupeguru_neo).
+- Contributions are distributed under GPLv3. Do not submit code, media, or
+  translations that you do not have the right to license on those terms.
+- File removal is safety-critical. Read
+  [the safety model](docs/SAFETY_MODEL.md) before changing scan evidence,
+  folder pools, Copy/Move, quarantine, restore, finalization, or custom-command
+  behavior.
+- Green Verified Exact evidence is the only relationship that can authorize
+  duplicate-removal quarantine, with a complete current scan and an Incoming
+  Files target still required. Yellow and blue evidence may support an explicit
+  organizer Copy/Move under those scan and pool conditions. External custom
+  commands have a separate, unprotected contract.
+- Keep generated artifacts, private media, credentials, raw catalogs, action
+  journals, and unredacted logs out of commits and public issues.
 
-[Ways to Contribute](#ways-to-contribute)
-  * [Reporting Bugs](#reporting-bugs)
-  * [Suggesting Enhancements](#suggesting-enhancements)
-  * [Localization](#localization)
-  * [Code Contribution](#code-contribution)
-  * [Pull Requests](#pull-requests)
-
-[Style Guides](#style-guides)
-  * [Git Commit Messages](#git-commit-messages)
-  * [Python Style Guide](#python-style-guide)
-  * [Documentation Style Guide](#documentation-style-guide)
-
-[Additional Notes](#additional-notes)
-  * [Issue and Pull Request Labels](#issue-and-pull-request-labels)
-
-## Things to Know Before Starting
-**TODO**
 ## Ways to contribute
-### Reporting Bugs
-**TODO**
-### Suggesting Enhancements
-**TODO**
+
+### Reporting bugs
+
+Search [existing issues](https://github.com/AiWithYou/dupeguru_neo/issues)
+before filing a report. Use the bug-report template and include the version or
+commit, operating system, filesystem type, scan mode, folder-pool setup, the
+smallest reproducible steps, expected behavior, and actual behavior.
+
+Do not attach a raw debug log, crash dump, results file, catalog database,
+quarantine journal, action plan, settings directory, private media, or
+screenshot containing private paths or metadata. Prefer the built-in redacted
+structured diagnostics when available, but still inspect every line before
+posting it. Replace user names, host names, volume labels, network locations,
+and file paths with stable placeholders while preserving their relationships.
+
+A vulnerability or possible data-loss path must follow
+[SECURITY.md](SECURITY.md), not a public issue. In particular, do not publicly
+disclose arbitrary deletion, command execution, privilege escalation, or
+private-data exposure.
+
+### Suggesting enhancements
+
+Open an [enhancement issue](https://github.com/AiWithYou/dupeguru_neo/issues/new)
+that describes the user problem, representative library size, expected
+workflow, and safety implications. Distinguish candidate generation, review
+evidence, organizer operations, and duplicate-removal authority. A similarity
+score alone cannot be proposed as deletion authority.
+
 ### Localization
-**TODO**
-### Code Contribution
-**TODO**
-### Pull Requests
-Please follow these steps to have your contribution considered by the maintainers:
 
-1. Keep Pull Request specific to one feature or bug.
-2. Follow the [style guides](#style-guides)
-3. After you submit your pull request, verify that all [status checks](https://help.github.com/articles/about-status-checks/) are passing <details><summary>What if the status checks are failing?</summary>If a status check is failing, and you believe that the failure is unrelated to your change, please leave a comment on the pull request explaining why you believe the failure is unrelated. A maintainer will re-run the status check for you. If we conclude that the failure was a false positive, then we will open an issue to track that problem with our status check suite.</details>
+Keep message identifiers and formatting placeholders intact. Build the
+localization catalogs and English help after changing translatable source.
+Avoid unrelated automatic rewrites of existing translations.
 
-While the prerequisites above must be satisfied prior to having your pull request reviewed, the reviewer(s) may ask you to complete additional design work, tests, or other changes before your pull request can be ultimately accepted.
+### Code contributions
+
+Follow the development setup in [README.md](README.md). Build the native
+modules, run the focused tests for the affected component, then run:
+
+```console
+python -m pytest core hscommon qt/tests
+pre-commit run --all-files
+python build.py --doc
+```
+
+Add regression tests for bug fixes. Safety gates require negative tests that
+prove stale, incomplete, protected, approximate, malformed, and
+resource-limited inputs fail closed.
+
+### Pull requests
+
+Please follow these steps:
+
+1. Keep the pull request focused on one feature or bug.
+2. Explain the user-visible change, safety impact, compatibility impact, and
+   tests performed.
+3. Follow the [style guides](#style-guides).
+4. Confirm that all
+   [status checks](https://docs.github.com/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)
+   pass. If a failure appears unrelated, document the failing job and your
+   evidence instead of ignoring it.
+
+Maintainers may request additional design work, tests, documentation, or
+compatibility changes before acceptance.
 
 ## Style Guides
+
 ### Git Commit Messages
+
 - Use the present tense ("Add feature" not "Added feature")
 - Use the imperative mood ("Move cursor to..." not "Moves cursor to...")
 - Limit the first line to 72 characters or less
 - Reference issues and pull requests liberally after the first line
 
 ### Python Style Guide
+
 - All files are formatted with [Black](https://github.com/psf/black)
 - Follow [PEP 8](https://peps.python.org/pep-0008/) as much as practical
 - Pass [flake8](https://flake8.pycqa.org/en/latest/) linting
 - Include [PEP 484](https://peps.python.org/pep-0484/) type hints (new code)
 
 ### Documentation Style Guide
-**TODO**
+
+- Use plain, testable language and distinguish guarantees from limitations.
+- Use the product terms **Incoming Files**, **Protected Library**,
+  **Compare Only**, **Excluded**, **Verified Exact**, **Copy/Move**, and
+  **quarantine** consistently.
+- Do not call a hash, percentage, visual relation, folder aggregate, scan
+  snapshot, or persisted verification ID deletion authority.
+- Keep examples non-destructive and avoid private paths or real personal data.
+- Use HTTPS links to current, authoritative sources and run the English Sphinx
+  build before submitting.
 
 ## Additional Notes
+
 ### Issue and Pull Request Labels
-This section lists and describes the various labels used with issues and pull requests.  Each of the labels is listed with a search link as well.
+
+This section lists and describes the labels used with issues and pull requests.
 
 #### Issue Type and Status
+
 | Label name | Search | Description |
 |------------|--------|-------------|
-| `enhancement` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aenhancement) | Feature requests and enhancements. |
-| `bug` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Abug) | Bug reports. |
-| `duplicate` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aduplicate) | Issue is a duplicate of existing issue. |
-| `needs-reproduction` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aneeds-reproduction) | A bug that has not been able to be reproduced. |
-| `needs-information` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aneeds-information) | More information needs to be collected about these problems or feature requests (e.g. steps to reproduce). |
-| `blocked` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Ablocked) | Issue blocked by other issues. |
-| `beginner` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Abeginner) | Less complex issues for users who want to start contributing. |
+| `enhancement` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aenhancement) | Feature requests and enhancements. |
+| `bug` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Abug) | Bug reports. |
+| `duplicate` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aduplicate) | Issue is a duplicate of an existing issue. |
+| `needs-reproduction` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aneeds-reproduction) | A report that has not yet been reproduced. |
+| `needs-information` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aneeds-information) | More information is required. |
+| `blocked` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Ablocked) | Work is blocked by another issue or dependency. |
+| `beginner` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Abeginner) | A smaller issue suitable for a first contribution. |
 
 #### Category Labels
+
 | Label name | Search | Description |
 |------------|--------|-------------|
-| `3rd party` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3A%223rd%20party%22)  | Related to a 3rd party dependency. |
-| `crash` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Acrash) | Related to crashes (complete, or unhandled). |
-| `documentation` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Adocumentation) | Related to any documentation. |
-| `linux` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3linux) | Related to running on Linux. |
-| `mac` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Amac) | Related to running on macOS. |
-| `performance` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aperformance) | Related to the performance. |
-| `ui` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Aui)| Related to the visual design. |
-| `windows` | [search](https://github.com/arsenetar/dupeguru/issues?q=is%3Aopen+is%3Aissue+label%3Awindows) | Related to running on Windows. |
+| `3rd party` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3A%223rd%20party%22) | Related to a third-party dependency. |
+| `crash` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Acrash) | Related to an unexpected process termination or unhandled exception. |
+| `documentation` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Adocumentation) | Related to documentation. |
+| `linux` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Alinux) | Related to running on Linux. |
+| `mac` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Amac) | Related to running on macOS. |
+| `performance` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aperformance) | Related to performance or resource use. |
+| `ui` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Aui) | Related to visual or interaction design. |
+| `windows` | [search](https://github.com/AiWithYou/dupeguru_neo/issues?q=is%3Aopen+is%3Aissue+label%3Awindows) | Related to running on Windows. |
 
 #### Pull Request Labels
-None at this time, if the volume of Pull Requests increase labels may be added to manage.
+
+Pull-request labels may be added as the contribution volume grows.

@@ -4,11 +4,17 @@ import shutil
 import tempfile
 from typing import Any, List
 
-import polib
-
 from hscommon import pygettext
 
 LC_MESSAGES = "LC_MESSAGES"
+
+
+def _polib():
+    # Localization tooling is a build dependency, not an application runtime
+    # dependency. Import it only for operations that actually parse PO files.
+    import polib
+
+    return polib
 
 
 def get_langs(folder: str) -> List[str]:
@@ -23,24 +29,30 @@ def generate_pot(folders: List[str], outpath: str, keywords: Any, merge: bool = 
     if merge and not op.exists(outpath):
         merge = False
     if merge:
-        _, genpath = tempfile.mkstemp()
+        descriptor, genpath = tempfile.mkstemp()
+        os.close(descriptor)
     else:
         genpath = outpath
-    pyfiles = []
-    for folder in folders:
-        for root, dirs, filenames in os.walk(folder):
-            keep = [fn for fn in filenames if fn.endswith(".py")]
-            pyfiles += [op.join(root, fn) for fn in keep]
-    pygettext.main(pyfiles, outpath=genpath, keywords=keywords)
-    if merge:
-        merge_po_and_preserve(genpath, outpath)
-        try:
-            os.remove(genpath)
-        except Exception:
-            print("Exception while removing temporary folder %s\n", genpath)
+    try:
+        pyfiles = []
+        for folder in folders:
+            for root, dirs, filenames in os.walk(folder):
+                dirs.sort()
+                keep = [fn for fn in sorted(filenames) if fn.endswith(".py")]
+                pyfiles += [op.join(root, fn) for fn in keep]
+        pygettext.main(pyfiles, outpath=genpath, keywords=keywords)
+        if merge:
+            merge_po_and_preserve(genpath, outpath)
+    finally:
+        if merge:
+            try:
+                os.remove(genpath)
+            except FileNotFoundError:
+                pass
 
 
 def compile_all_po(base_folder: str) -> None:
+    polib = _polib()
     langs = get_langs(base_folder)
     for lang in langs:
         pofolder = op.join(base_folder, lang, LC_MESSAGES)
@@ -62,6 +74,7 @@ def merge_locale_dir(target: str, mergeinto: str) -> None:
 
 
 def merge_pots_into_pos(folder: str) -> None:
+    polib = _polib()
     # We're going to take all pot files in `folder` and for each lang, merge it with the po file
     # with the same name.
     potfiles = files_with_ext(folder, ".pot")
@@ -75,6 +88,7 @@ def merge_pots_into_pos(folder: str) -> None:
 
 
 def merge_po_and_preserve(source: str, dest: str) -> None:
+    polib = _polib()
     # Merges source entries into dest, but keep old entries intact
     sourcepo = polib.pofile(source)
     destpo = polib.pofile(dest)
@@ -96,6 +110,7 @@ def normalize_all_pos(base_folder: str) -> None:
     Our PO files will keep polib's format. Call this function to ensure that freshly pulled POs
     are of the right format before committing them.
     """
+    polib = _polib()
     langs = get_langs(base_folder)
     for lang in langs:
         pofolder = op.join(base_folder, lang, LC_MESSAGES)

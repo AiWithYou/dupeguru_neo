@@ -11,8 +11,8 @@ import sys
 import os
 import platform
 
-from PyQt5.QtCore import Qt, QCoreApplication, QSize
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, QCoreApplication, QSize
+from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
     QHBoxLayout,
@@ -30,7 +30,7 @@ tr = trget("ui")
 
 class ErrorReportDialog(QDialog):
     def __init__(self, parent, github_url, error, **kwargs):
-        flags = Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+        flags = Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint
         super().__init__(parent, flags, **kwargs)
         self._setupUi()
         name = QCoreApplication.applicationName()
@@ -91,6 +91,6 @@ def install_excepthook(github_url):
     def my_excepthook(exctype, value, tb):
         s = "".join(traceback.format_exception(exctype, value, tb))
         dialog = ErrorReportDialog(None, github_url, s)
-        dialog.exec_()
+        dialog.exec()
 
     sys.excepthook = my_excepthook

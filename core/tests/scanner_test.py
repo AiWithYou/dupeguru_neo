@@ -10,7 +10,7 @@ from hscommon.jobprogress import job
 from pathlib import Path
 from hscommon.testutil import eq_
 
-from core import fs
+from core import engine, fs
 from core.engine import getwords, Match
 from core.ignore import IgnoreList
 from core.scanner import Scanner, ScanType
@@ -34,6 +34,9 @@ class NamedObject:
 
     def exists(self):
         return self.path.exists()
+
+    def compare_bytes(self, other):
+        return self.digest == other.digest
 
 
 no = NamedObject
@@ -221,6 +224,67 @@ def test_big_file_partial_hashes(fake_fileexists):
     eq_(len(r), 1)
 
 
+def test_content_scan_keeps_extensions_separate_when_requested(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    scanner.mix_file_kind = False
+    files = [no("first.txt"), no("second.txt"), no("third.bin")]
+    for file in files:
+        file.digest = file.digest_partial = file.digest_samples = "same"
+    [group] = scanner.get_dupe_groups(files)
+    assert set(group) == set(files[:2])
+
+
+def test_content_scan_respects_ignored_pairs_without_pairwise_storage(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    files = [no("first"), no("second"), no("third")]
+    for file in files:
+        file.digest = file.digest_partial = file.digest_samples = "same"
+    ignore_list = IgnoreList()
+    ignore_list.ignore(str(files[0].path), str(files[1].path))
+    groups = scanner.get_dupe_groups(files, ignore_list)
+    assert all(not (files[0] in group and files[1] in group) for group in groups)
+
+
+def test_exact_partitioning_is_linear_when_global_ignore_is_unrelated():
+    class CountingIgnoreList(IgnoreList):
+        def __init__(self):
+            super().__init__()
+            self.pair_checks = 0
+
+        def are_ignored(self, first, second):
+            self.pair_checks += 1
+            return super().are_ignored(first, second)
+
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    files = [no("duplicate-{}.bin".format(index), path="library") for index in range(10_000)]
+    ignore_list = CountingIgnoreList()
+    ignore_list.ignore("outside-a", "outside-b")
+    ignore_list.pair_checks = 0
+
+    partitions = scanner._partition_exact_candidates(files, ignore_list)
+
+    assert len(partitions) == 1
+    assert len(partitions[0]["files"]) == len(files)
+    assert ignore_list.pair_checks == 0
+
+
+def test_content_scan_preserves_protected_references(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    files = [no("protected-one"), no("protected-two"), no("normal")]
+    for file in files:
+        file.digest = file.digest_partial = file.digest_samples = "same"
+    files[0].is_ref = True
+    files[1].is_ref = True
+    [group] = scanner.get_dupe_groups(files)
+    assert set(group) == set(files)
+    assert group.ref.is_ref
+    assert group.verification_kind is engine.VerificationKind.VERIFIED_EXACT
+
+
 def test_min_match_perc_doesnt_matter_for_content_scan(fake_fileexists):
     s = Scanner()
     s.scan_type = ScanType.CONTENTS
@@ -251,6 +315,91 @@ def test_content_scan_doesnt_put_digest_in_words_at_the_end(fake_fileexists):
     r = s.get_dupe_groups(f)
     # FIXME looks like we are missing something here?
     r[0]
+
+
+def test_content_byte_verification_failure_marks_scan_incomplete():
+    class UnreadableFile(no):
+        def compare_bytes(self, other):
+            raise OSError("simulated byte read failure")
+
+    first = UnreadableFile("first", size=1)
+    second = UnreadableFile("second", size=1)
+    first.digest_partial = second.digest_partial = "same-partial"
+    first.digest = second.digest = "same-full"
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+
+    assert scanner.get_dupe_groups([first, second]) == []
+    assert not scanner.scan_receipt.complete
+    assert not scanner.scan_receipt.allows_destructive_actions
+    assert scanner.scan_receipt.failed == 2
+    assert scanner.scan_receipt.issues[0].code == "byte_verification_failed"
+
+
+def test_content_full_hash_change_marks_entire_scan_incomplete(
+    tmp_path,
+    monkeypatch,
+):
+    paths = [
+        tmp_path / "first.bin",
+        tmp_path / "second.bin",
+        tmp_path / "changed.bin",
+    ]
+    payload = b"same exact payload" * 4096
+    for path in paths:
+        path.write_bytes(payload)
+    files = [fs.File(path) for path in paths]
+    uncached = fs.FilesDB()
+    monkeypatch.setattr(fs, "filesdb", uncached)
+    original = fs.File._calc_digest_with_snapshot
+
+    def changed_during_full_hash(file):
+        if file.path == paths[-1]:
+            raise fs.FileChangedError("simulated generation change")
+        return original(file)
+
+    monkeypatch.setattr(
+        fs.File,
+        "_calc_digest_with_snapshot",
+        changed_during_full_hash,
+    )
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+
+    groups = scanner.get_dupe_groups(files)
+
+    assert len(groups) == 1
+    assert set(groups[0]) == set(files[:2])
+    assert not scanner.scan_receipt.complete
+    assert not scanner.scan_receipt.allows_destructive_actions
+    assert scanner.scan_receipt.failed == 1
+    assert scanner.scan_receipt.issues[0].code == "exact_hash_failed"
+    assert "digest" in scanner.scan_receipt.issues[0].message
+
+
+def test_content_cache_read_error_is_not_treated_as_a_cache_miss(
+    tmp_path,
+    monkeypatch,
+):
+    paths = [tmp_path / "first.bin", tmp_path / "second.bin"]
+    for path in paths:
+        path.write_bytes(b"same exact payload" * 4096)
+    database = fs.FilesDB()
+    database.connect(tmp_path / "hashes.db")
+    database.select_query = "SELECT digest FROM missing_hash_cache_table"
+    monkeypatch.setattr(fs, "filesdb", database)
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    try:
+        groups = scanner.get_dupe_groups([fs.File(path) for path in paths])
+    finally:
+        database.close()
+
+    assert groups == []
+    assert not scanner.scan_receipt.complete
+    assert not scanner.scan_receipt.allows_destructive_actions
+    assert scanner.scan_receipt.failed == 2
+    assert all(issue.code == "exact_hash_failed" for issue in scanner.scan_receipt.issues)
 
 
 def test_extension_is_not_counted_in_filename_scan(fake_fileexists):
@@ -616,6 +765,36 @@ def test_folder_scan_exclude_subfolder_matches(fake_fileexists):
     eq_(len(s.get_dupe_groups([topf1, topf2, subf1, subf2, otherf])), 2)
 
 
+def test_folder_scan_keeps_transitive_groups_in_linear_storage(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.FOLDERS
+    folders = [no("folder-{}".format(index), size=42) for index in range(2_000)]
+    for folder in folders:
+        folder.digest = b"same-recursive-manifest"
+
+    [group] = scanner.get_dupe_groups(folders)
+
+    assert len(group) == 2_000
+    assert isinstance(group.matches, engine.ExactMatchesView)
+    assert group.verification_kind is engine.VerificationKind.UNVERIFIED
+    assert len(group.matches) == 1_999_000
+
+
+def test_folder_scan_cross_pool_scope_requires_two_pools(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.FOLDERS
+    scanner.comparison_scope = "cross_pool"
+    first, second = no("first", size=42), no("second", size=42)
+    first.digest = second.digest = b"same-recursive-manifest"
+    first.comparison_pool = second.comparison_pool = "incoming"
+
+    assert scanner.get_dupe_groups([first, second]) == []
+
+    second.comparison_pool = "protected"
+    [group] = scanner.get_dupe_groups([first, second])
+    assert set(group) == {first, second}
+
+
 def test_ignore_files_with_same_path(fake_fileexists):
     # It's possible that the scanner is fed with two file instances pointing to the same path. One
     # of these files has to be ignored
@@ -651,3 +830,40 @@ def test_prioritize_me(fake_fileexists):
     o2.bitrate = 2
     [group] = s.get_dupe_groups([o1, o2])
     assert group.ref is o2
+
+
+def test_cross_pool_scope_ignores_duplicates_inside_one_pool(fake_fileexists):
+    scanner = Scanner()
+    scanner.comparison_scope = "cross_pool"
+    first, second = no("same", path="first"), no("same", path="second")
+    first.comparison_pool = "incoming"
+    second.comparison_pool = "incoming"
+
+    assert scanner.get_dupe_groups([first, second]) == []
+
+
+def test_cross_pool_scope_keeps_incoming_to_protected_comparisons(fake_fileexists):
+    scanner = Scanner()
+    scanner.comparison_scope = "cross_pool"
+    incoming, protected = no("same", path="incoming"), no("same", path="protected")
+    incoming.comparison_pool = "incoming"
+    protected.comparison_pool = "protected"
+    protected.is_ref = True
+
+    [group] = scanner.get_dupe_groups([incoming, protected])
+
+    assert group.ref is protected
+    assert group.dupes == [incoming]
+
+
+def test_cross_pool_scope_applies_to_verified_exact_groups(fake_fileexists):
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+    scanner.comparison_scope = "cross_pool"
+    first, second = no("first"), no("second")
+    first.digest_partial = second.digest_partial = b"partial"
+    first.digest_samples = second.digest_samples = b"sample"
+    first.digest = second.digest = b"full"
+    first.comparison_pool = second.comparison_pool = "incoming"
+
+    assert scanner.get_dupe_groups([first, second]) == []

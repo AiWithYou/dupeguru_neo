@@ -6,8 +6,10 @@ all:
 	touch build_pe_modules.py
 	python3 build_pe_modules.py
 	chmod +x src/run.py
+	chmod +x src/run_cli.py
 	cp -R src/ "$(CURDIR)/debian/{pkgname}/usr/share/{execname}"
 	cp "$(CURDIR)/debian/{execname}.desktop" "$(CURDIR)/debian/{pkgname}/usr/share/applications"
 	mkdir -p "$(CURDIR)/debian/{pkgname}/usr/share/pixmaps"
 	ln -s "/usr/share/{execname}/dgse_logo_128.png" "$(CURDIR)/debian/{pkgname}/usr/share/pixmaps/{execname}.png"
-	ln -s "/usr/share/{execname}/run.py" "$(CURDIR)/debian/{pkgname}/usr/bin/{execname}"
+	ln -s "/usr/share/{execname}/run_cli.py" "$(CURDIR)/debian/{pkgname}/usr/bin/{execname}"
+	ln -s "/usr/share/{execname}/run.py" "$(CURDIR)/debian/{pkgname}/usr/bin/{guiexecname}"

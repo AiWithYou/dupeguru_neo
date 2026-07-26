@@ -53,7 +53,7 @@ msgid "Kind"
 msgstr ""
 
 #: core\me\result_table.py:26 core\pe\result_table.py:25
-#: core\prioritize.py:165 core\se\result_table.py:23
+#: core\prioritize.py:175 core\se\result_table.py:23
 msgid "Modification"
 msgstr ""
 
@@ -111,6 +111,6 @@ msgstr ""
 msgid "EXIF Timestamp"
 msgstr ""
 
-#: core\prioritize.py:158
+#: core\prioritize.py:168
 msgid "Size"
 msgstr ""

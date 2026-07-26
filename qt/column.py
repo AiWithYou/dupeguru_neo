@@ -6,8 +6,10 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QHeaderView
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QHeaderView
+
+MAX_COLUMN_WIDTH = 1_000_000
 
 
 class Column:
@@ -16,7 +18,7 @@ class Column:
         attrname,
         default_width,
         editor=None,
-        alignment=Qt.AlignLeft,
+        alignment=Qt.AlignmentFlag.AlignLeft,
         cant_truncate=False,
         painter=None,
         resize_to_fit=False,
@@ -37,7 +39,8 @@ class Columns:
     def __init__(self, model, columns, header_view):
         self.model = model
         self._header_view = header_view
-        self._header_view.setDefaultAlignment(Qt.AlignLeft)
+        self._header_view.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._header_view.setMaximumSectionSize(MAX_COLUMN_WIDTH)
 
         def setspecs(col, modelcol):
             modelcol.default_width = col.default_width
@@ -62,7 +65,7 @@ class Columns:
         # See moneyguru #14 and #15.  This was added in order to allow automatic resizing of columns.
         for column in self.model.column_list:
             if column.resize_to_fit:
-                self._header_view.setSectionResizeMode(column.logical_index, QHeaderView.ResizeToContents)
+                self._header_view.setSectionResizeMode(column.logical_index, QHeaderView.ResizeMode.ResizeToContents)
 
     # --- Public
     def set_columns_width(self, widths):

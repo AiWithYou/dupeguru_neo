@@ -15,6 +15,7 @@ from hscommon.conflict import (
     smart_copy,
     smart_move,
 )
+from core.safe_action import platform_file_system
 from pathlib import Path
 from hscommon.testutil import eq_
 
@@ -68,6 +69,10 @@ class TestCaseIsConflicted:
 
 class TestCaseMoveCopy:
     @pytest.fixture
+    def rename_no_replace(self):
+        return platform_file_system().rename_no_replace_bound
+
+    @pytest.fixture
     def do_setup(self, request):
         tmpdir = request.getfixturevalue("tmpdir")
         self.path = Path(str(tmpdir))
@@ -75,39 +80,41 @@ class TestCaseMoveCopy:
         self.path.joinpath("bar").touch()
         self.path.joinpath("dir").mkdir()
 
-    def test_move_no_conflict(self, do_setup):
-        smart_move(self.path.joinpath("foo"), self.path.joinpath("baz"))
+    def test_move_no_conflict(self, do_setup, rename_no_replace):
+        smart_move(self.path.joinpath("foo"), self.path.joinpath("baz"), rename_no_replace=rename_no_replace)
         assert self.path.joinpath("baz").exists()
         assert not self.path.joinpath("foo").exists()
 
-    def test_copy_no_conflict(self, do_setup):  # No need to duplicate the rest of the tests... Let's just test on move
-        smart_copy(self.path.joinpath("foo"), self.path.joinpath("baz"))
+    def test_copy_no_conflict(
+        self, do_setup, rename_no_replace
+    ):  # No need to duplicate the rest of the tests... Let's just test on move
+        smart_copy(self.path.joinpath("foo"), self.path.joinpath("baz"), rename_no_replace=rename_no_replace)
         assert self.path.joinpath("baz").exists()
         assert self.path.joinpath("foo").exists()
 
-    def test_move_no_conflict_dest_is_dir(self, do_setup):
-        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"))
+    def test_move_no_conflict_dest_is_dir(self, do_setup, rename_no_replace):
+        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"), rename_no_replace=rename_no_replace)
         assert self.path.joinpath("dir", "foo").exists()
         assert not self.path.joinpath("foo").exists()
 
-    def test_move_conflict(self, do_setup):
-        smart_move(self.path.joinpath("foo"), self.path.joinpath("bar"))
+    def test_move_conflict(self, do_setup, rename_no_replace):
+        smart_move(self.path.joinpath("foo"), self.path.joinpath("bar"), rename_no_replace=rename_no_replace)
         assert self.path.joinpath("[000] bar").exists()
         assert not self.path.joinpath("foo").exists()
 
-    def test_move_conflict_dest_is_dir(self, do_setup):
-        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"))
-        smart_move(self.path.joinpath("bar"), self.path.joinpath("foo"))
-        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"))
+    def test_move_conflict_dest_is_dir(self, do_setup, rename_no_replace):
+        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"), rename_no_replace=rename_no_replace)
+        smart_move(self.path.joinpath("bar"), self.path.joinpath("foo"), rename_no_replace=rename_no_replace)
+        smart_move(self.path.joinpath("foo"), self.path.joinpath("dir"), rename_no_replace=rename_no_replace)
         assert self.path.joinpath("dir", "foo").exists()
         assert self.path.joinpath("dir", "[000] foo").exists()
         assert not self.path.joinpath("foo").exists()
         assert not self.path.joinpath("bar").exists()
 
-    def test_copy_folder(self, tmpdir):
+    def test_copy_folder(self, tmpdir, rename_no_replace):
         # smart_copy also works on folders
         path = Path(str(tmpdir))
         path.joinpath("foo").mkdir()
         path.joinpath("bar").mkdir()
-        smart_copy(path.joinpath("foo"), path.joinpath("bar"))  # no crash
+        smart_copy(path.joinpath("foo"), path.joinpath("bar"), rename_no_replace=rename_no_replace)  # no crash
         assert path.joinpath("[000] bar").exists()

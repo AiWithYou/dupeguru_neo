@@ -1,8 +1,9 @@
 [Desktop Entry]
 Name={longname}
-Comment=Find duplicate files.
-Exec={execname}
+Comment=Safely verify duplicate files and organize media libraries.
+Exec={guiexecname}
 Icon={iconpath}
 Terminal=false
 Type=Application
 Categories=Utility;
+Keywords=duplicate;deduplicate;photo;media;dataset;

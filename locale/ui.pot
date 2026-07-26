@@ -1125,3 +1125,372 @@ msgstr ""
 #: qt\pe\preferences_dialog.py:24
 msgid "Match pictures of different rotations"
 msgstr ""
+
+#: qt\app.py:164
+msgid "dupeGuru Neo Help"
+msgstr ""
+
+#: qt\app.py:169
+msgid "Similar Video CLI Workflow…"
+msgstr ""
+
+#: qt\app.py:172
+msgid "About dupeGuru Neo"
+msgstr ""
+
+#: qt\app.py:184
+msgid "Find Similar Image…"
+msgstr ""
+
+#: qt\app.py:394
+msgid "Choose an image to find visually similar files"
+msgstr ""
+
+#: qt\app.py:396
+msgid "Images ({})"
+msgstr ""
+
+#: qt\app.py:410
+msgid "Choose a readable image file."
+msgstr ""
+
+#: qt\app.py:415
+msgid "Add at least one non-excluded picture folder before searching."
+msgstr ""
+
+#: qt\app.py:435
+msgid "A visual search is already running."
+msgstr ""
+
+#: qt\deletion_options.py:35
+msgid ""
+"This action only moves files into recoverable quarantine. Permanent "
+"finalization is always a separate explicit operation."
+msgstr ""
+
+#: qt\directories_dialog.py:202
+msgid ""
+"Choose each folder pool (Incoming, Protected, Compare Only, or Excluded), "
+"then press \"Scan\"."
+msgstr ""
+
+#: qt\directories_model.py:27
+msgid "Incoming Files"
+msgstr ""
+
+#: qt\directories_model.py:28
+msgid "Protected Library"
+msgstr ""
+
+#: qt\directories_model.py:29
+msgid "Compare Only"
+msgstr ""
+
+#: qt\exclude_list_dialog.py:171
+msgid ""
+"These (case sensitive) python regular expressions will filter out files during scans.<br>Directories will also have their <strong>default state</strong> set to Excluded in the Directories tab if their name happens to match one of the selected regular expressions.<br>For each file collected, two tests are performed to determine whether or not to completely ignore it:<br><li>1. Regular expressions with no path separator in them will be compared to the file name only.</li>\n"
+"<li>2. Regular expressions with at least one path separator in them will be compared to the full path to the file.</li><br>Example: if you want to filter out .PNG files from the \"My Pictures\" directory only:<br><code>.*My\\sPictures\\\\.*\\.png</code><br><br>You can test the regular expression with the \"test string\" button after pasting a fake path in the test field:<br><code>C:\\\\User\\My Pictures\\test.png</code><br><br>\n"
+"Matching regular expressions will be highlighted.<br>If there is at least one highlight, the path or filename tested will be ignored during scans.<br><br>Directories and files starting with a period '.' are filtered out by default.<br><br>"
+msgstr ""
+
+#: qt\me\preferences_dialog.py:69 qt\pe\preferences_dialog.py:30
+#: qt\se\preferences_dialog.py:45
+msgid "Remove empty folders after move"
+msgstr ""
+
+#: qt\pe\details_dialog.py:81 qt\pe\details_dialog.py:106
+msgid "Side-by-side comparison"
+msgstr ""
+
+#: qt\pe\details_dialog.py:211
+msgid "The selected image is not available in the current results."
+msgstr ""
+
+#: qt\pe\details_dialog.py:216
+msgid "The keeper could not be updated in the current results."
+msgstr ""
+
+#: qt\pe\details_dialog.py:228
+msgid "The current results cannot be marked."
+msgstr ""
+
+#: qt\pe\details_dialog.py:240
+msgid "The deletion proof could not be revalidated."
+msgstr ""
+
+#: qt\pe\details_dialog.py:258
+msgid "The deletion candidate could not be updated."
+msgstr ""
+
+#: qt\pe\image_viewer.py:178
+msgid "Side-by-side comparison (Alt+1)"
+msgstr ""
+
+#: qt\pe\image_viewer.py:186
+msgid "Alpha overlay comparison (Alt+2)"
+msgstr ""
+
+#: qt\pe\image_viewer.py:194
+msgid "Blink comparison (Alt+3)"
+msgstr ""
+
+#: qt\pe\image_viewer.py:202
+msgid "Absolute difference heatmap (Alt+4)"
+msgstr ""
+
+#: qt\pe\image_viewer.py:358
+msgid "A second readable image is required."
+msgstr ""
+
+#: qt\pe\image_viewer.py:359
+msgid "%s unavailable: %s"
+msgstr ""
+
+#: qt\pe\image_viewer.py:363
+msgid "Side-by-side fallback: %s"
+msgstr ""
+
+#: qt\pe\image_viewer.py:367
+msgid "No readable image is selected."
+msgstr ""
+
+#: qt\pe\image_viewer.py:370
+msgid "Side-by-side · select another image to compare."
+msgstr ""
+
+#: qt\pe\image_viewer.py:388
+msgid "%s failed: %s"
+msgstr ""
+
+#: qt\pe\image_viewer.py:415
+msgid "Side-by-side"
+msgstr ""
+
+#: qt\pe\image_viewer.py:416
+msgid "Alpha overlay"
+msgstr ""
+
+#: qt\pe\image_viewer.py:417
+msgid "Blink"
+msgstr ""
+
+#: qt\pe\image_viewer.py:418
+msgid "Difference heatmap"
+msgstr ""
+
+#: qt\pe\image_viewer.py:424
+msgid " · display-bounded"
+msgstr ""
+
+#: qt\pe\image_viewer.py:425
+msgid "%s · normalized to %d×%d%s · originals unchanged"
+msgstr ""
+
+#: qt\pe\image_viewer.py:588 qt\pe\image_viewer.py:1012
+msgid "No image is selected for comparison."
+msgstr ""
+
+#: qt\pe\review_gallery.py:90
+msgid "Byte-verified exact"
+msgstr ""
+
+#: qt\pe\review_gallery.py:91
+msgid "Visual approximate"
+msgstr ""
+
+#: qt\pe\review_gallery.py:92
+msgid "Visually related"
+msgstr ""
+
+#: qt\pe\review_gallery.py:93
+msgid "Unverified"
+msgstr ""
+
+#: qt\pe\review_gallery.py:194
+msgid "Unknown image"
+msgstr ""
+
+#: qt\pe\review_gallery.py:201 qt\pe\review_gallery.py:208
+msgid "unknown size"
+msgstr ""
+
+#: qt\pe\review_gallery.py:688 qt\pe\review_gallery.py:1097
+msgid "Select an image to review."
+msgstr ""
+
+#: qt\pe\review_gallery.py:831
+msgid "dimensions unknown"
+msgstr ""
+
+#: qt\pe\review_gallery.py:856
+msgid "No live, complete scan proof is attached to this review."
+msgstr ""
+
+#: qt\pe\review_gallery.py:864
+msgid "The safety gate could not verify this candidate."
+msgstr ""
+
+#: qt\pe\review_gallery.py:954
+msgid "KEEP"
+msgstr ""
+
+#: qt\pe\review_gallery.py:966
+msgid "DELETE"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1101
+msgid "1 Keep"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1102
+msgid "Choose the selected image as the keeper."
+msgstr ""
+
+#: qt\pe\review_gallery.py:1103
+msgid "2 Mark delete"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1104
+msgid "Space Next"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1105
+msgid "Review the next duplicate group."
+msgstr ""
+
+#: qt\pe\review_gallery.py:1159
+msgid "%s · %d"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1173
+msgid ""
+"Mark this image as a deletion candidate; this button does not delete the "
+"file."
+msgstr ""
+
+#: qt\pe\visual_query.py:239
+msgid "QUERY REFERENCE"
+msgstr ""
+
+#: qt\pe\visual_query.py:240
+msgid "REFERENCE"
+msgstr ""
+
+#: qt\pe\visual_query.py:253
+msgid "SIMILAR"
+msgstr ""
+
+#: qt\pe\visual_query.py:254
+msgid "TRANSFORMED (REVIEW ONLY)"
+msgstr ""
+
+#: qt\pe\visual_query.py:255
+msgid "CROP CANDIDATE (REVIEW ONLY)"
+msgstr ""
+
+#: qt\pe\visual_query.py:256
+msgid "VISUALLY RELATED"
+msgstr ""
+
+#: qt\pe\visual_query.py:259
+msgid ""
+"{relation} · {score:.1f}% · blocks {blocks}% · pHash {phash} · dHash {dhash}"
+" · color {color:.3f}"
+msgstr ""
+
+#: qt\pe\visual_query.py:454
+msgid "Find Similar Image"
+msgstr ""
+
+#: qt\pe\visual_query.py:494
+msgid "Reference: {}"
+msgstr ""
+
+#: qt\pe\visual_query.py:495
+msgid "Searching selected picture roots. Source files remain read-only."
+msgstr ""
+
+#: qt\pe\visual_query.py:515
+msgid ""
+"{matches} visual matches · {analyzed}/{discovered} analyzed · {status}. "
+"Read-only evidence; never exact or deletion-enabled."
+msgstr ""
+
+#: qt\pe\visual_query.py:548
+msgid "Visual search failed: {}"
+msgstr ""
+
+#: qt\pe\visual_query.py:555
+msgid ""
+"Cancelling… The current image decode will finish before the worker stops."
+msgstr ""
+
+#: qt\pe\visual_query.py:559
+msgid "Visual search cancelled; no result was applied."
+msgstr ""
+
+#: qt\pe\visual_query.py:572
+msgid "Drop an image here or choose Find Similar Image."
+msgstr ""
+
+#: qt\pe\visual_query.py:573
+msgid "Visual matches are read-only and never promoted to exact duplicates."
+msgstr ""
+
+#: qt\preferences_dialog.py:233
+msgid "Compare files only between different folder pools"
+msgstr ""
+
+#: qt\preferences_dialog.py:236
+msgid ""
+"Ignore duplicates contained entirely within one pool. Use this to compare "
+"Incoming Files against a Protected Library without reporting duplicates "
+"internal to either pool."
+msgstr ""
+
+#: qt\preferences_dialog.py:246
+msgid "Direct scan resource limits"
+msgstr ""
+
+#: qt\preferences_dialog.py:256
+msgid "Maximum files:"
+msgstr ""
+
+#: qt\preferences_dialog.py:257
+msgid "Maximum folders:"
+msgstr ""
+
+#: qt\preferences_dialog.py:258
+msgid "Maximum filesystem issues:"
+msgstr ""
+
+#: qt\preferences_dialog.py:259
+msgid "Maximum discovery seconds:"
+msgstr ""
+
+#: qt\preferences_dialog.py:261
+msgid ""
+"These limits apply to filename, folder, tag, and picture scans that discover"
+" files directly. For a very large exact-match library, use the Contents scan"
+" and its Persistent Catalog."
+msgstr ""
+
+#: qt\result_window.py:83
+msgid "Quarantine Verified Marked Files..."
+msgstr ""
+
+#: qt\result_window.py:90
+msgid "Restore Last Quarantine Batch..."
+msgstr ""
+
+#: qt\result_window.py:210
+msgid "Invoke External Custom Command..."
+msgstr ""
+
+#: qt\file_formats.py:19
+msgid "dupeGuru Neo Results (*.dupeguru)"
+msgstr ""
+
+#: qt\file_formats.py:25
+msgid "dupeGuru Neo Directories (*.dupegurudirs)"
+msgstr ""

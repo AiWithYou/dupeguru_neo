@@ -6,11 +6,12 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt, QCoreApplication, QTimer
-from PyQt5.QtGui import QPixmap, QFont
-from PyQt5.QtWidgets import QDialog, QDialogButtonBox, QSizePolicy, QHBoxLayout, QVBoxLayout, QLabel
+from PyQt6.QtCore import Qt, QCoreApplication, QTimer
+from PyQt6.QtGui import QPixmap, QFont
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QSizePolicy, QHBoxLayout, QVBoxLayout, QLabel
 
 from core.util import check_for_update
+from qt.resources import resource_path
 from qt.util import move_to_screen_center
 from hscommon.trans import trget
 
@@ -19,7 +20,12 @@ tr = trget("ui")
 
 class AboutBox(QDialog):
     def __init__(self, parent, app, **kwargs):
-        flags = Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowSystemMenuHint | Qt.MSWindowsFixedSizeDialogHint
+        flags = (
+            Qt.WindowType.CustomizeWindowHint
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.MSWindowsFixedSizeDialogHint
+        )
         super().__init__(parent, flags, **kwargs)
         self.app = app
         self._setupUi()
@@ -29,11 +35,11 @@ class AboutBox(QDialog):
 
     def _setupUi(self):
         self.setWindowTitle(tr("About {}").format(QCoreApplication.instance().applicationName()))
-        size_policy = QSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        size_policy = QSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setSizePolicy(size_policy)
         main_layout = QHBoxLayout(self)
         logo_label = QLabel()
-        logo_label.setPixmap(QPixmap(":/%s_big" % self.app.LOGO_NAME))
+        logo_label.setPixmap(QPixmap(resource_path("{}_big".format(self.app.LOGO_NAME))))
         main_layout.addWidget(logo_label)
         detail_layout = QVBoxLayout()
         name_label = QLabel()
@@ -47,7 +53,7 @@ class AboutBox(QDialog):
         version_label.setText(tr("Version {}").format(QCoreApplication.instance().applicationVersion()))
         detail_layout.addWidget(version_label)
         self.update_label = QLabel(tr("Checking for updates..."))
-        self.update_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.update_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         self.update_label.setOpenExternalLinks(True)
         detail_layout.addWidget(self.update_label)
         license_label = QLabel()
@@ -57,8 +63,8 @@ class AboutBox(QDialog):
         spacer_label.setFont(font)
         detail_layout.addWidget(spacer_label)
         self.button_box = QDialogButtonBox()
-        self.button_box.setOrientation(Qt.Horizontal)
-        self.button_box.setStandardButtons(QDialogButtonBox.Ok)
+        self.button_box.setOrientation(Qt.Orientation.Horizontal)
+        self.button_box.setStandardButtons(QDialogButtonBox.StandardButton.Ok)
         detail_layout.addWidget(self.button_box)
         main_layout.addLayout(detail_layout)
 

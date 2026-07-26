@@ -6,8 +6,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-"""This module is a collection of function to help in HS apps build process.
-"""
+"""This module is a collection of function to help in HS apps build process."""
 
 from argparse import ArgumentParser
 import os
@@ -19,17 +18,22 @@ import plistlib
 from subprocess import Popen
 import re
 import importlib
+import shlex
 from datetime import datetime
 import glob
-from typing import Any, AnyStr, Callable, Dict, List, Union
+from typing import Any, AnyStr, Callable, Dict, List, Sequence, Union
 
 from hscommon.plat import ISWINDOWS
 
 
-def print_and_do(cmd: str) -> int:
-    """Prints ``cmd`` and executes it in the shell."""
-    print(cmd)
-    p = Popen(cmd, shell=True)
+def print_and_do(cmd: Sequence[os.PathLike | str]) -> int:
+    """Print and execute an argument vector without invoking a command shell."""
+
+    if isinstance(cmd, (str, bytes)) or not cmd:
+        raise TypeError("command must be a non-empty argument sequence")
+    arguments = [os.fspath(argument) for argument in cmd]
+    print(shlex.join(arguments))
+    p = Popen(arguments, shell=False)
     return p.wait()
 
 
@@ -131,7 +135,7 @@ def package_cocoa_app_in_dmg(app_path: os.PathLike, destfolder: os.PathLike, arg
     # a valid signature.
     if args.sign_identity:
         sign_identity = f"Developer ID Application: {args.sign_identity}"
-        result = print_and_do(f'codesign --force --deep --sign "{sign_identity}" "{app_path}"')
+        result = print_and_do(["codesign", "--force", "--deep", "--sign", sign_identity, app_path])
         if result != 0:
             print("ERROR: Signing failed. Aborting packaging.")
             return
@@ -152,8 +156,8 @@ def build_dmg(app_path: os.PathLike, destfolder: os.PathLike) -> None:
     workpath = tempfile.mkdtemp()
     dmgpath = op.join(workpath, plist["CFBundleName"])
     os.mkdir(dmgpath)
-    print_and_do('cp -R "{}" "{}"'.format(app_path, dmgpath))
-    print_and_do('ln -s /Applications "%s"' % op.join(dmgpath, "Applications"))
+    print_and_do(["cp", "-R", app_path, dmgpath])
+    print_and_do(["ln", "-s", "/Applications", op.join(dmgpath, "Applications")])
     dmgname = "{}_osx_{}.dmg".format(
         plist["CFBundleName"].lower().replace(" ", "_"),
         plist["CFBundleVersion"].replace(".", "_"),
@@ -161,7 +165,16 @@ def build_dmg(app_path: os.PathLike, destfolder: os.PathLike) -> None:
     print("Building %s" % dmgname)
     # UDBZ = bzip compression. UDZO (zip compression) was used before, but it compresses much less.
     print_and_do(
-        'hdiutil create "{}" -format UDBZ -nocrossdev -srcdir "{}"'.format(op.join(destfolder, dmgname), dmgpath)
+        [
+            "hdiutil",
+            "create",
+            op.join(destfolder, dmgname),
+            "-format",
+            "UDBZ",
+            "-nocrossdev",
+            "-srcdir",
+            dmgpath,
+        ]
     )
     print("Build Complete")
 
@@ -309,7 +322,7 @@ def read_changelog_file(filename: os.PathLike) -> List[Dict[str, Any]]:
 
 
 def fix_qt_resource_file(path: os.PathLike) -> None:
-    # pyrcc5 under Windows, if the locale is non-english, can produce a source file with a date
+    # Some resource generators under Windows can produce a source file with a date
     # containing accented characters. If it does, the encoding is wrong and it prevents the file
     # from being correctly frozen by cx_freeze. To work around that, we open the file, strip all
     # comments, and save.

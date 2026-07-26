@@ -1,9 +1,9 @@
 [Desktop Entry]
-Name=dupeGuru
-Comment=Find duplicate files.
-Exec=dupeguru
+Name=dupeGuru Neo
+Comment=Safely verify duplicate files and organize media libraries.
+Exec=dupeguru-gui
 Icon=dupeguru
 Terminal=false
 Type=Application
 Categories=Utility;
-Keywords=file manager;gui;
+Keywords=duplicate;deduplicate;photo;media;dataset;file manager;gui;

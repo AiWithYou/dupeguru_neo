@@ -8,6 +8,7 @@
 
 from hscommon.gui.base import GUIObject
 from core.gui.base import DupeGuruGUIObject
+from core.engine import VerificationKind
 
 
 class DetailsPanel(GUIObject, DupeGuruGUIObject):
@@ -34,6 +35,20 @@ class DetailsPanel(GUIObject, DupeGuruGUIObject):
         data2 = self.app.get_display_info(ref, group, False)
         columns = self.app.result_table.COLUMNS[1:]  # first column is the 'marked' column
         self._table = [(c.display, data1[c.name], data2[c.name]) for c in columns]
+        if group is not None:
+            verification = getattr(group, "verification_kind", VerificationKind.UNVERIFIED)
+            if verification is VerificationKind.VERIFIED_EXACT:
+                status = "Verified Exact (live revalidation required before action)"
+            elif verification is VerificationKind.SIMILAR:
+                status = "Approximate similarity (review only)"
+            else:
+                status = "Unverified or saved report (review only)"
+            self._table.append(("Safety", status, status))
+            decision = getattr(group, "keeper_decision", None)
+            if decision is not None:
+                selected_reason = decision.explanation(dupe) if dupe is not None else "---"
+                reference_reason = decision.explanation(ref) if ref is not None else "---"
+                self._table.append(("Keeper policy", selected_reason, reference_reason))
 
     # --- Public
     def row_count(self):

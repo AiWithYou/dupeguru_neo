@@ -51,23 +51,33 @@ being removed.
 Folder states
 -------------
 
-Every folder can be in one of these 3 states:
+Every folder can be in one of these four states:
 
-**Normal:**
-    Duplicates found in this folder can be deleted.
-**Reference:**
-    Duplicates found in this folder **cannot** be deleted. Files from this folder can
-    only end up in **reference** position in the dupe group. If more than one file from reference
-    folders end up in the same dupe group, only one will be kept. The others will be removed from
-    the group.
+**Incoming Files:**
+    Files are normal comparison and review candidates. A file is eligible for
+    quarantine only if the current scan proves it byte-exact and the live
+    action checks pass.
+**Protected Library:**
+    Files participate in comparisons and receive keeper priority, but can never
+    be destructive targets.
+**Compare Only:**
+    Files participate in comparisons and receive an immutable reference/keeper
+    constraint so that they can never become destructive targets. Unlike a
+    Protected Library item, that constraint does not claim the file is the
+    authoritative or highest-quality original.
 **Excluded:**
-    Files in this directory will not be included in the scan.
+    Files in this directory are intentionally omitted from the scan.
 
-The default state of a folder is, of course, **Normal**. You can use **Reference** state for a
-folder if you want to be sure that you won't delete any file from it.
+The default state is **Incoming Files**. Use **Protected Library** for an
+authoritative collection, and **Compare Only** for external media that should
+inform matches but must not be changed.
 
 When you set the state of a directory, all subfolders of this folder automatically inherit this
 state unless you explicitly set a subfolder's state.
+
+The advanced **Compare files only between different folder pools** option is
+useful for an ingestion workflow. It suppresses groups contained entirely
+inside one pool while retaining, for example, Incoming-to-Protected matches.
 
 Scan
 ----

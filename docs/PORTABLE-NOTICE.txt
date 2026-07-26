@@ -1,0 +1,28 @@
+dupeGuru Neo local portable GUI bundle
+
+This archive is a local development build for the operating system and
+architecture named in its filename. The official tagged-release workflow does
+not publish portable archives. It is not an operating-system-trusted installer.
+
+- The Windows executable is not Authenticode-signed.
+- The macOS application is not signed with an Apple Developer ID and is not
+  notarized or stapled by Apple.
+- The Linux bundle targets the GNU/Linux environment used by the release
+  workflow and may require a compatible glibc and desktop stack.
+
+Do not infer official checksums, GitHub attestation, Sigstore identity, or
+publisher trust from this filename. Build or receive it only through a channel
+whose provenance you independently trust.
+
+This bundle embeds THIRD-PARTY-LICENSES/ for installed Python dependencies and
+FROZEN-RUNTIME-LICENSES/ for the CPython PSF license and PyInstaller
+COPYING/Bootloader Exception. Their JSON indexes bind the copied texts to the
+exact dependency and source locks; do not discard those directories when
+redistributing the bundle.
+
+Those inventories operate mainly at the Python-distribution level. Binary
+wheels may contain native libraries below that level. The current project does
+not yet prove the complete native source, license, and SBOM closure of this
+frozen tree, so this archive must not be represented as an official release or
+as having complete corresponding source. See docs/RELEASE.md and
+docs/SOURCE-COMPANION.md in the source tree.

@@ -11,27 +11,31 @@
 # resulting needless complexity and memory usage. It's been a while since I wanted to do that fork,
 # and I'm doing it now.
 
+import contextlib
+import ntpath
 import os
+import posixpath
+import stat
 
+from dataclasses import dataclass
 from math import floor
 import logging
 import sqlite3
-from sys import platform
 from threading import Lock
-from typing import Any, AnyStr, Union, Callable
+from typing import Any, AnyStr, Union
 
 from pathlib import Path
+import xxhash
+
 from hscommon.util import nonone, get_file_ext
+from core.file_generation import (
+    FileGenerationToken,
+    get_file_generation_token,
+    get_file_generation_token_from_fd,
+)
 
-hasher: Callable
-try:
-    import xxhash
-
-    hasher = xxhash.xxh128
-except ImportError:
-    import hashlib
-
-    hasher = hashlib.md5
+hasher = xxhash.xxh128
+HASH_ALGORITHM = "xxh128"
 
 __all__ = [
     "File",
@@ -59,6 +63,162 @@ MIN_FILE_SIZE = 3 * CHUNK_SIZE  # 3MiB, because we take 3 samples
 PARTIAL_OFFSET_SIZE = (0x4000, 0x4000)
 
 
+class FileChangedError(OSError):
+    """Raised when a file changes while it is being read."""
+
+
+@dataclass(frozen=True)
+class FileSnapshot:
+    """Identity and generation metadata captured from an open file handle."""
+
+    device: str
+    file_id: str
+    size: int
+    mtime_ns: int
+    ctime_ns: bytes
+
+    @classmethod
+    def from_stat(cls, stat_result, generation_token=None):
+        if generation_token is None:
+            if os.name == "nt":
+                raise ValueError("Windows FileSnapshot requires an explicit ChangeTime token")
+            generation_token = FileGenerationToken("posix-ctime-ns", int(stat_result.st_ctime_ns))
+        if isinstance(generation_token, FileGenerationToken):
+            generation_token = generation_token.encoded
+        if not isinstance(generation_token, bytes) or not generation_token:
+            raise ValueError("FileSnapshot generation token must be non-empty bytes")
+        return cls(
+            device=str(stat_result.st_dev),
+            file_id=str(stat_result.st_ino),
+            size=stat_result.st_size,
+            mtime_ns=stat_result.st_mtime_ns,
+            ctime_ns=generation_token,
+        )
+
+    @classmethod
+    def from_path(cls, path, stat_result=None):
+        stat_result = stat_result or os.stat(path, follow_symlinks=False)
+        token = get_file_generation_token(path, stat_result=stat_result)
+        return cls.from_stat(stat_result, token)
+
+    @classmethod
+    def from_file(cls, file_object, path=None, stat_result=None):
+        stat_result = stat_result or os.fstat(file_object.fileno())
+        token = get_file_generation_token_from_fd(
+            file_object.fileno(),
+            path=path,
+            stat_result=stat_result,
+        )
+        return cls.from_stat(stat_result, token)
+
+    def as_sql_params(self):
+        return {
+            "device": self.device,
+            "file_id": self.file_id,
+            "size": self.size,
+            "mtime_ns": self.mtime_ns,
+            "ctime_ns": self.ctime_ns,
+        }
+
+    def same_content_generation(self, other):
+        """Compare every generation field captured while hashing.
+
+        ``ctime_ns`` retains its legacy database field name but contains the
+        shared versioned generation-token bytes. Filesystems that cannot
+        provide a proven token must miss the cache rather than reuse evidence.
+        """
+        return (
+            self.device,
+            self.file_id,
+            self.size,
+            self.mtime_ns,
+            self.ctime_ns,
+        ) == (
+            other.device,
+            other.file_id,
+            other.size,
+            other.mtime_ns,
+            other.ctime_ns,
+        )
+
+
+@dataclass(frozen=True)
+class ByteComparisonEvidence:
+    """Evidence that two stable file-handle snapshots had identical bytes."""
+
+    first: FileSnapshot
+    second: FileSnapshot
+    bytes_compared: int
+
+
+def _snapshot_path(path: Path) -> FileSnapshot:
+    path_stat = os.stat(path, follow_symlinks=False)
+    reparse_marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(path_stat, "st_file_attributes", 0)
+    if not stat.S_ISREG(path_stat.st_mode) or (reparse_marker and file_attributes & reparse_marker):
+        raise OSError(f"Path is not a plain regular file: {path}")
+    return FileSnapshot.from_path(path, path_stat)
+
+
+def _snapshot_handle(fp, path=None) -> FileSnapshot:
+    return FileSnapshot.from_file(fp, path=path)
+
+
+_readonly_file_system = None
+
+
+def _ensure_no_link_components(path):
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current = current.joinpath(component)
+        component_stat = os.stat(current, follow_symlinks=False)
+        reparse_marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        file_attributes = getattr(component_stat, "st_file_attributes", 0)
+        if stat.S_ISLNK(component_stat.st_mode) or (reparse_marker and file_attributes & reparse_marker):
+            raise OSError(f"Path contains a symbolic link or reparse point: {current}")
+
+
+@contextlib.contextmanager
+def _open_readonly_no_follow(path):
+    """Open a file without traversing a link or Windows reparse point.
+
+    The action executor owns the platform-specific implementation because it
+    uses the same primitive for live destructive proofs.  Importing lazily
+    keeps the filesystem model independent during module initialization.
+    """
+
+    path = Path(path)
+    _ensure_no_link_components(path)
+    before_path = _snapshot_path(path)
+    global _readonly_file_system
+    if _readonly_file_system is None:
+        from core.safe_action import platform_file_system
+
+        _readonly_file_system = platform_file_system()
+    with _readonly_file_system.open_readonly(path) as file_handle:
+        before_handle = _snapshot_handle(file_handle, path)
+        _ensure_unchanged(before_path, before_handle, path)
+        try:
+            yield file_handle
+        finally:
+            after_handle = _snapshot_handle(file_handle, path)
+            _ensure_no_link_components(path)
+            after_path = _snapshot_path(path)
+            _ensure_unchanged(before_handle, after_handle, path)
+            _ensure_unchanged(before_path, after_path, path)
+
+
+def _ensure_unchanged(before: FileSnapshot, after: FileSnapshot, path) -> None:
+    if before != after:
+        raise FileChangedError(f"File changed while being read: {path}")
+
+
+def _raise_if_scan_stopped(stop_check) -> None:
+    if stop_check is not None and stop_check():
+        raise InterruptedError("exact scan resource limit reached")
+
+
 class FSError(Exception):
     cls_message = "An error has occured on '{name}' in '{parent}'"
 
@@ -76,11 +236,13 @@ class FSError(Exception):
 
 class AlreadyExistsError(FSError):
     "The directory or file name we're trying to add already exists"
+
     cls_message = "'{name}' already exists in '{parent}'"
 
 
 class InvalidPath(FSError):
     "The path of self is invalid, and cannot be worked with."
+
     cls_message = "'{name}' is invalid."
 
 
@@ -97,20 +259,496 @@ class OperationError(FSError):
     cls_message = "Operation on '{name}' failed."
 
 
-class FilesDB:
-    schema_version = 1
-    schema_version_description = "Changed from md5 to xxhash if available."
+class HashCacheSafetyError(OSError):
+    """The hash-cache path could not be proven to be private application state."""
 
-    create_table_query = """CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER, mtime_ns INTEGER,
-        entry_dt DATETIME, digest BLOB, digest_partial BLOB, digest_samples BLOB)"""
+
+_SQLITE_HEADER = b"SQLite format 3\x00"
+_SQLITE_DATABASE_HEADER_SIZE = 100
+_HASH_CACHE_APPLICATION_ID = 0x44474E48  # "DGNH"
+_HASH_CACHE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
+_HASH_CACHE_SCHEMA_VERSION = 3
+_HASH_CACHE_SCHEMA_DESCRIPTION = "Versioned OS generation tokens and atomic digest invalidation."
+_HASH_CACHE_MAX_FILE_BYTES = 64 * 1024 * 1024 * 1024
+_HASH_CACHE_SCHEMA_VERSION_COLUMNS = (
+    ("version", "INT", 0, 1),
+    ("description", "TEXT", 0, 0),
+)
+_HASH_CACHE_FILES_COLUMNS = (
+    ("path", "TEXT", 0, 1),
+    ("device", "TEXT", 1, 0),
+    ("file_id", "TEXT", 1, 0),
+    ("size", "INTEGER", 1, 0),
+    ("mtime_ns", "INTEGER", 1, 0),
+    ("ctime_ns", "BLOB", 1, 0),
+    ("algorithm", "TEXT", 1, 0),
+    ("entry_dt", "DATETIME", 0, 0),
+    ("digest", "BLOB", 0, 0),
+    ("digest_partial", "BLOB", 0, 0),
+    ("digest_samples", "BLOB", 0, 0),
+)
+_HASH_CACHE_SCHEMA_VERSION_SQL = "CREATE TABLE SCHEMA_VERSION (VERSION INT PRIMARY KEY, DESCRIPTION TEXT)"
+_HASH_CACHE_FILES_SQL = (
+    "CREATE TABLE FILES (PATH TEXT PRIMARY KEY, DEVICE TEXT NOT NULL, FILE_ID TEXT NOT NULL, "
+    "SIZE INTEGER NOT NULL, MTIME_NS INTEGER NOT NULL, CTIME_NS BLOB NOT NULL, "
+    "ALGORITHM TEXT NOT NULL, ENTRY_DT DATETIME, DIGEST BLOB, DIGEST_PARTIAL BLOB, DIGEST_SAMPLES BLOB)"
+)
+_HASH_CACHE_SCHEMA_OBJECTS = frozenset(
+    {
+        ("table", "files", "files", "text"),
+        ("table", "schema_version", "schema_version", "text"),
+        ("index", "sqlite_autoindex_files_1", "files", "null"),
+        ("index", "sqlite_autoindex_schema_version_1", "schema_version", "null"),
+    }
+)
+_HASH_CACHE_MAX_SCHEMA_NAME_BYTES = 128
+_HASH_CACHE_MAX_DESCRIPTION_BYTES = 256
+_HASH_CACHE_MAX_SCHEMA_SQL_BYTES = 4096
+
+
+@dataclass(frozen=True)
+class _HashCacheInspection:
+    application_id: int
+    current_version: int
+    version_rows: tuple
+
+
+def _is_reparse_point(file_stat) -> bool:
+    marker = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    attributes = getattr(file_stat, "st_file_attributes", 0)
+    return bool(marker and attributes & marker)
+
+
+def _same_file_identity(first, second) -> bool:
+    return (
+        int(first.st_dev),
+        int(first.st_ino),
+    ) == (
+        int(second.st_dev),
+        int(second.st_ino),
+    )
+
+
+def _require_plain_hash_cache_parent(parent: Path) -> None:
+    parent = Path(os.path.abspath(os.fspath(parent)))
+    current = Path(parent.anchor)
+    parts = parent.parts[1:] if parent.anchor else parent.parts
+    for part in parts:
+        current = current / part
+        try:
+            current_stat = os.lstat(current)
+        except OSError as error:
+            raise HashCacheSafetyError("Hash cache parent component is unavailable: '{}'".format(current)) from error
+        if (
+            stat.S_ISLNK(current_stat.st_mode)
+            or _is_reparse_point(current_stat)
+            or not stat.S_ISDIR(current_stat.st_mode)
+        ):
+            raise HashCacheSafetyError("Hash cache parent components must be plain directories: '{}'".format(current))
+
+
+def _require_no_hash_cache_sidecars(path: Path) -> None:
+    for suffix in _HASH_CACHE_SIDECAR_SUFFIXES:
+        sidecar = Path("{}{}".format(path, suffix))
+        if os.path.lexists(sidecar):
+            raise HashCacheSafetyError("Hash cache SQLite sidecar already exists: '{}'".format(sidecar))
+
+
+def _read_hash_cache_header(descriptor: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks = []
+    remaining = _SQLITE_DATABASE_HEADER_SIZE
+    while remaining:
+        chunk = os.read(descriptor, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return b"".join(chunks)
+
+
+def _validate_owned_hash_cache_header(descriptor: int, opened_stat, path: Path) -> None:
+    file_size = int(opened_stat.st_size)
+    if file_size < _SQLITE_DATABASE_HEADER_SIZE or file_size > _HASH_CACHE_MAX_FILE_BYTES:
+        raise HashCacheSafetyError("Existing hash cache has an unsupported file size: '{}'".format(path))
+    header = _read_hash_cache_header(descriptor)
+    if len(header) != _SQLITE_DATABASE_HEADER_SIZE or header[: len(_SQLITE_HEADER)] != _SQLITE_HEADER:
+        raise HashCacheSafetyError("Existing hash cache does not have a complete SQLite header: '{}'".format(path))
+    raw_page_size = int.from_bytes(header[16:18], "big")
+    page_size = 65536 if raw_page_size == 1 else raw_page_size
+    if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
+        raise HashCacheSafetyError("Existing hash cache has an invalid SQLite page size: '{}'".format(path))
+    if file_size < page_size or file_size % page_size != 0:
+        raise HashCacheSafetyError("Existing hash cache has an inconsistent SQLite file size: '{}'".format(path))
+    if header[18] != 1 or header[19] != 1:
+        raise HashCacheSafetyError(
+            "Existing hash cache is not in the supported rollback-journal format: '{}'".format(path)
+        )
+    application_id = int.from_bytes(header[68:72], "big")
+    if application_id != _HASH_CACHE_APPLICATION_ID:
+        raise HashCacheSafetyError("Existing SQLite file does not carry the hash-cache owner marker: '{}'".format(path))
+
+
+def _open_hash_cache_guard(path: Path):
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    opened_stat = os.fstat(descriptor)
+    path_stat = os.lstat(path)
+    if (
+        stat.S_ISLNK(path_stat.st_mode)
+        or _is_reparse_point(path_stat)
+        or not stat.S_ISREG(path_stat.st_mode)
+        or not stat.S_ISREG(opened_stat.st_mode)
+        or not _same_file_identity(path_stat, opened_stat)
+    ):
+        os.close(descriptor)
+        raise HashCacheSafetyError("Hash cache must be one stable plain regular file: '{}'".format(path))
+    if int(getattr(path_stat, "st_nlink", 0)) != 1:
+        os.close(descriptor)
+        raise HashCacheSafetyError("Hash cache must have exactly one filesystem link: '{}'".format(path))
+    try:
+        _validate_owned_hash_cache_header(descriptor, opened_stat, path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor, opened_stat
+
+
+def _assert_hash_cache_path_identity(path: Path, expected_stat) -> None:
+    try:
+        current_stat = os.lstat(path)
+    except OSError as error:
+        raise HashCacheSafetyError("Hash cache path became unavailable: '{}'".format(path)) from error
+    if (
+        stat.S_ISLNK(current_stat.st_mode)
+        or _is_reparse_point(current_stat)
+        or not stat.S_ISREG(current_stat.st_mode)
+        or not _same_file_identity(expected_stat, current_stat)
+        or int(getattr(current_stat, "st_nlink", 0)) != 1
+    ):
+        raise HashCacheSafetyError("Hash cache path changed while it was being opened: '{}'".format(path))
+
+
+def _configure_hash_cache_connection(connection, *, query_only: bool) -> None:
+    try:
+        connection.execute("PRAGMA trusted_schema = OFF")
+        trusted_schema = connection.execute("PRAGMA trusted_schema").fetchone()
+        if trusted_schema is None or int(trusted_schema[0]) != 0:
+            raise HashCacheSafetyError("SQLite trusted_schema could not be disabled for the hash cache")
+        connection.execute("PRAGMA query_only = {}".format("ON" if query_only else "OFF"))
+        query_only_row = connection.execute("PRAGMA query_only").fetchone()
+        expected = 1 if query_only else 0
+        if query_only_row is None or int(query_only_row[0]) != expected:
+            raise HashCacheSafetyError("SQLite query_only mode could not be configured for the hash cache")
+    except sqlite3.Error as error:
+        raise HashCacheSafetyError("Hash cache SQLite safety settings could not be configured") from error
+
+
+def _apply_hash_cache_runtime_limits(connection) -> None:
+    """Apply extra parser/value bounds when the CPython sqlite wrapper exposes sqlite3_limit()."""
+
+    if not hasattr(connection, "setlimit"):
+        return
+    limits = (
+        ("SQLITE_LIMIT_LENGTH", 1024 * 1024),
+        ("SQLITE_LIMIT_SQL_LENGTH", 64 * 1024),
+        ("SQLITE_LIMIT_COLUMN", 64),
+        ("SQLITE_LIMIT_EXPR_DEPTH", 64),
+        ("SQLITE_LIMIT_COMPOUND_SELECT", 16),
+        ("SQLITE_LIMIT_VDBE_OP", 100_000),
+        ("SQLITE_LIMIT_FUNCTION_ARG", 32),
+        ("SQLITE_LIMIT_ATTACHED", 0),
+        ("SQLITE_LIMIT_LIKE_PATTERN_LENGTH", 4096),
+        ("SQLITE_LIMIT_VARIABLE_NUMBER", 128),
+        ("SQLITE_LIMIT_TRIGGER_DEPTH", 0),
+        ("SQLITE_LIMIT_WORKER_THREADS", 0),
+    )
+    try:
+        for constant_name, limit in limits:
+            category = getattr(sqlite3, constant_name)
+            connection.setlimit(category, limit)
+            if connection.getlimit(category) > limit:
+                raise HashCacheSafetyError(
+                    "SQLite runtime limit {} could not be lowered for the hash cache".format(constant_name)
+                )
+    except HashCacheSafetyError:
+        raise
+    except (AttributeError, sqlite3.Error) as error:
+        raise HashCacheSafetyError("Hash cache SQLite runtime limits could not be configured") from error
+
+
+def _hash_cache_schema_objects(connection):
+    limit = len(_HASH_CACHE_SCHEMA_OBJECTS) + 1
+    rows = connection.execute(
+        """
+        SELECT
+            type,
+            CASE
+                WHEN typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= ?
+                THEN name
+            END,
+            CASE
+                WHEN typeof(tbl_name) = 'text' AND length(CAST(tbl_name AS BLOB)) <= ?
+                THEN tbl_name
+            END,
+            typeof(sql)
+        FROM sqlite_schema
+        LIMIT ?
+        """,
+        (
+            _HASH_CACHE_MAX_SCHEMA_NAME_BYTES,
+            _HASH_CACHE_MAX_SCHEMA_NAME_BYTES,
+            limit,
+        ),
+    ).fetchall()
+    if len(rows) != len(_HASH_CACHE_SCHEMA_OBJECTS):
+        return None
+    objects = set()
+    for object_type, name, table_name, sql_type in rows:
+        if name is None or table_name is None:
+            return None
+        objects.add((str(object_type), str(name), str(table_name), str(sql_type)))
+    return frozenset(objects)
+
+
+def _hash_cache_table_columns(connection, table_name: str, expected_count: int):
+    rows = connection.execute(
+        """
+        SELECT
+            cid,
+            CASE
+                WHEN typeof(name) = 'text' AND length(CAST(name AS BLOB)) <= ?
+                THEN name
+            END,
+            CASE
+                WHEN typeof(type) = 'text' AND length(CAST(type AS BLOB)) <= ?
+                THEN upper(type)
+            END,
+            "notnull",
+            CASE WHEN dflt_value IS NULL THEN 0 ELSE 1 END,
+            pk,
+            hidden
+        FROM pragma_table_xinfo(?)
+        ORDER BY cid
+        LIMIT ?
+        """,
+        (
+            _HASH_CACHE_MAX_SCHEMA_NAME_BYTES,
+            _HASH_CACHE_MAX_SCHEMA_NAME_BYTES,
+            table_name,
+            expected_count + 1,
+        ),
+    ).fetchall()
+    if len(rows) != expected_count:
+        return None
+    columns = []
+    for expected_cid, row in enumerate(rows):
+        cid, name, declared_type, not_null, has_default, primary_key, hidden = row
+        if (
+            int(cid) != expected_cid
+            or name is None
+            or declared_type is None
+            or int(has_default) != 0
+            or int(hidden) != 0
+        ):
+            return None
+        columns.append((str(name), str(declared_type), int(not_null), int(primary_key)))
+    return tuple(columns)
+
+
+def _normalize_hash_cache_schema_sql(sql: str) -> str:
+    normalized = " ".join(sql.split()).upper()
+    return normalized.replace("( ", "(").replace(" )", ")")
+
+
+def _hash_cache_table_sql(connection, table_name: str):
+    row = connection.execute(
+        """
+        SELECT CASE
+            WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= ?
+            THEN sql
+        END
+        FROM sqlite_schema
+        WHERE type = 'table' AND name = ?
+        LIMIT 2
+        """,
+        (_HASH_CACHE_MAX_SCHEMA_SQL_BYTES, table_name),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return _normalize_hash_cache_schema_sql(str(row[0]))
+
+
+def _hash_cache_version_rows(connection):
+    rows = connection.execute(
+        """
+        SELECT
+            typeof(version),
+            CASE WHEN typeof(version) = 'integer' THEN version END,
+            typeof(description),
+            CASE
+                WHEN typeof(description) = 'text'
+                    AND length(CAST(description AS BLOB)) <= ?
+                THEN description
+            END
+        FROM schema_version
+        LIMIT 2
+        """,
+        (_HASH_CACHE_MAX_DESCRIPTION_BYTES,),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    version_type, version, description_type, description = rows[0]
+    if (
+        version_type != "integer"
+        or int(version) != _HASH_CACHE_SCHEMA_VERSION
+        or description_type != "text"
+        or description != _HASH_CACHE_SCHEMA_DESCRIPTION
+    ):
+        return None
+    return _HASH_CACHE_SCHEMA_VERSION, ((_HASH_CACHE_SCHEMA_VERSION, _HASH_CACHE_SCHEMA_DESCRIPTION),)
+
+
+def _inspect_hash_cache_connection(connection, path: Path) -> _HashCacheInspection:
+    try:
+        application_id_row = connection.execute("PRAGMA application_id").fetchone()
+        if application_id_row is None:
+            raise HashCacheSafetyError("Existing hash cache has no SQLite application identifier: '{}'".format(path))
+        application_id = int(application_id_row[0])
+        if application_id != _HASH_CACHE_APPLICATION_ID:
+            raise HashCacheSafetyError(
+                "Existing SQLite file does not carry the hash-cache owner marker: '{}'".format(path)
+            )
+
+        if _hash_cache_schema_objects(connection) != _HASH_CACHE_SCHEMA_OBJECTS:
+            raise HashCacheSafetyError("Existing SQLite file is not an owned hash cache: '{}'".format(path))
+        schema_columns = _hash_cache_table_columns(
+            connection,
+            "schema_version",
+            len(_HASH_CACHE_SCHEMA_VERSION_COLUMNS),
+        )
+        if schema_columns != _HASH_CACHE_SCHEMA_VERSION_COLUMNS:
+            raise HashCacheSafetyError("Existing hash cache has an unsupported owner schema: '{}'".format(path))
+
+        version_result = _hash_cache_version_rows(connection)
+        if version_result is None:
+            raise HashCacheSafetyError("Existing hash cache has unsupported schema history: '{}'".format(path))
+        current_version, version_rows = version_result
+        files_columns = _hash_cache_table_columns(
+            connection,
+            "files",
+            len(_HASH_CACHE_FILES_COLUMNS),
+        )
+        if files_columns != _HASH_CACHE_FILES_COLUMNS:
+            raise HashCacheSafetyError("Existing hash cache has an unsupported files schema: '{}'".format(path))
+        if _hash_cache_table_sql(connection, "schema_version") != _HASH_CACHE_SCHEMA_VERSION_SQL:
+            raise HashCacheSafetyError("Existing hash cache has unexpected schema-version SQL: '{}'".format(path))
+        if _hash_cache_table_sql(connection, "files") != _HASH_CACHE_FILES_SQL:
+            raise HashCacheSafetyError("Existing hash cache has unexpected files SQL: '{}'".format(path))
+        return _HashCacheInspection(
+            application_id=application_id,
+            current_version=current_version,
+            version_rows=version_rows,
+        )
+    except HashCacheSafetyError:
+        raise
+    except (sqlite3.Error, UnicodeError, ValueError, TypeError, OverflowError) as error:
+        raise HashCacheSafetyError("Existing hash cache schema could not be verified: '{}'".format(path)) from error
+
+
+def _inspect_empty_hash_cache_connection(connection, path: Path) -> None:
+    try:
+        application_id = int(connection.execute("PRAGMA application_id").fetchone()[0])
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        objects = connection.execute("SELECT 1 FROM sqlite_schema LIMIT 1").fetchone()
+    except sqlite3.Error as error:
+        raise HashCacheSafetyError("New hash cache reservation could not be verified: '{}'".format(path)) from error
+    if application_id != 0 or user_version != 0 or objects is not None:
+        raise HashCacheSafetyError("New hash cache reservation unexpectedly contains SQLite state: '{}'".format(path))
+
+
+def _validate_owned_hash_cache(path: Path, expected_stat) -> _HashCacheInspection:
+    try:
+        _assert_hash_cache_path_identity(path, expected_stat)
+        connection = sqlite3.connect(
+            "{}?mode=ro".format(path.resolve(strict=True).as_uri()),
+            uri=True,
+        )
+    except (OSError, sqlite3.Error) as error:
+        raise HashCacheSafetyError("Existing hash cache could not be opened read-only: '{}'".format(path)) from error
+    try:
+        _apply_hash_cache_runtime_limits(connection)
+        _configure_hash_cache_connection(connection, query_only=True)
+        _assert_hash_cache_path_identity(path, expected_stat)
+        inspection = _inspect_hash_cache_connection(connection, path)
+        _assert_hash_cache_path_identity(path, expected_stat)
+        return inspection
+    finally:
+        connection.close()
+
+
+class FilesDB:
+    schema_version = _HASH_CACHE_SCHEMA_VERSION
+    schema_version_description = _HASH_CACHE_SCHEMA_DESCRIPTION
+    digest_keys = frozenset({"digest", "digest_partial", "digest_samples"})
+
+    create_table_query = """CREATE TABLE IF NOT EXISTS files (
+        path TEXT PRIMARY KEY,
+        device TEXT NOT NULL,
+        file_id TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        mtime_ns INTEGER NOT NULL,
+        ctime_ns BLOB NOT NULL,
+        algorithm TEXT NOT NULL,
+        entry_dt DATETIME,
+        digest BLOB,
+        digest_partial BLOB,
+        digest_samples BLOB
+    )"""
     drop_table_query = "DROP TABLE IF EXISTS files;"
-    select_query = "SELECT {key} FROM files WHERE path=:path AND size=:size and mtime_ns=:mtime_ns"
-    select_query_ignore_mtime = "SELECT {key} FROM files WHERE path=:path AND size=:size"
-    insert_query = """
-        INSERT INTO files (path, size, mtime_ns, entry_dt, {key})
-        VALUES (:path, :size, :mtime_ns, datetime('now'), :value)
-        ON CONFLICT(path) DO UPDATE SET size=:size, mtime_ns=:mtime_ns, entry_dt=datetime('now'), {key}=:value;
+    select_query = """SELECT {key} FROM files
+        WHERE path=:path AND device=:device AND file_id=:file_id AND size=:size
+        AND mtime_ns=:mtime_ns AND ctime_ns=:ctime_ns AND algorithm=:algorithm"""
+    select_query_ignore_mtime = """SELECT {key} FROM files
+        WHERE path=:path AND device=:device AND file_id=:file_id AND size=:size
+        AND ctime_ns=:ctime_ns AND algorithm=:algorithm"""
+    upsert_generation_query = """
+        INSERT INTO files (
+            path, device, file_id, size, mtime_ns, ctime_ns, algorithm, entry_dt,
+            digest, digest_partial, digest_samples
+        )
+        VALUES (
+            :path, :device, :file_id, :size, :mtime_ns, :ctime_ns, :algorithm, datetime('now'),
+            NULL, NULL, NULL
+        )
+        ON CONFLICT(path) DO UPDATE SET
+            digest=CASE
+                WHEN files.device=:device AND files.file_id=:file_id AND files.size=:size
+                    AND files.mtime_ns=:mtime_ns AND files.ctime_ns=:ctime_ns
+                    AND files.algorithm=:algorithm
+                THEN files.digest ELSE NULL END,
+            digest_partial=CASE
+                WHEN files.device=:device AND files.file_id=:file_id AND files.size=:size
+                    AND files.mtime_ns=:mtime_ns AND files.ctime_ns=:ctime_ns
+                    AND files.algorithm=:algorithm
+                THEN files.digest_partial ELSE NULL END,
+            digest_samples=CASE
+                WHEN files.device=:device AND files.file_id=:file_id AND files.size=:size
+                    AND files.mtime_ns=:mtime_ns AND files.ctime_ns=:ctime_ns
+                    AND files.algorithm=:algorithm
+                THEN files.digest_samples ELSE NULL END,
+            device=:device,
+            file_id=:file_id,
+            size=:size,
+            mtime_ns=:mtime_ns,
+            ctime_ns=:ctime_ns,
+            algorithm=:algorithm,
+            entry_dt=datetime('now')
     """
+    update_digest_query = """UPDATE files SET {key}=:value, entry_dt=datetime('now')
+        WHERE path=:path AND device=:device AND file_id=:file_id AND size=:size
+        AND mtime_ns=:mtime_ns AND ctime_ns=:ctime_ns AND algorithm=:algorithm"""
 
     ignore_mtime = False
 
@@ -119,73 +757,159 @@ class FilesDB:
         self.lock = None
 
     def connect(self, path: Union[AnyStr, os.PathLike]) -> None:
-        if platform.startswith("gnu0"):
-            self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-        else:
-            self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.lock = Lock()
-        self._check_upgrade()
-
-    def _check_upgrade(self) -> None:
-        with self.lock, self.conn as conn:
-            has_schema = conn.execute(
-                "SELECT NAME FROM sqlite_master WHERE type='table' AND name='schema_version'"
-            ).fetchall()
-            version = None
-            if has_schema:
-                version = conn.execute("SELECT version FROM schema_version ORDER BY version DESC").fetchone()[0]
+        # Keep SQLite's transactional isolation enabled on every platform. A
+        # generation upsert and its digest update must commit or roll back as a
+        # unit so no caller can observe mixed-generation cache columns.
+        path = Path(os.path.abspath(os.fspath(path)))
+        _require_plain_hash_cache_parent(path.parent)
+        _require_no_hash_cache_sidecars(path)
+        guard = None
+        guard_stat = None
+        existing_inspection = None
+        new_database = False
+        try:
+            if os.path.lexists(path):
+                guard, guard_stat = _open_hash_cache_guard(path)
+                existing_inspection = _validate_owned_hash_cache(path, guard_stat)
             else:
-                conn.execute("CREATE TABLE schema_version (version int PRIMARY KEY, description TEXT)")
-            if version != self.schema_version:
-                conn.execute(self.drop_table_query)
-                conn.execute(
-                    "INSERT OR REPLACE INTO schema_version VALUES (:version, :description)",
+                flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+                flags |= getattr(os, "O_BINARY", 0)
+                try:
+                    guard = os.open(path, flags, 0o600)
+                    guard_stat = os.fstat(guard)
+                    new_database = True
+                except FileExistsError:
+                    guard, guard_stat = _open_hash_cache_guard(path)
+                    existing_inspection = _validate_owned_hash_cache(path, guard_stat)
+
+            self.conn = sqlite3.connect(str(path), check_same_thread=False)
+            self.lock = Lock()
+            _apply_hash_cache_runtime_limits(self.conn)
+            _configure_hash_cache_connection(self.conn, query_only=True)
+            _assert_hash_cache_path_identity(path, guard_stat)
+            if new_database:
+                _inspect_empty_hash_cache_connection(self.conn, path)
+            else:
+                writable_inspection = _inspect_hash_cache_connection(self.conn, path)
+                if writable_inspection != existing_inspection:
+                    raise HashCacheSafetyError(
+                        "Hash cache ownership changed between read-only inspection and writable reopen: "
+                        "'{}'".format(path)
+                    )
+            _assert_hash_cache_path_identity(path, guard_stat)
+            _configure_hash_cache_connection(self.conn, query_only=False)
+            if new_database:
+                self._initialize_new_database(path=path, expected_stat=guard_stat)
+            _assert_hash_cache_path_identity(path, guard_stat)
+        except BaseException:
+            if self.conn is not None:
+                self.conn.close()
+            self.conn = None
+            self.lock = None
+            raise
+        finally:
+            if guard is not None:
+                os.close(guard)
+
+    def _initialize_new_database(self, *, path: Path, expected_stat) -> None:
+        with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                _assert_hash_cache_path_identity(path, expected_stat)
+                _inspect_empty_hash_cache_connection(self.conn, path)
+                self.conn.execute("CREATE TABLE schema_version (version int PRIMARY KEY, description TEXT)")
+                self.conn.execute(
+                    "INSERT INTO schema_version VALUES (:version, :description)",
                     {"version": self.schema_version, "description": self.schema_version_description},
                 )
-            conn.execute(self.create_table_query)
+                self.conn.execute(self.create_table_query)
+                self.conn.execute("PRAGMA application_id = {}".format(_HASH_CACHE_APPLICATION_ID))
+                initialized = _inspect_hash_cache_connection(self.conn, path)
+                if (
+                    initialized.application_id != _HASH_CACHE_APPLICATION_ID
+                    or initialized.current_version != self.schema_version
+                ):
+                    raise HashCacheSafetyError("Hash cache initialization verification failed: '{}'".format(path))
+                _assert_hash_cache_path_identity(path, expected_stat)
+                self.conn.commit()
+            except BaseException:
+                self.conn.rollback()
+                raise
 
     def clear(self) -> None:
         with self.lock, self.conn as conn:
             conn.execute(self.drop_table_query)
             conn.execute(self.create_table_query)
 
-    def get(self, path: Path, key: str) -> Union[bytes, None]:
-        stat = path.stat()
-        size = stat.st_size
-        mtime_ns = stat.st_mtime_ns
-        try:
-            with self.conn as conn:
-                if self.ignore_mtime:
-                    cursor = conn.execute(
-                        self.select_query_ignore_mtime.format(key=key), {"path": str(path), "size": size}
-                    )
-                else:
-                    cursor = conn.execute(
-                        self.select_query.format(key=key),
-                        {"path": str(path), "size": size, "mtime_ns": mtime_ns},
-                    )
-                result = cursor.fetchone()
-                cursor.close()
+    @classmethod
+    def _validate_key(cls, key: str) -> None:
+        if key not in cls.digest_keys:
+            raise ValueError(f"Invalid digest cache key: {key}")
 
-            if result:
-                return result[0]
-        except Exception as ex:
-            logging.warning(f"Couldn't get {key} for {path} w/{size}, {mtime_ns}: {ex}")
+    def get_strict(self, path: Path, key: str) -> Union[bytes, None]:
+        """Read one cache value without converting cache/read errors to misses."""
 
+        self._validate_key(key)
+        # A cache is optional for direct engine use. Once connected, however,
+        # every database/read error is material and strict callers must see it.
+        if self.conn is None:
+            return None
+        before = _snapshot_path(path)
+        params = {"path": str(path), "algorithm": HASH_ALGORITHM, **before.as_sql_params()}
+        with self.lock, self.conn as conn:
+            if self.ignore_mtime:
+                cursor = conn.execute(self.select_query_ignore_mtime.format(key=key), params)
+            else:
+                cursor = conn.execute(self.select_query.format(key=key), params)
+            result = cursor.fetchone()
+            cursor.close()
+        after = _snapshot_path(path)
+        _ensure_unchanged(before, after, path)
+        if result:
+            return result[0]
         return None
 
-    def put(self, path: Path, key: str, value: Any) -> None:
-        stat = path.stat()
-        size = stat.st_size
-        mtime_ns = stat.st_mtime_ns
+    def get(self, path: Path, key: str) -> Union[bytes, None]:
+        self._validate_key(key)
         try:
-            with self.lock, self.conn as conn:
-                conn.execute(
-                    self.insert_query.format(key=key),
-                    {"path": str(path), "size": size, "mtime_ns": mtime_ns, "value": value},
-                )
+            return self.get_strict(path, key)
         except Exception as ex:
-            logging.warning(f"Couldn't put {key} for {path} w/{size}, {mtime_ns}: {ex}")
+            logging.warning("Couldn't get %s for %s: %s", key, path, ex)
+        return None
+
+    def put_strict(self, path: Path, key: str, value: Any, snapshot: FileSnapshot = None) -> None:
+        """Store one cache value without suppressing transaction failures."""
+
+        self._validate_key(key)
+        if self.conn is None:
+            return
+        current = _snapshot_path(path)
+        if snapshot is not None:
+            if not snapshot.same_content_generation(current):
+                raise FileChangedError(f"File changed before digest could be cached: {path}")
+        snapshot = current
+        params = {
+            "path": str(path),
+            "algorithm": HASH_ALGORITHM,
+            "value": value,
+            **snapshot.as_sql_params(),
+        }
+        with self.lock, self.conn as conn:
+            conn.execute(self.upsert_generation_query, params)
+            cursor = conn.execute(self.update_digest_query.format(key=key), params)
+            if cursor.rowcount != 1:
+                raise FileChangedError(f"File changed before digest could be cached: {path}")
+        after = _snapshot_path(path)
+        _ensure_unchanged(snapshot, after, path)
+
+    def put(self, path: Path, key: str, value: Any, snapshot: FileSnapshot = None) -> None:
+        self._validate_key(key)
+        try:
+            self.put_strict(path, key, value, snapshot)
+        except FileChangedError:
+            raise
+        except Exception as ex:
+            logging.warning("Couldn't put %s for %s: %s", key, path, ex)
 
     def commit(self) -> None:
         with self.lock:
@@ -202,15 +926,28 @@ filesdb = FilesDB()  # Singleton
 class File:
     """Represents a file and holds metadata to be used for scanning."""
 
-    INITIAL_INFO = {"size": 0, "mtime": 0, "digest": b"", "digest_partial": b"", "digest_samples": b""}
+    INITIAL_INFO = {"size": 0, "mtime": 0, "digest": None, "digest_partial": None, "digest_samples": None}
     # Slots for File make us save quite a bit of memory. In a memory test I've made with a lot of
     # files, I saved 35% memory usage with "unread" files (no _read_info() call) and gains become
     # even greater when we take into account read attributes (70%!). Yeah, it's worth it.
-    __slots__ = ("path", "unicode_path", "is_ref", "words") + tuple(INITIAL_INFO.keys())
+    __slots__ = (
+        "path",
+        "unicode_path",
+        "is_ref",
+        "comparison_pool",
+        "words",
+        "_exact_scan_snapshot",
+        "_review_scan_snapshot",
+        "_strict_digest_snapshots",
+    ) + tuple(INITIAL_INFO.keys())
 
     def __init__(self, path):
         for attrname in self.INITIAL_INFO:
             setattr(self, attrname, NOT_SET)
+        self._exact_scan_snapshot = None
+        self._review_scan_snapshot = None
+        self._strict_digest_snapshots = {}
+        self.comparison_pool = "incoming"
         if type(path) is os.DirEntry:
             self.path = Path(path.path)
             self.size = nonone(path.stat().st_size, 0)
@@ -235,77 +972,228 @@ class File:
                 result = self.INITIAL_INFO[attrname]
         return result
 
-    def _calc_digest(self):
-        # type: () -> bytes
-
-        with self.path.open("rb") as fp:
+    def _calc_digest_with_snapshot(self, stop_check=None):
+        with _open_readonly_no_follow(self.path) as fp:
+            before = _snapshot_handle(fp, self.path)
             file_hash = hasher()
-            # The goal here is to not run out of memory on really big files. However, the chunk
-            # size has to be large enough so that the python loop isn't too costly in terms of
-            # CPU.
-            CHUNK_SIZE = 1024 * 1024  # 1 mb
+            bytes_read = 0
+            _raise_if_scan_stopped(stop_check)
             filedata = fp.read(CHUNK_SIZE)
             while filedata:
                 file_hash.update(filedata)
+                bytes_read += len(filedata)
+                _raise_if_scan_stopped(stop_check)
                 filedata = fp.read(CHUNK_SIZE)
-            return file_hash.digest()
+            after = _snapshot_handle(fp, self.path)
+            _ensure_unchanged(before, after, self.path)
+            if bytes_read != before.size:
+                raise FileChangedError(f"File size changed while being hashed: {self.path}")
+            return file_hash.digest(), before
+
+    def _calc_digest(self):
+        # type: () -> bytes
+        return self._calc_digest_with_snapshot()[0]
+
+    def _calc_digest_partial_with_snapshot(self, stop_check=None):
+        with _open_readonly_no_follow(self.path) as fp:
+            before = _snapshot_handle(fp, self.path)
+            _raise_if_scan_stopped(stop_check)
+            fp.seek(PARTIAL_OFFSET_SIZE[0])
+            partial_data = fp.read(PARTIAL_OFFSET_SIZE[1])
+            _raise_if_scan_stopped(stop_check)
+            after = _snapshot_handle(fp, self.path)
+            _ensure_unchanged(before, after, self.path)
+            return hasher(partial_data).digest(), before
 
     def _calc_digest_partial(self):
         # type: () -> bytes
-        with self.path.open("rb") as fp:
-            fp.seek(PARTIAL_OFFSET_SIZE[0])
-            partial_data = fp.read(PARTIAL_OFFSET_SIZE[1])
-            return hasher(partial_data).digest()
+        return self._calc_digest_partial_with_snapshot()[0]
 
-    def _calc_digest_samples(self) -> bytes:
-        size = self.size
-        with self.path.open("rb") as fp:
+    def _calc_digest_samples_with_snapshot(self, stop_check=None):
+        with _open_readonly_no_follow(self.path) as fp:
+            before = _snapshot_handle(fp, self.path)
+            size = before.size
+            _raise_if_scan_stopped(stop_check)
             # Chunk at 25% of the file
             fp.seek(floor(size * 25 / 100), 0)
             file_data = fp.read(CHUNK_SIZE)
             file_hash = hasher(file_data)
+            _raise_if_scan_stopped(stop_check)
 
             # Chunk at 60% of the file
             fp.seek(floor(size * 60 / 100), 0)
             file_data = fp.read(CHUNK_SIZE)
             file_hash.update(file_data)
+            _raise_if_scan_stopped(stop_check)
 
             # Last chunk of the file
             fp.seek(-CHUNK_SIZE, 2)
             file_data = fp.read(CHUNK_SIZE)
             file_hash.update(file_data)
-            return file_hash.digest()
+            _raise_if_scan_stopped(stop_check)
+            after = _snapshot_handle(fp, self.path)
+            _ensure_unchanged(before, after, self.path)
+            return file_hash.digest(), before
 
-    def _read_info(self, field):
+    def _calc_digest_samples(self) -> bytes:
+        return self._calc_digest_samples_with_snapshot()[0]
+
+    def read_info_strict(self, field):
+        """Read exact-scan metadata without the UI getter's tolerant fallback.
+
+        Normal metadata rendering deliberately substitutes defaults when a
+        decoder or filesystem read fails. Exact scans cannot do that: a missing
+        candidate/full digest would silently reduce coverage and could leave a
+        scan looking complete. Existing values are accepted only when the
+        service adapter supplied a matching stable generation snapshot.
+        """
+
+        if field not in self.INITIAL_INFO:
+            raise ValueError("Unsupported strict file-info field: {}".format(field))
+        if field in {"size", "mtime"}:
+            snapshot = _snapshot_path(self.path)
+            if self._exact_scan_snapshot is not None:
+                _ensure_unchanged(
+                    self._exact_scan_snapshot,
+                    snapshot,
+                    self.path,
+                )
+            self.size = snapshot.size
+            self.mtime = snapshot.mtime_ns / 1_000_000_000
+            return object.__getattribute__(self, field)
+        if field in FilesDB.digest_keys:
+            if self._exact_scan_snapshot is None:
+                self.begin_exact_scan()
+            baseline = self._exact_scan_snapshot
+            generation = self._strict_digest_snapshots.get(field)
+            result = object.__getattribute__(self, field)
+            if (
+                result is not NOT_SET
+                and result is not None
+                and generation is not None
+                and generation.same_content_generation(baseline)
+            ):
+                current = _snapshot_path(self.path)
+                _ensure_unchanged(baseline, current, self.path)
+                return result
+            # Values populated by the tolerant UI getter carry no strict
+            # generation proof and must not influence exact candidate
+            # filtering.
+            setattr(self, field, NOT_SET)
+        result = object.__getattribute__(self, field)
+        if result is NOT_SET or (field in FilesDB.digest_keys and result is None):
+            self._read_info(field, strict=True)
+            result = object.__getattribute__(self, field)
+        if result is NOT_SET or (field in FilesDB.digest_keys and result is None):
+            raise OSError(
+                "Exact-scan metadata {!r} is unavailable for {}".format(
+                    field,
+                    self.path,
+                )
+            )
+        if field in FilesDB.digest_keys:
+            current = _snapshot_path(self.path)
+            _ensure_unchanged(self._exact_scan_snapshot, current, self.path)
+            self._strict_digest_snapshots[field] = current
+        return result
+
+    def begin_exact_scan(self):
+        """Bind all strict exact reads to one fresh content generation."""
+
+        snapshot = _snapshot_path(self.path)
+        if self._review_scan_snapshot is None:
+            self._review_scan_snapshot = snapshot
+        else:
+            _ensure_unchanged(self._review_scan_snapshot, snapshot, self.path)
+        self._exact_scan_snapshot = snapshot
+        self.size = snapshot.size
+        self.mtime = snapshot.mtime_ns / 1_000_000_000
+        for field in FilesDB.digest_keys:
+            generation = self._strict_digest_snapshots.get(field)
+            if generation is None or not generation.same_content_generation(snapshot):
+                setattr(self, field, NOT_SET)
+                self._strict_digest_snapshots.pop(field, None)
+        return snapshot.size
+
+    def begin_review_scan(self):
+        """Bind later organizer actions to the generation entering this scan."""
+
+        snapshot = _snapshot_path(self.path)
+        self._review_scan_snapshot = snapshot
+        self.size = snapshot.size
+        self.mtime = snapshot.mtime_ns / 1_000_000_000
+        return snapshot
+
+    def validate_review_scan(self):
+        """Fail unless this path still names the generation reviewed by the scan."""
+
+        if self._review_scan_snapshot is None:
+            raise FileChangedError("The scan did not capture an organizer baseline for: {}".format(self.path))
+        current = _snapshot_path(self.path)
+        _ensure_unchanged(self._review_scan_snapshot, current, self.path)
+        return self._review_scan_snapshot
+
+    def validate_exact_scan(self):
+        """Fail if the path no longer names the generation this scan began on."""
+
+        if self._exact_scan_snapshot is None:
+            raise FileChangedError("Exact scan did not capture a baseline for: {}".format(self.path))
+        current = _snapshot_path(self.path)
+        _ensure_unchanged(self._exact_scan_snapshot, current, self.path)
+        return current
+
+    def prime_exact_digest(self, field, digest, snapshot):
+        """Install a service-computed digest with its stable generation proof."""
+
+        if field not in FilesDB.digest_keys:
+            raise ValueError("Invalid exact digest field: {}".format(field))
+        if digest is None:
+            raise ValueError("Exact digest must not be None")
+        current = _snapshot_path(self.path)
+        _ensure_unchanged(snapshot, current, self.path)
+        self._exact_scan_snapshot = snapshot
+        self._review_scan_snapshot = snapshot
+        setattr(self, field, digest)
+        self._strict_digest_snapshots[field] = snapshot
+
+    def _read_info(self, field, strict=False):
         # print(f"_read_info({field}) for {self}")
+        cache_get = filesdb.get_strict if strict else filesdb.get
+        cache_put = filesdb.put_strict if strict else filesdb.put
         if field in ("size", "mtime"):
             stats = self.path.stat()
             self.size = nonone(stats.st_size, 0)
             self.mtime = nonone(stats.st_mtime, 0)
         elif field == "digest_partial":
-            self.digest_partial = filesdb.get(self.path, "digest_partial")
+            self.digest_partial = cache_get(self.path, "digest_partial")
             if self.digest_partial is None:
                 # If file is smaller than partial requirements just use the full digest
-                if self.size < PARTIAL_OFFSET_SIZE[0] + PARTIAL_OFFSET_SIZE[1]:
-                    self.digest_partial = self.digest
+                size = self.read_info_strict("size") if strict else self.size
+                if size < PARTIAL_OFFSET_SIZE[0] + PARTIAL_OFFSET_SIZE[1]:
+                    digest = self.read_info_strict("digest") if strict else self.digest
+                    self.digest_partial = digest
+                    return
                 else:
-                    self.digest_partial = self._calc_digest_partial()
-                filesdb.put(self.path, "digest_partial", self.digest_partial)
+                    digest, snapshot = self._calc_digest_partial_with_snapshot()
+                cache_put(self.path, "digest_partial", digest, snapshot)
+                self.digest_partial = digest
         elif field == "digest":
-            self.digest = filesdb.get(self.path, "digest")
+            self.digest = cache_get(self.path, "digest")
             if self.digest is None:
-                self.digest = self._calc_digest()
-                filesdb.put(self.path, "digest", self.digest)
+                digest, snapshot = self._calc_digest_with_snapshot()
+                cache_put(self.path, "digest", digest, snapshot)
+                self.digest = digest
         elif field == "digest_samples":
-            size = self.size
+            size = self.read_info_strict("size") if strict else self.size
             # Might as well hash such small files entirely.
             if size <= MIN_FILE_SIZE:
-                self.digest_samples = self.digest
+                self.digest_samples = self.read_info_strict("digest") if strict else self.digest
                 return
-            self.digest_samples = filesdb.get(self.path, "digest_samples")
+            self.digest_samples = cache_get(self.path, "digest_samples")
             if self.digest_samples is None:
-                self.digest_samples = self._calc_digest_samples()
-                filesdb.put(self.path, "digest_samples", self.digest_samples)
+                digest, snapshot = self._calc_digest_samples_with_snapshot()
+                cache_put(self.path, "digest_samples", digest, snapshot)
+                self.digest_samples = digest
 
     def _read_all_info(self, attrnames=None):
         """Cache all possible info.
@@ -331,14 +1219,75 @@ class File:
             logging.warning(f"Checking {self.path} raised: {ex}")
             return False
 
+    @property
+    def digest_algorithm(self):
+        return HASH_ALGORITHM
+
+    def compare_bytes(self, other):
+        return self.compare_bytes_interruptible(other, None)
+
+    def compare_bytes_interruptible(self, other, stop_check):
+        """Compare two files through stable open handles.
+
+        Returns evidence for equal files, ``None`` for unequal files, and raises
+        :class:`FileChangedError` when either file changes during comparison.
+        """
+        with _open_readonly_no_follow(self.path) as first_fp, _open_readonly_no_follow(other.path) as second_fp:
+            first_before = _snapshot_handle(first_fp, self.path)
+            second_before = _snapshot_handle(second_fp, other.path)
+            if first_before.size != second_before.size:
+                return None
+            bytes_compared = 0
+            equal = True
+            while True:
+                _raise_if_scan_stopped(stop_check)
+                first_data = first_fp.read(CHUNK_SIZE)
+                second_data = second_fp.read(CHUNK_SIZE)
+                if first_data != second_data:
+                    equal = False
+                    break
+                if not first_data:
+                    break
+                bytes_compared += len(first_data)
+            first_after = _snapshot_handle(first_fp, self.path)
+            second_after = _snapshot_handle(second_fp, other.path)
+            _ensure_unchanged(first_before, first_after, self.path)
+            _ensure_unchanged(second_before, second_after, other.path)
+            if not equal:
+                return None
+            if bytes_compared != first_before.size:
+                raise FileChangedError("Unexpected end of file during byte comparison")
+            return ByteComparisonEvidence(first_before, second_before, bytes_compared)
+
     def rename(self, newname):
+        if (
+            not isinstance(newname, str)
+            or not newname
+            or newname in {".", ".."}
+            or "\0" in newname
+            or "/" in newname
+            or "\\" in newname
+            or ":" in newname
+            or ntpath.isabs(newname)
+            or posixpath.isabs(newname)
+            or ntpath.splitdrive(newname)[0]
+            or ntpath.basename(newname) != newname
+            or posixpath.basename(newname) != newname
+        ):
+            raise InvalidPath(newname if isinstance(newname, str) else "")
         if newname == self.name:
             return
         destpath = self.path.parent.joinpath(newname)
-        if destpath.exists():
-            raise AlreadyExistsError(newname, self.path.parent)
+        if destpath.parent != self.path.parent:
+            raise InvalidPath(newname)
         try:
-            self.path.rename(destpath)
+            # Import lazily to keep the low-level filesystem wrapper free from
+            # an eager dependency on the transaction layer.
+            from core.safe_action import platform_file_system
+
+            platform_file_system().rename_no_replace(self.path, destpath)
+        except FileExistsError:
+            raise AlreadyExistsError(newname, self.path.parent)
         except OSError:
             raise OperationError(self)
         if not destpath.exists():

@@ -38,6 +38,16 @@ class Markable:
         except KeyError:
             pass
 
+    def _replace_marked_state(self, marked, *, inverted=False):
+        """Replace marks without firing per-item callbacks.
+
+        This is intended for transactional deserializers which have already
+        built any derived caches for the complete replacement state.
+        """
+
+        self.__marked = set(marked)
+        self.__inverted = bool(inverted)
+
     # ---Public
     def is_marked(self, o):
         if not self._is_markable(o):

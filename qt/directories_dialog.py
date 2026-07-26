@@ -4,8 +4,8 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import QRect, Qt
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtWidgets import (
     QListView,
     QWidget,
     QFileDialog,
@@ -23,16 +23,23 @@ from PyQt5.QtWidgets import (
     QLabel,
     QComboBox,
 )
-from PyQt5.QtGui import QPixmap, QIcon
+from PyQt6.QtGui import QPixmap, QIcon
 
 from hscommon.trans import trget
 from core.app import AppMode
 from qt.radio_box import RadioBox
 from qt.recent import Recent
+from qt.resources import resource_path
 from qt.util import move_to_screen_center, create_actions
 
 from qt import platform
 from qt.directories_model import DirectoriesModel, DirectoriesDelegate
+from qt.file_formats import (
+    DIRECTORIES_EXTENSION,
+    ensure_extension,
+    translated_directories_filter,
+    translated_results_filter,
+)
 
 tr = trget("ui")
 
@@ -127,6 +134,7 @@ class DirectoriesDialog(QMainWindow):
         self.menuFile.addAction(self.menuLoadRecent.menuAction())
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.app.actionClearCache)
+        self.menuFile.addAction(self.app.actionFindSimilarImage)
         self.menuFile.addSeparator()
         self.menuFile.addAction(self.actionLoadDirectories)
         self.menuFile.addAction(self.actionSaveDirectories)
@@ -140,9 +148,14 @@ class DirectoriesDialog(QMainWindow):
         self.menuView.addSeparator()
         self.menuView.addAction(self.app.actionPreferences)
 
-        self.menuHelp.addAction(self.app.actionShowHelp)
-        self.menuHelp.addAction(self.app.actionOpenDebugLog)
-        self.menuHelp.addAction(self.app.actionAbout)
+        for action in (
+            self.app.actionShowHelp,
+            self.app.actionShowVideoWorkflow,
+            self.app.actionOpenDebugLog,
+            self.app.actionAbout,
+        ):
+            if action not in self.menuHelp.actions():
+                self.menuHelp.addAction(action)
 
         menubar.addAction(self.menuFile.menuAction())
         menubar.addAction(self.menuView.menuAction())
@@ -167,47 +180,57 @@ class DirectoriesDialog(QMainWindow):
         self.verticalLayout.setSpacing(0)
         hl = QHBoxLayout()
         label = QLabel(tr("Application Mode:"), self)
-        label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(label)
         self.appModeRadioBox = RadioBox(self, items=[tr("Standard"), tr("Music"), tr("Picture")], spread=False)
         hl.addWidget(self.appModeRadioBox)
         self.verticalLayout.addLayout(hl)
         hl = QHBoxLayout()
-        hl.setAlignment(Qt.AlignLeft)
+        hl.setAlignment(Qt.AlignmentFlag.AlignLeft)
         label = QLabel(tr("Scan Type:"), self)
-        label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(label)
         self.scanTypeComboBox = QComboBox(self)
-        self.scanTypeComboBox.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+        self.scanTypeComboBox.setSizePolicy(QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed))
         self.scanTypeComboBox.setMaximumWidth(400)
         hl.addWidget(self.scanTypeComboBox)
         self.showPreferencesButton = QPushButton(tr("More Options"), self.centralwidget)
-        self.showPreferencesButton.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.showPreferencesButton.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(self.showPreferencesButton)
         self.verticalLayout.addLayout(hl)
-        self.promptLabel = QLabel(tr('Select folders to scan and press "Scan".'), self.centralwidget)
+        self.promptLabel = QLabel(
+            tr("Choose each folder pool (Incoming, Protected, Compare Only, or Excluded), " 'then press "Scan".'),
+            self.centralwidget,
+        )
         self.verticalLayout.addWidget(self.promptLabel)
         self.treeView = QTreeView(self.centralwidget)
-        self.treeView.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.treeView.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.treeView.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.treeView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.treeView.setAcceptDrops(True)
         triggers = (
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.SelectedClicked
         )
         self.treeView.setEditTriggers(triggers)
         self.treeView.setDragDropOverwriteMode(True)
-        self.treeView.setDragDropMode(QAbstractItemView.DropOnly)
+        self.treeView.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.treeView.setUniformRowHeights(True)
         self.verticalLayout.addWidget(self.treeView)
         self.horizontalLayout = QHBoxLayout()
         self.removeFolderButton = QPushButton(self.centralwidget)
-        self.removeFolderButton.setIcon(QIcon(QPixmap(":/minus")))
+        self.removeFolderButton.setIcon(QIcon(QPixmap(resource_path("minus"))))
         self.removeFolderButton.setShortcut("Del")
         self.horizontalLayout.addWidget(self.removeFolderButton)
         self.addFolderButton = QPushButton(self.centralwidget)
-        self.addFolderButton.setIcon(QIcon(QPixmap(":/plus")))
+        self.addFolderButton.setIcon(QIcon(QPixmap(resource_path("plus"))))
         self.horizontalLayout.addWidget(self.addFolderButton)
-        spacer_item = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        spacer_item = QSpacerItem(
+            40,
+            20,
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
         self.horizontalLayout.addItem(spacer_item)
         self.loadResultsButton = QPushButton(self.centralwidget)
         self.loadResultsButton.setText(tr("Load Results"))
@@ -230,9 +253,9 @@ class DirectoriesDialog(QMainWindow):
     def _setupColumns(self):
         header = self.treeView.header()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Fixed)
-        header.resizeSection(1, 100)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, 150)
 
     def _updateActionsState(self):
         self.actionShowResultsWindow.setEnabled(self.app.resultWindow is not None)
@@ -289,15 +312,15 @@ class DirectoriesDialog(QMainWindow):
         no_native = not self.app.prefs.use_native_dialogs
         title = tr("Select a folder to add to the scanning list")
         file_dialog = QFileDialog(self, title, self.lastAddedFolder)
-        file_dialog.setFileMode(QFileDialog.DirectoryOnly)
-        file_dialog.setOption(QFileDialog.DontUseNativeDialog, no_native)
+        file_dialog.setFileMode(QFileDialog.FileMode.Directory)
+        file_dialog.setOption(QFileDialog.Option.DontUseNativeDialog, no_native)
         if no_native:
             file_view = file_dialog.findChild(QListView, "listView")
             if file_view:
-                file_view.setSelectionMode(QAbstractItemView.MultiSelection)
+                file_view.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
             f_tree_view = file_dialog.findChild(QTreeView)
             if f_tree_view:
-                f_tree_view.setSelectionMode(QAbstractItemView.MultiSelection)
+                f_tree_view.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         if not file_dialog.exec():
             return
 
@@ -314,6 +337,9 @@ class DirectoriesDialog(QMainWindow):
         else:
             mode = AppMode.STANDARD
         self.app.model.app_mode = mode
+        if mode != AppMode.PICTURE and self.app.visualQueryController.running:
+            self.app.visualQueryController.cancel()
+        self.app.updatePictureQueryAction()
         self._updateScanTypeList()
 
     def appWillSavePrefs(self):
@@ -325,7 +351,7 @@ class DirectoriesDialog(QMainWindow):
 
     def loadResultsTriggered(self):
         title = tr("Select a results file to load")
-        files = ";;".join([tr("dupeGuru Results (*.dupeguru)"), tr("All Files (*.*)")])
+        files = ";;".join([translated_results_filter(), tr("All Files (*.*)")])
         destination = QFileDialog.getOpenFileName(self, title, "", files)[0]
         if destination:
             self.app.model.load_from(destination)
@@ -333,7 +359,7 @@ class DirectoriesDialog(QMainWindow):
 
     def loadDirectoriesTriggered(self):
         title = tr("Select a directories file to load")
-        files = ";;".join([tr("dupeGuru Directories (*.dupegurudirs)"), tr("All Files (*.*)")])
+        files = ";;".join([translated_directories_filter(), tr("All Files (*.*)")])
         destination = QFileDialog.getOpenFileName(self, title, "", files)[0]
         if destination:
             self.app.model.load_directories(destination)
@@ -343,11 +369,10 @@ class DirectoriesDialog(QMainWindow):
 
     def saveDirectoriesTriggered(self):
         title = tr("Select a file to save your directories to")
-        files = tr("dupeGuru Directories (*.dupegurudirs)")
+        files = translated_directories_filter()
         destination, chosen_filter = QFileDialog.getSaveFileName(self, title, "", files)
         if destination:
-            if not destination.endswith(".dupegurudirs"):
-                destination = f"{destination}.dupegurudirs"
+            destination = ensure_extension(destination, DIRECTORIES_EXTENSION)
             self.app.model.save_directories_as(destination)
 
     def scanButtonClicked(self):

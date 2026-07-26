@@ -1,2 +1,6 @@
-__version__ = "4.3.1"
-__appname__ = "dupeGuru"
+__version__ = "5.0.0"
+__appname__ = "dupeGuru Neo"
+__organization__ = "AiWithYou"
+__application_id__ = "io.github.AiWithYou.dupeguru_neo"
+__project_url__ = "https://github.com/AiWithYou/dupeguru_neo"
+__issue_url__ = f"{__project_url__}/issues"

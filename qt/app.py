@@ -6,10 +6,11 @@
 
 import sys
 import os.path as op
+from pathlib import Path
 
-from PyQt5.QtCore import QTimer, QObject, QUrl, pyqtSignal, Qt
-from PyQt5.QtGui import QColor, QDesktopServices, QPalette
-from PyQt5.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QStyleFactory, QToolTip
+from PyQt6.QtCore import QTimer, QObject, QUrl, pyqtSignal, pyqtSlot, Qt
+from PyQt6.QtGui import QColor, QDesktopServices, QPalette
+from PyQt6.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QStyleFactory, QToolTip
 
 from hscommon.trans import trget
 from hscommon import desktop, plat
@@ -19,7 +20,10 @@ from qt.recent import Recent
 from qt.util import create_actions
 from qt.progress_window import ProgressWindow
 
+from core import __appname__, __project_url__
 from core.app import AppMode, DupeGuru as DupeGuruModel
+from core.directories import DirectoryState
+from core.visual_service import VisualScanConfig
 import core.pe.photo
 from qt import platform
 from qt.preferences import Preferences
@@ -32,6 +36,11 @@ from qt.deletion_options import DeletionOptions
 from qt.se.details_dialog import DetailsDialog as DetailsDialogStandard
 from qt.me.details_dialog import DetailsDialog as DetailsDialogMusic
 from qt.pe.details_dialog import DetailsDialog as DetailsDialogPicture
+from qt.pe.visual_query import (
+    VisualQueryController,
+    VisualQueryDialog,
+    VisualQuerySourcePolicy,
+)
 from qt.se.preferences_dialog import PreferencesDialog as PreferencesDialogStandard
 from qt.me.preferences_dialog import PreferencesDialog as PreferencesDialogMusic
 from qt.pe.preferences_dialog import PreferencesDialog as PreferencesDialogPicture
@@ -43,7 +52,7 @@ tr = trget("ui")
 
 class DupeGuru(QObject):
     LOGO_NAME = "logo_se"
-    NAME = "dupeGuru"
+    NAME = __appname__
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -76,6 +85,16 @@ class DupeGuru(QObject):
             parent_window = self.directories_dialog
 
         self.progress_window = ProgressWindow(parent_window, self.model.progress_window)
+        self.visualQueryController = VisualQueryController(self)
+        self.visualQueryDialog = VisualQueryDialog(parent_window)
+        self.visualQueryController.reportReady.connect(self.visualQueryDialog.show_report)
+        self.visualQueryController.failed.connect(self.visualQueryDialog.show_error)
+        self.visualQueryController.cancelled.connect(self.visualQueryDialog.show_cancelled)
+        self.visualQueryController.cancelPending.connect(self.visualQueryDialog.show_cancel_pending)
+        self.visualQueryController.runningChanged.connect(self._visualQueryRunningChanged)
+        self.visualQueryDialog.cancelRequested.connect(self.visualQueryController.cancel)
+        self.visualQueryDialog.referenceDropped.connect(self.startVisualQuery)
+        self.updatePictureQueryAction()
         self.problemDialog = ProblemDialog(parent=parent_window, model=self.model.problem_dialog)
         if self.use_tabs:
             self.ignoreListDialog = self.main_window.createPage(
@@ -142,14 +161,28 @@ class DupeGuru(QObject):
                 tr("Exclusion Filters"),
                 self.excludeListTriggered,
             ),
-            ("actionShowHelp", "F1", "", tr("dupeGuru Help"), self.showHelpTriggered),
-            ("actionAbout", "", "", tr("About dupeGuru"), self.showAboutBoxTriggered),
+            ("actionShowHelp", "F1", "", tr("dupeGuru Neo Help"), self.showHelpTriggered),
+            (
+                "actionShowVideoWorkflow",
+                "",
+                "",
+                tr("Similar Video CLI Workflow…"),
+                self.showVideoWorkflowTriggered,
+            ),
+            ("actionAbout", "", "", tr("About dupeGuru Neo"), self.showAboutBoxTriggered),
             (
                 "actionOpenDebugLog",
                 "",
                 "",
                 tr("Open Debug Log"),
                 self.openDebugLogTriggered,
+            ),
+            (
+                "actionFindSimilarImage",
+                "Ctrl+Shift+F",
+                "",
+                tr("Find Similar Image…"),
+                self.findSimilarImageTriggered,
             ),
         ]
         create_actions(ACTIONS, self)
@@ -159,6 +192,7 @@ class DupeGuru(QObject):
         self.model.options["escape_filter_regexp"] = not self.prefs.use_regexp
         self.model.options["clean_empty_dirs"] = self.prefs.remove_empty_folders
         self.model.options["ignore_hardlink_matches"] = self.prefs.ignore_hardlink_matches
+        self.model.options["comparison_scope"] = "cross_pool" if self.prefs.cross_pool_only else "all"
         self.model.options["copymove_dest_type"] = self.prefs.destination_type
         self.model.options["scan_type"] = self.prefs.get_scan_type(self.model.app_mode)
         self.model.options["min_match_percentage"] = self.prefs.filter_hardness
@@ -195,6 +229,10 @@ class DupeGuru(QObject):
         self.model.options["match_rotated"] = self.prefs.match_rotated
         self.model.options["include_exists_check"] = self.prefs.include_exists_check
         self.model.options["rehash_ignore_mtime"] = self.prefs.rehash_ignore_mtime
+        self.model.options["direct_scan_max_files"] = self.prefs.direct_scan_max_files
+        self.model.options["direct_scan_max_folders"] = self.prefs.direct_scan_max_folders
+        self.model.options["direct_scan_max_issues"] = self.prefs.direct_scan_max_issues
+        self.model.options["direct_scan_max_seconds"] = self.prefs.direct_scan_max_seconds
 
         if self.details_dialog:
             self.details_dialog.update_options()
@@ -226,18 +264,18 @@ class DupeGuru(QObject):
             QApplication.setStyle(QStyleFactory.create("Fusion"))
             palette = QApplication.style().standardPalette()
             palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
-            palette.setColor(QPalette.ColorRole.WindowText, Qt.white)
+            palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
             palette.setColor(QPalette.ColorRole.Base, QColor(25, 25, 25))
             palette.setColor(QPalette.ColorRole.AlternateBase, QColor(53, 53, 53))
             palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(53, 53, 53))
-            palette.setColor(QPalette.ColorRole.ToolTipText, Qt.white)
-            palette.setColor(QPalette.ColorRole.Text, Qt.white)
+            palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+            palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
             palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-            palette.setColor(QPalette.ColorRole.ButtonText, Qt.white)
-            palette.setColor(QPalette.ColorRole.BrightText, Qt.red)
+            palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+            palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
             palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
             palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-            palette.setColor(QPalette.ColorRole.HighlightedText, Qt.black)
+            palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
             palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(164, 166, 168))
             palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(164, 166, 168))
             palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(164, 166, 168))
@@ -258,11 +296,11 @@ class DupeGuru(QObject):
     def remove_selected(self):
         self.model.remove_selected(self)
 
-    def confirm(self, title, msg, default_button=QMessageBox.Yes):
+    def confirm(self, title, msg, default_button=QMessageBox.StandardButton.Yes):
         active = QApplication.activeWindow()
-        buttons = QMessageBox.Yes | QMessageBox.No
+        buttons = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         answer = QMessageBox.question(active, title, msg, buttons, default_button)
-        return answer == QMessageBox.Yes
+        return answer == QMessageBox.StandardButton.Yes
 
     def invokeCustomCommand(self):
         self.model.invoke_custom_command()
@@ -292,6 +330,8 @@ class DupeGuru(QObject):
                 self.directories_dialog.show()
 
     def shutdown(self):
+        if self.visualQueryController.running:
+            self.visualQueryController.cancel()
         self.willSavePrefs.emit()
         self.prefs.save()
         self.model.save()
@@ -329,11 +369,73 @@ class DupeGuru(QObject):
     def clearCacheTriggered(self):
         title = tr("Clear Cache")
         msg = tr("Do you really want to clear the cache? This will remove all cached file hashes and picture analysis.")
-        if self.confirm(title, msg, QMessageBox.No):
+        if self.confirm(title, msg, QMessageBox.StandardButton.No):
             self.model.clear_picture_cache()
             self.model.clear_hash_cache()
             active = QApplication.activeWindow()
             QMessageBox.information(active, title, tr("Cache cleared."))
+
+    def updatePictureQueryAction(self):
+        is_picture = self.model.app_mode == AppMode.PICTURE
+        running = bool(getattr(self, "visualQueryController", None) and self.visualQueryController.running)
+        self.actionFindSimilarImage.setVisible(is_picture)
+        self.actionFindSimilarImage.setEnabled(is_picture and not running)
+
+    @pyqtSlot(bool)
+    def _visualQueryRunningChanged(self, running):
+        self.updatePictureQueryAction()
+
+    def findSimilarImageTriggered(self):
+        if self.model.app_mode != AppMode.PICTURE:
+            return
+        extensions = " ".join("*.{}".format(extension) for extension in sorted(core.pe.photo.Photo.HANDLED_EXTS))
+        reference, _ = QFileDialog.getOpenFileName(
+            self.main_window or self.directories_dialog,
+            tr("Choose an image to find visually similar files"),
+            "",
+            tr("Images ({})").format(extensions),
+        )
+        if reference:
+            self.startVisualQuery(reference)
+
+    @pyqtSlot(str)
+    def startVisualQuery(self, reference):
+        if self.model.app_mode != AppMode.PICTURE:
+            return False
+        reference_path = Path(reference)
+        if (
+            not reference_path.is_file()
+            or reference_path.suffix.lower().lstrip(".") not in core.pe.photo.Photo.HANDLED_EXTS
+        ):
+            self.show_message(tr("Choose a readable image file."))
+            return False
+        directories = self.model.directories
+        roots = [path for path in directories if directories.get_state(path) != DirectoryState.EXCLUDED]
+        if not roots:
+            self.show_message(tr("Add at least one non-excluded picture folder before searching."))
+            return False
+        cache_path = self.model._get_picture_cache_path()
+        config = VisualScanConfig(
+            similarity_threshold=int(self.prefs.filter_hardness),
+            match_scaled=bool(self.prefs.match_scaled),
+            match_rotated=bool(self.prefs.match_rotated),
+            include_related=True,
+        )
+        source_policy = VisualQuerySourcePolicy.from_directories(
+            directories,
+            self.model.exclude_list,
+        )
+        if not self.visualQueryController.start(
+            str(reference_path),
+            roots,
+            cache_path,
+            config,
+            source_policy,
+        ):
+            self.show_message(tr("A visual search is already running."))
+            return False
+        self.visualQueryDialog.start_query(str(reference_path))
+        return True
 
     def ignoreListTriggered(self):
         if self.use_tabs:
@@ -366,7 +468,7 @@ class DupeGuru(QObject):
         )
         preferences_dialog.load()
         result = preferences_dialog.exec()
-        if result == QDialog.Accepted:
+        if result == QDialog.DialogCode.Accepted:
             preferences_dialog.save()
             self.prefs.save()
             self._update_options()
@@ -385,12 +487,24 @@ class DupeGuru(QObject):
         self.about_box.show()
 
     def showHelpTriggered(self):
+        self._openHelpPage("index.html", "README.md")
+
+    def showVideoWorkflowTriggered(self):
+        self._openHelpPage("video.html", "help/en/video.rst")
+
+    @staticmethod
+    def _openHelpPage(local_name, repository_name):
         base_path = platform.HELP_PATH
-        help_path = op.abspath(op.join(base_path, "index.html"))
+        help_path = op.abspath(op.join(base_path, local_name))
         if op.exists(help_path):
             url = QUrl.fromLocalFile(help_path)
         else:
-            url = QUrl("https://dupeguru.voltaicideas.net/help/en/")
+            url = QUrl(
+                "{}/blob/master/{}".format(
+                    __project_url__,
+                    repository_name,
+                )
+            )
         QDesktopServices.openUrl(url)
 
     def handleSIGTERM(self):
@@ -416,7 +530,7 @@ class DupeGuru(QObject):
             # The object is not deleted entirely, avoid saving its geometry in the future
             # self.willSavePrefs.disconnect(self.details_dialog.appWillSavePrefs)
             # or simply delete it on close which is probably cleaner:
-            self.details_dialog.setAttribute(Qt.WA_DeleteOnClose)
+            self.details_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             self.details_dialog.close()
             # if we don't do the following, Qt will crash when we recreate the Results dialog
             self.details_dialog.setParent(None)
@@ -438,7 +552,7 @@ class DupeGuru(QObject):
         self.problemDialog.show()
 
     def select_dest_folder(self, prompt):
-        flags = QFileDialog.ShowDirsOnly
+        flags = QFileDialog.Option.ShowDirsOnly
         return QFileDialog.getExistingDirectory(self.resultWindow, prompt, "", flags)
 
     def select_dest_file(self, prompt, extension):

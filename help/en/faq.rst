@@ -22,13 +22,23 @@ type of results you're really looking for.
 How safe is it to use dupeGuru?
 -------------------------------
 
-Very safe. dupeGuru has been designed to make sure you don't delete files you didn't mean to delete.
-First, there is the reference folder system that lets you define folders where you absolutely
-**don't** want dupeGuru to let you delete files there, and then there is the group reference system
-that makes sure that you will **always** keep at least one member of the duplicate group.
+Safety depends on the evidence and action type. Only a green Verified Exact
+group has reached a full-file hash and final streaming byte comparison. Before
+a program-managed quarantine, dupeGuru reopens the target and keeper, verifies
+their current SHA-256 digests and bytes, checks the scan and folder policy, and
+then journals a recoverable same-volume move. Similar, transformed, related,
+saved-report, incomplete, or stale results cannot authorize that action.
 
-How can I report a bug a suggest a feature?
--------------------------------------------
+Protected Library and Compare Only folders are immutable inputs to
+dupeGuru-managed actions. Permanent removal is a separate explicit finalize
+step; the default workflow is quarantine and restore. These guarantees do not
+apply to a user-configured external command, a privileged or same-account
+adversary, a hostile filesystem, hardware failure, or filesystem-object
+metadata outside the ordinary payload stream. The exact guarantee and
+non-goals are defined in the `safety model`_.
+
+How can I report a bug or suggest a feature?
+--------------------------------------------
 
 dupeGuru is hosted on `GitHub`_ and it's also where issues are tracked. The best way to report a
 bug or suggest a feature is to sign up on GitHub and `open an issue`_.
@@ -39,14 +49,18 @@ The mark box of a file I want to delete is disabled. What must I do?
 You cannot mark the reference (The first file) of a duplicate group. However, what you can do is to
 promote a duplicate file to reference. Thus, if a file you want to mark is reference, select a
 duplicate file in the group that you want to promote to reference, and click on
-**Actions-->Make Selected into Reference**. If the reference file is from a reference folder
-(filename written in blue letters), you cannot remove it from the reference position.
+**Actions-->Make Selected into Reference**. If the keeper belongs to Protected
+Library or Compare Only, it is immutable and cannot be removed from the keeper
+position.
 
 I have a folder from which I really don't want to delete files.
 ---------------------------------------------------------------
 
-If you want to be sure that dupeGuru will never delete file from a particular folder, make sure to
-set its state to **Reference** at :doc:`folders`.
+Set the folder to **Protected Library** at :doc:`folders`. dupeGuru-managed
+quarantine, move, rename, and dataset actions treat files in that pool as
+immutable keepers. **Compare Only** is also immutable but does not claim that
+its files are authoritative originals. External custom commands run outside
+this policy and must be reviewed separately.
 
 What is this '(X discarded)' notice in the status bar?
 ------------------------------------------------------
@@ -140,41 +154,55 @@ This slider is only relevant for scan types that support "fuzziness". Many scan 
 On some OS, the fact that it's disabled is harder to see than on others, but if you can't move the
 slider, it means that this preference is irrelevant in your current scan type.
 
-I've tried to send my duplicates to Trash, but dupeGuru is telling me it can't do it. Why? What can I do?
----------------------------------------------------------------------------------------------------------
+dupeGuru refused to quarantine a verified duplicate. Why?
+---------------------------------------------------------
 
-Most of the time, the reason why dupeGuru can't send files to Trash is because of file permissions.
-You need *write* permissions on files you want to send to Trash.
+Neo refuses the whole action when a target or keeper changed after the scan,
+cannot be reopened without following a link, is outside the approved roots, is
+on an unsupported filesystem boundary, or no recoverable same-volume
+quarantine can be established. Correct the reported permission or filesystem
+problem and run a new scan. There is no automatic fallback to direct deletion.
 
-If dupeGuru still gives you troubles after fixing your permissions, try enabling the "Directly
-delete files" option that is offered to you when you activate Send to Trash. This will not send
-files to the Trash, but delete them immediately. In some cases, for example on network storage
-(NAS), this has been known to work when normal deletion didn't.
+For NAS libraries, keep the catalog database on a local disk. The NAS may also
+provide weaker identity or durability guarantees; ``dupeguru doctor`` and the
+scan receipt report the detected capability.
 
 Why is Picture mode's contents scan so slow?
 --------------------------------------------
 
-This scanning method is very different from methods. It can detect duplicate photos even if they
-are not exactly the same. This very cool capability has a cost: time. Every picture has to be
-individually and fuzzily matched to all others, and this takes a lot of CPU power.
+Picture mode decodes and color-normalizes every new or changed image. It then
+uses a perceptual-hash index to retrieve nearby candidates and runs the detailed
+15×15 block comparison only for those candidates. A warm scan can reuse cached
+features, while a cold scan must still decode the library. Libraries containing
+many nearly identical images can also produce a large candidate set.
 
 If all you need to find is exact duplicates, just use the standard mode of dupeGuru with the
-Contents scan method. If your photos have EXIF tags, you can also try the "EXIF" scan method which
-is much faster.
+Contents scan method. Exact mode avoids image decoding and gives the stronger
+byte-equality evidence required for a file action.
 
 Where are user files located?
 -----------------------------
 
-For some reason, you'd like to remove or edit dupeGuru's user files (debug logs, caches, etc.).
-Where they're located depends on your platform:
+dupeGuru Neo asks Qt for the platform's application-data directory after
+setting the organization to ``AiWithYou`` and the application name to
+``dupeGuru Neo``. Typical locations are:
 
-* Linux: ``~/.local/share/data/Hardcoded Software/dupeGuru``
-* Mac OS X: ``~/Library/Application Support/dupeGuru``
+* Windows: ``%APPDATA%\AiWithYou\dupeGuru Neo``
+* Linux: ``$XDG_DATA_HOME/AiWithYou/dupeGuru Neo`` (normally
+  ``~/.local/share/AiWithYou/dupeGuru Neo``)
+* macOS: ``~/Library/Application Support/AiWithYou/dupeGuru Neo``
 
-Preferences are stored elsewhere:
+The Windows preferences file is ``settings.ini`` in that directory. Linux and
+macOS preferences use Qt's native ``QSettings`` location for the same
+organization and application names. Image thumbnails use Qt's cache location,
+which can be different from the application-data location.
 
-* Linux: ``~/.config/Hardcoded Software/dupeGuru.conf``
-* Mac OS X: In the built-in ``defaults`` system, as ``com.hardcoded-software.dupeguru``
+Portable mode is explicit: a ``settings.ini`` beside the executable selects
+portable preferences, and runtime data is stored in the adjacent ``data``
+directory. The Advanced preferences page displays the log directory selected
+for the current installation. Check that displayed path rather than assuming a
+location before deleting anything.
 
-.. _GitHub: https://github.com/arsenetar/dupeguru
-.. _open an issue: https://github.com/arsenetar/dupeguru/wiki/issue-labels
+.. _GitHub: https://github.com/AiWithYou/dupeguru_neo
+.. _open an issue: https://github.com/AiWithYou/dupeguru_neo
+.. _safety model: https://github.com/AiWithYou/dupeguru_neo/blob/master/docs/SAFETY_MODEL.md

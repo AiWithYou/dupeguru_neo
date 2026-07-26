@@ -4,14 +4,17 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import os
 import sys
 
+import pytest
+from pytest import raises
 from hscommon.jobprogress import job
 from hscommon.util import first
 from hscommon.testutil import eq_, log_calls
 
 from core.tests.base import NamedObject
-from core import engine
+from core import engine, fs
 from core.engine import (
     get_match,
     getwords,
@@ -27,6 +30,10 @@ from core.engine import (
     get_groups,
     getmatches,
     Match,
+    ExactMatchesView,
+    VerificationKind,
+    getgroups_by_contents,
+    getgroups_by_folders,
     getmatches_by_contents,
     merge_similar_words,
     reduce_common_words,
@@ -525,11 +532,30 @@ class TestCaseGetMatches:
 
         objects = [NamedObject() for _ in range(10)]  # results in 45 matches
         monkeypatch.setattr(engine, "get_match", mocked_match)
-        try:
-            r = getmatches(objects)
-        except MemoryError:
-            self.fail("MemoryError must be handled")
-        eq_(42, len(r))
+        with raises(engine.MatchLimitError, match="complete result"):
+            getmatches(objects)
+
+    def test_match_limit_fails_instead_of_returning_partial_results(self, monkeypatch):
+        monkeypatch.setattr(engine, "MAX_SIMILAR_SCAN_MATCHES", 2)
+        objects = [NamedObject("same") for _ in range(3)]
+
+        with raises(engine.MatchLimitError, match="saved-match"):
+            getmatches(objects)
+
+    def test_candidate_comparison_limit_fails_before_matching(self, monkeypatch):
+        monkeypatch.setattr(engine, "MAX_SIMILAR_CANDIDATE_COMPARISONS", 2)
+        calls = []
+
+        def record_match(first, second, flags):
+            calls.append((first, second, flags))
+            return Match(first, second, 100)
+
+        monkeypatch.setattr(engine, "get_match", record_match)
+
+        with raises(engine.MatchLimitError, match="candidate-comparison"):
+            getmatches([NamedObject("same") for _ in range(3)])
+
+        assert calls == []
 
 
 class TestCaseGetMatchesByContents:
@@ -558,6 +584,240 @@ class TestCaseGetMatchesByContents:
         eq_(len(r), 1)
         r = getmatches_by_contents(f, bigsize=0)
         eq_(len(r), 1)
+
+    def test_samples_are_only_candidate_filters(self):
+        f1 = no("first", size=100)
+        f2 = no("second", size=100)
+        f1.digest_partial = f2.digest_partial = "same-partial"
+        f1.digest_samples = f2.digest_samples = "same-samples"
+        f1.digest = "first-full"
+        f2.digest = "second-full"
+        assert getmatches_by_contents([f1, f2], bigsize=10) == []
+
+    def test_full_digest_collision_is_split_by_byte_comparison(self):
+        class CollisionFile(no):
+            def __init__(self, name, content):
+                super().__init__(name, size=1)
+                self.digest_partial = "same-partial"
+                self.digest_samples = "same-samples"
+                self.digest = "forced-full-collision"
+                self.content = content
+
+            def compare_bytes(self, other):
+                return self.content == other.content
+
+        first = CollisionFile("first", b"a")
+        second = CollisionFile("second", b"b")
+        result = getgroups_by_contents([first, second])
+        assert result == []
+        assert result.verification_failures[0].error_type == "FullDigestCollision"
+
+    def test_direntry_size_and_exact_evidence_are_bound_to_live_handle_size(
+        self,
+        tmp_path,
+    ):
+        original = b"original exact payload" * 4096
+        replacement = b"larger replacement payload" * 4096
+        paths = [tmp_path / "first.bin", tmp_path / "second.bin"]
+        for path in paths:
+            path.write_bytes(original)
+
+        class MutatingFile(fs.File):
+            mutation_done = False
+
+            def compare_bytes(self, other):
+                if not type(self).mutation_done:
+                    type(self).mutation_done = True
+                    self.path.write_bytes(replacement)
+                    other.path.write_bytes(replacement)
+                return super().compare_bytes(other)
+
+        with os.scandir(tmp_path) as entries:
+            files = [MutatingFile(entry) for entry in entries if entry.name.endswith(".bin")]
+        stale_direntry_size = len(original)
+
+        result = getgroups_by_contents(files)
+
+        assert result == []
+        assert all(file.size == stale_direntry_size for file in files)
+        assert any(failure.error_type == "EvidenceSizeMismatch" for failure in result.verification_failures)
+        assert not any(group.evidence.size == len(replacement) for group in result)
+
+    def test_byte_comparison_failure_is_unverified(self):
+        class UnreadableFile(no):
+            def compare_bytes(self, other):
+                raise OSError("simulated read failure")
+
+        first = UnreadableFile("first", size=1)
+        second = UnreadableFile("second", size=1)
+        first.digest_partial = second.digest_partial = "same-partial"
+        first.digest = second.digest = "same-full"
+        result = getgroups_by_contents([first, second])
+        assert result == []
+        [failure] = result.verification_failures
+        assert failure.first_path.endswith("first")
+        assert failure.second_path.endswith("second")
+        assert failure.error_type == "OSError"
+        assert failure.message == "simulated read failure"
+
+    @pytest.mark.parametrize(
+        ("failed_phase", "bigsize"),
+        (
+            ("digest_partial", 0),
+            ("digest_samples", 10),
+            ("digest", 0),
+        ),
+    )
+    def test_strict_hash_read_failure_makes_exact_result_incomplete(
+        self,
+        failed_phase,
+        bigsize,
+    ):
+        class HashReadFile(no):
+            def read_info_strict(self, field):
+                if self.name == "second" and field == failed_phase:
+                    raise OSError("simulated {} failure".format(field))
+                return getattr(self, field)
+
+        files = [
+            HashReadFile("first", size=100),
+            HashReadFile("second", size=100),
+        ]
+        for file in files:
+            file.digest_partial = "same-partial"
+            file.digest_samples = "same-samples"
+            file.digest = "same-full"
+
+        result = getgroups_by_contents(files, bigsize=bigsize)
+
+        assert result == []
+        [failure] = result.verification_failures
+        assert failure.first_path.endswith("second")
+        assert failure.phase == failed_phase
+        assert failure.error_type == "OSError"
+
+    def test_one_hash_failure_marks_the_whole_result_incomplete_but_keeps_proven_groups(self):
+        class HashReadFile(no):
+            def read_info_strict(self, field):
+                if self.name == "unreadable" and field == "digest":
+                    raise OSError("simulated full-hash failure")
+                return getattr(self, field)
+
+        files = [
+            HashReadFile("first", size=100),
+            HashReadFile("second", size=100),
+            HashReadFile("unreadable", size=100),
+        ]
+        for file in files:
+            file.digest_partial = "same-partial"
+            file.digest = "same-full"
+
+        result = getgroups_by_contents(files)
+
+        assert len(result) == 1
+        assert set(result[0]) == set(files[:2])
+        [failure] = result.verification_failures
+        assert failure.phase == "digest"
+
+    def test_byte_comparison_failures_are_bounded_per_digest_bucket(self):
+        comparisons = []
+
+        class UnreadableFile(no):
+            def compare_bytes(self, other):
+                comparisons.append((self, other))
+                raise OSError("simulated read failure")
+
+        files = [UnreadableFile("file-{}".format(index), size=1) for index in range(10_000)]
+        for file in files:
+            file.digest_partial = "same-partial"
+            file.digest = "same-full"
+
+        result = getgroups_by_contents(files)
+
+        assert result == []
+        assert len(result.verification_failures) == 1
+        assert len(comparisons) == 1
+
+    def test_exact_group_uses_linear_evidence_and_keeps_group_api(self):
+        files = [no(f"file-{index}", size=1) for index in range(10_000)]
+        for file in files:
+            file.digest_partial = "same-partial"
+            file.digest = "same-full"
+        [group] = getgroups_by_contents(files)
+        assert group.verification_kind is VerificationKind.VERIFIED_EXACT
+        assert isinstance(group.matches, ExactMatchesView)
+        eq_(9_999, len(group.evidence.comparisons))
+        eq_(49_995_000, len(group.matches))
+        eq_(10_000, len(group))
+        eq_(100, group.percentage)
+        group.switch_ref(group.dupes[-1])
+        assert group.get_match_of(group.dupes[-1]).percentage == 100
+
+    def test_exact_get_match_builds_only_the_requested_edge_at_100k_scale(
+        self,
+        monkeypatch,
+    ):
+        class SyntheticFile:
+            __slots__ = ("is_ref", "size")
+
+            def __init__(self):
+                self.size = 1
+                self.is_ref = False
+
+        files = [SyntheticFile() for _ in range(100_000)]
+        evidence = engine.ExactEvidence(
+            kind=VerificationKind.VERIFIED_EXACT,
+            algorithm="test",
+            digest=b"digest",
+            size=1,
+        )
+        group = Group.from_exact_files(files, evidence)
+        real_match = engine.Match
+        match_calls = []
+
+        def count_match(*args):
+            match_calls.append(args)
+            return real_match(*args)
+
+        def fail_matches_for_ref(_group):
+            raise AssertionError("exact get_match_of must not enumerate reference matches")
+
+        monkeypatch.setattr(engine, "Match", count_match)
+        monkeypatch.setattr(Group, "_get_matches_for_ref", fail_matches_for_ref)
+
+        result = group.get_match_of(files[-1])
+
+        assert result == real_match(files[0], files[-1], 100)
+        assert match_calls == [(files[0], files[-1], 100)]
+        assert group.get_match_of(SyntheticFile()) is None
+        assert group.get_match_of(group.ref) is None
+        assert len(match_calls) == 1
+        assert group.verification_kind is VerificationKind.VERIFIED_EXACT
+        assert group.evidence is evidence
+
+    def test_exact_group_rejects_unverified_evidence(self):
+        files = [no("first", size=1), no("second", size=1)]
+        evidence = engine.ExactEvidence(
+            kind=VerificationKind.UNVERIFIED,
+            algorithm="test",
+            digest=b"digest",
+            size=1,
+        )
+        with raises(ValueError):
+            Group.from_exact_files(files, evidence)
+
+
+def test_folder_groups_keep_linear_storage_at_large_duplicate_count():
+    folders = [no("folder-{}".format(index), size=1) for index in range(10_000)]
+    for folder in folders:
+        folder.digest = b"same-recursive-manifest"
+
+    [group] = getgroups_by_folders(folders)
+
+    assert group.verification_kind is VerificationKind.UNVERIFIED
+    assert isinstance(group.matches, ExactMatchesView)
+    assert len(group) == 10_000
+    assert len(group.matches) == 49_995_000
 
 
 class TestCaseGroup:
@@ -601,6 +861,42 @@ class TestCaseGroup:
         g.add_match(get_match(o3, o4))
         eq_([o2, o3, o4], g.dupes)
         eq_(6, len(g.matches))
+
+    def test_from_saved_matches_bulk_builds_a_complete_similarity_graph(self):
+        first, second, third = [NamedObject("same") for _ in range(3)]
+        matches = [
+            Match(first, second, 91),
+            Match(first, third, 82),
+            Match(second, third, 73),
+        ]
+
+        group = Group.from_saved_matches(
+            [first, second, third],
+            matches,
+        )
+
+        assert group.ordered == [first, second, third]
+        assert group.unordered == {first, second, third}
+        assert group.matches == set(matches)
+        assert group.verification_kind is VerificationKind.SIMILAR
+        assert group.percentage == (91 + 82) // 2
+
+    def test_from_saved_matches_rejects_incomplete_or_duplicate_graphs(self):
+        first, second, third = [NamedObject("same") for _ in range(3)]
+        incomplete = [
+            Match(first, second, 90),
+            Match(first, third, 90),
+        ]
+        duplicate = [
+            Match(first, second, 90),
+            Match(second, first, 80),
+            Match(first, third, 90),
+        ]
+
+        with raises(ValueError, match="complete match graph"):
+            Group.from_saved_matches([first, second, third], incomplete)
+        with raises(ValueError, match="duplicate match pair"):
+            Group.from_saved_matches([first, second, third], duplicate)
 
     def test_len(self):
         g = Group()
@@ -804,6 +1100,19 @@ class TestCaseGetGroups:
     def test_empty(self):
         r = get_groups([])
         eq_([], r)
+
+    def test_per_group_match_limit_fails_before_unserializable_group(self, monkeypatch):
+        first, second, third = [NamedObject("same") for _ in range(3)]
+        monkeypatch.setattr(engine, "MAX_SIMILAR_MATCHES_PER_GROUP", 2)
+
+        with raises(engine.MatchLimitError, match="similarity group"):
+            get_groups(
+                [
+                    Match(first, second, 100),
+                    Match(first, third, 100),
+                    Match(second, third, 100),
+                ]
+            )
 
     def test_simple(self):
         item_list = [NamedObject("foo bar"), NamedObject("bar bleh")]

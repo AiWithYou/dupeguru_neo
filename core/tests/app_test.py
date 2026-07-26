@@ -4,30 +4,256 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import errno
+import io
 import os
 import os.path as op
 import logging
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 from pathlib import Path
 import hscommon.conflict
-import hscommon.util
 from hscommon.testutil import eq_, log_calls
 from hscommon.jobprogress.job import Job
 
 from core.tests.base import TestApp
 from core.tests.results_test import GetTestGroups
-from core import app, fs, engine
+from core import app, engine, export, fs
+import core.ignore as ignore_module
+from core.scan_receipt import ScanReceipt, ScanStatus
 from core.scanner import ScanType
 
 
+def test_desktop_uses_versioned_hash_cache_without_touching_legacy_file(tmp_path, monkeypatch):
+    legacy = tmp_path / "hash_cache.db"
+    legacy_contents = b"legacy cache must remain untouched"
+    legacy.write_bytes(legacy_contents)
+    connected_paths = []
+
+    monkeypatch.setattr(
+        app.desktop,
+        "special_folder_path",
+        lambda _folder, portable=False: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        fs.filesdb,
+        "connect",
+        lambda path: connected_paths.append(Path(path)),
+    )
+
+    TestApp()
+
+    assert connected_paths == [tmp_path / app.HASH_CACHE_FILENAME]
+    assert app.HASH_CACHE_FILENAME == "hash_cache_v3.sqlite3"
+    assert legacy.read_bytes() == legacy_contents
+
+
 def add_fake_files_to_directories(directories, files):
-    directories.get_files = lambda j=None: iter(files)
+    directories.get_files = lambda j=None, **_kwargs: iter(files)
     directories._dirs.append("this is just so Scan() doesn't return 3")
 
 
 class TestCaseDupeGuru:
+    def test_startup_reports_invalid_exclusion_list_without_replacing_state(
+        self,
+        tmp_path,
+    ):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        dgapp.exclude_list.add("kept")
+        dgapp.exclude_list.mark("kept")
+        invalid_payload = b'<exclude_list><exclude regex="broken" unexpected="yes"/></exclude_list>'
+        exclude_path = tmp_path / "exclude_list.xml"
+        exclude_path.write_bytes(invalid_payload)
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.save()
+
+        assert list(dgapp.exclude_list) == [(True, "kept")]
+        assert "exclusion list could not be loaded" in dgapp.view.messages[-1]
+        assert exclude_path.read_bytes() == invalid_payload
+
+    def test_exclusion_list_edit_after_failed_load_replaces_invalid_source(
+        self,
+        tmp_path,
+    ):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        exclude_path = tmp_path / "exclude_list.xml"
+        exclude_path.write_bytes(b"<not_an_exclusion_list/>")
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.exclude_list.add("replacement")
+        dgapp.exclude_list.mark("replacement")
+        dgapp.save()
+
+        reloaded = app.ExcludeList()
+        assert reloaded.load_from_xml(exclude_path) is None
+        assert list(reloaded) == [(True, "replacement")]
+
+    def test_startup_reports_invalid_ignore_list_without_replacing_state(
+        self,
+        tmp_path,
+    ):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        dgapp.ignore_list.ignore("kept-a", "kept-b")
+        invalid_payload = b'<ignore_list><file path="broken" unexpected="yes"/></ignore_list>'
+        ignore_path = tmp_path / "ignore_list.xml"
+        ignore_path.write_bytes(invalid_payload)
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.save()
+
+        assert list(dgapp.ignore_list) == [("kept-a", "kept-b")]
+        assert "ignore list could not be loaded" in dgapp.view.messages[-1]
+        assert ignore_path.read_bytes() == invalid_payload
+
+    def test_startup_reports_invalid_directory_list_without_replacing_source(self, tmp_path):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        kept_root = tmp_path / "kept"
+        kept_root.mkdir()
+        dgapp.directories.add_path(kept_root)
+        invalid_payload = b'<directories><root_directory path="relative"/></directories>'
+        directories_path = tmp_path / "last_directories.xml"
+        directories_path.write_bytes(invalid_payload)
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.save()
+
+        assert list(dgapp.directories) == [kept_root]
+        assert any("folder list could not be loaded" in message for message in dgapp.view.messages)
+        assert directories_path.read_bytes() == invalid_payload
+
+    def test_directory_edit_after_failed_startup_load_replaces_invalid_source(self, tmp_path):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        directories_path = tmp_path / "last_directories.xml"
+        directories_path.write_bytes(b"<not_a_directory_list/>")
+        replacement = tmp_path / "replacement"
+        replacement.mkdir()
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.directories.add_path(replacement)
+        dgapp.save()
+
+        reloaded = app.directories.Directories()
+        assert reloaded.load_from_file(directories_path) is None
+        assert list(reloaded) == [replacement]
+
+    def test_startup_and_shutdown_preserve_temporarily_offline_directory_root(self, tmp_path):
+        offline_root = tmp_path / "removable-root"
+        offline_root.mkdir()
+        source = app.directories.Directories()
+        source.add_path(offline_root)
+        directories_path = tmp_path / "last_directories.xml"
+        source.save_to_file(directories_path)
+        original = directories_path.read_bytes()
+        offline_root.rmdir()
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        dgapp.exclude_list_dialog.refresh = lambda: None
+
+        dgapp.load()
+        dgapp.save()
+
+        assert list(dgapp.directories) == [offline_root]
+        assert directories_path.read_bytes() == original
+
+    def test_directory_save_limit_failure_preserves_existing_source(self, tmp_path, monkeypatch):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        dgapp.directories.add_path(first)
+        dgapp.directories.add_path(second)
+        directories_path = tmp_path / "last_directories.xml"
+        original = b"existing directory selection"
+        directories_path.write_bytes(original)
+        monkeypatch.setattr(app.directories, "DIRECTORIES_XML_MAX_ROOTS", 1)
+
+        dgapp.save()
+
+        assert directories_path.read_bytes() == original
+        assert "folder list was not saved" in dgapp.view.messages[-1]
+
+    def test_load_directories_keeps_exclude_binding_and_existing_state_on_failure(self, tmp_path):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        dgapp.directories.add_path(root)
+        exclude_list = dgapp.exclude_list
+        payload = io.BytesIO(
+            b'<directories><root_directory path="partial"/>' b'<state path="bad" value="not-an-integer"/></directories>'
+        )
+
+        failure = dgapp.load_directories(payload)
+
+        assert failure is not None
+        assert list(dgapp.directories) == [root]
+        assert dgapp.directories._exclude_list is exclude_list
+        assert dgapp.view.messages
+
+    def test_export_rows_are_lazy_at_100k_scale_and_late_failure_is_atomic(
+        self,
+        tmp_path,
+    ):
+        members = list(range(100_000))
+        evaluated = 0
+
+        def get_display_info(dupe, group):
+            nonlocal evaluated
+            evaluated += 1
+            assert group is members
+            if dupe == 10:
+                raise RuntimeError("late row failure")
+            return {"name": "file-{}.bin".format(dupe)}
+
+        fake_app = SimpleNamespace(
+            get_display_info=get_display_info,
+            result_table=SimpleNamespace(
+                _columns=SimpleNamespace(
+                    ordered_columns=[
+                        SimpleNamespace(
+                            name="marked",
+                            display="Marked",
+                            visible=True,
+                        ),
+                        SimpleNamespace(
+                            name="name",
+                            display="Name",
+                            visible=True,
+                        ),
+                    ]
+                )
+            ),
+            results=SimpleNamespace(groups=[members]),
+        )
+
+        colnames, rows = app.DupeGuru._get_export_data(fake_app)
+
+        assert colnames == ["Name"]
+        assert evaluated == 0
+        members.reverse()
+        destination = tmp_path / "results.csv"
+        destination.write_bytes(b"existing destination")
+        with pytest.raises(RuntimeError, match="late row failure"):
+            export.export_to_csv(destination, colnames, rows)
+
+        assert evaluated == 11
+        assert destination.read_bytes() == b"existing destination"
+        assert not list(tmp_path.glob(".results.csv.*.tmp"))
+
     def test_apply_filter_calls_results_apply_filter(self, monkeypatch):
         dgapp = TestApp().app
         monkeypatch.setattr(dgapp.results, "apply_filter", log_calls(dgapp.results.apply_filter))
@@ -61,7 +287,7 @@ class TestCaseDupeGuru:
         monkeypatch.setattr(
             hscommon.conflict,
             "smart_copy",
-            log_calls(lambda source_path, dest_path: None),
+            log_calls(lambda source_path, dest_path, *, rename_no_replace, expected_source_snapshot: None),
         )
         # XXX This monkeypatch is temporary. will be fixed in a better monkeypatcher.
         monkeypatch.setattr(app, "smart_copy", hscommon.conflict.smart_copy)
@@ -70,11 +296,14 @@ class TestCaseDupeGuru:
         dgapp.directories.add_path(p)
         [f] = dgapp.directories.get_files()
         with tempfile.TemporaryDirectory() as tmp_dir:
-            dgapp.copy_or_move(f, True, tmp_dir, 0)
+            snapshot = fs.FileSnapshot.from_path(f.path)
+            dgapp.copy_or_move(f, True, tmp_dir, 0, snapshot)
             eq_(1, len(hscommon.conflict.smart_copy.calls))
             call = hscommon.conflict.smart_copy.calls[0]
             eq_(call["dest_path"], Path(tmp_dir, "foo"))
             eq_(call["source_path"], f.path)
+            assert callable(call["rename_no_replace"])
+            assert call["expected_source_snapshot"] == snapshot
 
     def test_copy_or_move_clean_empty_dirs(self, tmpdir, monkeypatch):
         tmppath = Path(str(tmpdir))
@@ -84,11 +313,92 @@ class TestCaseDupeGuru:
         app = TestApp().app
         app.directories.add_path(tmppath)
         [myfile] = app.directories.get_files()
-        monkeypatch.setattr(app, "clean_empty_dirs", log_calls(lambda path: None))
-        app.copy_or_move(myfile, False, tmppath.joinpath("dest"), 0)
+        monkeypatch.setattr(app, "clean_empty_dirs", log_calls(lambda path, boundary: None))
+        app.copy_or_move(
+            myfile,
+            False,
+            tmppath.joinpath("dest"),
+            0,
+            fs.FileSnapshot.from_path(myfile.path),
+        )
         calls = app.clean_empty_dirs.calls
         eq_(1, len(calls))
         eq_(sourcepath, calls[0]["path"])
+        eq_(tmppath, calls[0]["boundary"])
+
+    def test_copy_directory_into_its_own_tree_is_rejected_before_creating_destination(self, tmp_path):
+        source_root = tmp_path / "root"
+        source = source_root / "source"
+        source.mkdir(parents=True)
+        (source / "payload.bin").write_bytes(b"must remain")
+        dgapp = TestApp().app
+        dgapp.directories.add_path(source_root)
+        destination = source / "not-created" / "nested"
+
+        with pytest.raises(OSError) as caught:
+            dgapp.copy_or_move(
+                SimpleNamespace(path=source),
+                True,
+                destination,
+                app.DestType.DIRECT,
+                None,
+            )
+
+        assert caught.value.errno == errno.EINVAL
+        assert (source / "payload.bin").read_bytes() == b"must remain"
+        assert not (source / "not-created").exists()
+
+    def test_move_cleanup_preserves_the_nearest_nested_selected_root(self, tmp_path):
+        outer = tmp_path / "outer"
+        inner = outer / "inner"
+        source_directory = inner / "source"
+        source = source_directory / "payload.bin"
+        destination = tmp_path / "destination"
+        source_directory.mkdir(parents=True)
+        source.write_bytes(b"moved payload")
+        dgapp = TestApp().app
+        dgapp.directories.add_path(outer)
+        # Persisted/hand-edited configurations can still contain nested roots even though
+        # add_path() normally de-duplicates them. The action boundary must remain safe.
+        dgapp.directories._dirs.append(inner)
+        dgapp.options["clean_empty_dirs"] = True
+
+        dgapp.copy_or_move(
+            SimpleNamespace(path=source),
+            False,
+            destination,
+            app.DestType.DIRECT,
+            fs.FileSnapshot.from_path(source),
+        )
+
+        assert (destination / "payload.bin").read_bytes() == b"moved payload"
+        assert inner.is_dir()
+        assert not source_directory.exists()
+
+    def test_post_move_cleanup_error_does_not_misreport_the_committed_move(self, tmp_path, monkeypatch):
+        root = tmp_path / "root"
+        source = root / "source" / "payload.bin"
+        destination = tmp_path / "destination"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"moved payload")
+        dgapp = TestApp().app
+        dgapp.directories.add_path(root)
+        dgapp.options["clean_empty_dirs"] = True
+
+        def fail_cleanup(_path, _boundary):
+            raise OSError(errno.EACCES, "simulated cleanup denial")
+
+        monkeypatch.setattr(dgapp, "clean_empty_dirs", fail_cleanup)
+        dgapp.copy_or_move(
+            SimpleNamespace(path=source),
+            False,
+            destination,
+            app.DestType.DIRECT,
+            fs.FileSnapshot.from_path(source),
+        )
+
+        assert not source.exists()
+        assert (destination / "payload.bin").read_bytes() == b"moved payload"
 
     def test_scan_with_objects_evaluating_to_false(self):
         class FakeFile(fs.File):
@@ -102,6 +412,176 @@ class TestCaseDupeGuru:
         assert not (bool(f1) and bool(f2))
         add_fake_files_to_directories(app.directories, [f1, f2])
         app.start_scanning()  # no exception
+
+    def test_direct_discovery_limit_discards_partial_input_before_scanner(self, tmp_path, monkeypatch):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+        dgapp.options["direct_scan_max_files"] = 1
+        scanner_calls = []
+        profile_calls = []
+
+        class ProfileProbe:
+            def enable(self):
+                profile_calls.append("enable")
+
+            def disable(self):
+                profile_calls.append("disable")
+
+            def dump_stats(self, path):
+                profile_calls.append(("dump", Path(path).parent))
+
+        def partial_discovery(*, fileclasses, j, budget):
+            budget.count_file(root / "first.txt")
+            yield SimpleNamespace(path=root / "first.txt")
+            budget.count_file(root / "second.txt")
+
+        def unexpected_scan(scanner, files, ignore_list, j):
+            scanner_calls.append(tuple(files))
+            raise AssertionError("partial discovery input reached the scanner")
+
+        def run_now(jobid, function, args=()):
+            function(dgapp.view.JOB, *args)
+
+        monkeypatch.setattr(dgapp.directories, "get_files", partial_discovery)
+        monkeypatch.setattr(app.se.scanner.ScannerSE, "get_dupe_groups", unexpected_scan)
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+        monkeypatch.setattr(app.cProfile, "Profile", ProfileProbe)
+
+        dgapp.start_scanning(profile_scan=True)
+
+        assert scanner_calls == []
+        assert dgapp.results.groups == []
+        assert dgapp.results.scan_receipt.status is ScanStatus.RESOURCE_LIMIT
+        assert not dgapp.results.scan_receipt.allows_destructive_actions
+        assert dgapp.results.scan_receipt.discovered == 1
+        assert profile_calls == [
+            "enable",
+            "disable",
+            ("dump", Path(dgapp.appdata)),
+        ]
+        dgapp._job_completed(app.JobType.SCAN)
+        assert any("Persistent Catalog" in message for message in dgapp.view.messages)
+
+    def test_direct_discovery_memory_error_is_resource_failure_not_job_crash(self, tmp_path, monkeypatch):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+        scanner_called = False
+
+        def memory_failure(*, fileclasses, j, budget):
+            raise MemoryError("synthetic exhaustion")
+            yield  # pragma: no cover
+
+        def unexpected_scan(scanner, files, ignore_list, j):
+            nonlocal scanner_called
+            scanner_called = True
+            raise AssertionError("memory-limited discovery reached the scanner")
+
+        def run_now(jobid, function, args=()):
+            function(dgapp.view.JOB, *args)
+
+        monkeypatch.setattr(dgapp.directories, "get_files", memory_failure)
+        monkeypatch.setattr(app.se.scanner.ScannerSE, "get_dupe_groups", unexpected_scan)
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+
+        dgapp.start_scanning()
+
+        assert not scanner_called
+        assert dgapp.results.groups == []
+        receipt = dgapp.results.scan_receipt
+        assert receipt.status is ScanStatus.RESOURCE_LIMIT
+        assert receipt.issues[0].code == "direct-discovery-resource-limit-memory"
+        assert not receipt.allows_destructive_actions
+
+    def test_direct_scan_refuses_results_when_a_file_generation_changes_during_matching(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        first = root / "same one.bin"
+        second = root / "same two.bin"
+        first.write_bytes(b"before")
+        second.write_bytes(b"before")
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+
+        def change_during_scan(scanner, files, ignore_list, j):
+            first.write_bytes(b"after!")
+            return []
+
+        def run_now(jobid, function, args=()):
+            function(dgapp.view.JOB, *args)
+
+        monkeypatch.setattr(
+            app.se.scanner.ScannerSE,
+            "get_dupe_groups",
+            change_during_scan,
+        )
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+
+        dgapp.start_scanning()
+
+        assert dgapp.results.groups == []
+        receipt = dgapp.results.scan_receipt
+        assert receipt.status is ScanStatus.FAILED
+        assert receipt.issues[0].code == "scan_generation_changed"
+        assert not receipt.allows_destructive_actions
+
+    @pytest.mark.parametrize(
+        ("device", "inode"),
+        (
+            (0, 17),
+            (23, 0),
+            (0, 0),
+        ),
+    )
+    def test_unknown_zero_hardlink_identity_never_discards_distinct_files(self, device, inode):
+        class PathProbe:
+            def stat(self, *, follow_symlinks):
+                assert not follow_symlinks
+                return SimpleNamespace(st_dev=device, st_ino=inode)
+
+        files = [
+            SimpleNamespace(path=PathProbe()),
+            SimpleNamespace(path=PathProbe()),
+        ]
+
+        assert app.DupeGuru._remove_hardlink_dupes(files) == files
+
+    def test_hardlink_filter_stat_remains_inside_discovery_time_budget(self):
+        now = [0.0]
+
+        class SlowPath:
+            def stat(self, *, follow_symlinks):
+                assert not follow_symlinks
+                now[0] = 2.0
+                return SimpleNamespace(st_dev=1, st_ino=1)
+
+        budget = app.directories.DirectDiscoveryBudget(
+            app.directories.DirectDiscoveryLimits(
+                max_files=10,
+                max_folders=10,
+                max_issues=10,
+                max_seconds=1,
+            ),
+            clock=lambda: now[0],
+        )
+
+        with pytest.raises(app.directories.DirectDiscoveryResourceError) as caught:
+            app.DupeGuru._remove_hardlink_dupes(
+                [SimpleNamespace(path=SlowPath())],
+                budget=budget,
+            )
+
+        assert caught.value.code == "resource-limit-seconds"
 
     @pytest.mark.skipif("not hasattr(os, 'link')")
     def test_ignore_hardlink_matches(self, tmpdir):
@@ -128,45 +608,48 @@ class TestCaseDupeGuru:
 
 class TestCaseDupeGuruCleanEmptyDirs:
     @pytest.fixture
-    def do_setup(self, request):
-        monkeypatch = request.getfixturevalue("monkeypatch")
-        monkeypatch.setattr(
-            hscommon.util,
-            "delete_if_empty",
-            log_calls(lambda path, files_to_delete=[]: None),
-        )
-        # XXX This monkeypatch is temporary. will be fixed in a better monkeypatcher.
-        monkeypatch.setattr(app, "delete_if_empty", hscommon.util.delete_if_empty)
+    def do_setup(self):
         self.app = TestApp().app
 
-    def test_option_off(self, do_setup):
-        self.app.clean_empty_dirs(Path("/foo/bar"))
-        eq_(0, len(hscommon.util.delete_if_empty.calls))
+    def test_option_off_does_not_validate_or_remove(self, do_setup, tmp_path):
+        root = tmp_path / "root"
+        child = root / "child"
+        child.mkdir(parents=True)
+        self.app.clean_empty_dirs(child, root)
+        assert child.is_dir()
 
-    def test_option_on(self, do_setup):
+    def test_option_on_removes_only_below_selected_root(self, do_setup, tmp_path):
+        root = tmp_path / "root"
+        child = root / "one" / "two"
+        child.mkdir(parents=True)
         self.app.options["clean_empty_dirs"] = True
-        self.app.clean_empty_dirs(Path("/foo/bar"))
-        calls = hscommon.util.delete_if_empty.calls
-        eq_(1, len(calls))
-        eq_(Path("/foo/bar"), calls[0]["path"])
-        eq_([".DS_Store"], calls[0]["files_to_delete"])
+        self.app.clean_empty_dirs(child, root)
+        assert root.is_dir()
+        assert not (root / "one").exists()
 
-    def test_recurse_up(self, do_setup, monkeypatch):
-        # delete_if_empty must be recursively called up in the path until it returns False
-        @log_calls
-        def mock_delete_if_empty(path, files_to_delete=[]):
-            return len(path.parts) > 1
-
-        monkeypatch.setattr(hscommon.util, "delete_if_empty", mock_delete_if_empty)
-        # XXX This monkeypatch is temporary. will be fixed in a better monkeypatcher.
-        monkeypatch.setattr(app, "delete_if_empty", mock_delete_if_empty)
+    def test_ds_store_is_never_unlinked(self, do_setup, tmp_path):
+        root = tmp_path / "root"
+        child = root / "child"
+        child.mkdir(parents=True)
+        marker = child / ".DS_Store"
+        marker.write_bytes(b"must remain")
         self.app.options["clean_empty_dirs"] = True
-        self.app.clean_empty_dirs(Path("not-empty/empty/empty"))
-        calls = hscommon.util.delete_if_empty.calls
-        eq_(3, len(calls))
-        eq_(Path("not-empty/empty/empty"), calls[0]["path"])
-        eq_(Path("not-empty/empty"), calls[1]["path"])
-        eq_(Path("not-empty"), calls[2]["path"])
+        self.app.clean_empty_dirs(child, root)
+        assert marker.read_bytes() == b"must remain"
+        assert child.is_dir()
+
+    def test_outside_or_relative_cleanup_range_is_rejected(self, do_setup, tmp_path):
+        root = tmp_path / "root"
+        outside = tmp_path / "outside"
+        root.mkdir()
+        outside.mkdir()
+        self.app.options["clean_empty_dirs"] = True
+        with pytest.raises(OSError):
+            self.app.clean_empty_dirs(outside, root)
+        with pytest.raises(OSError):
+            self.app.clean_empty_dirs(Path("relative"), root)
+        assert root.is_dir()
+        assert outside.is_dir()
 
 
 class TestCaseDupeGuruWithResults:
@@ -198,6 +681,35 @@ class TestCaseDupeGuruWithResults:
         r = self.rtable[4]
         assert r._group is groups[1]
         assert r._dupe is objects[4]
+
+    def test_save_as_reports_invalid_xml_text_and_preserves_destination(self, do_setup, tmp_path):
+        destination = tmp_path / "results.xml"
+        original = b"existing results"
+        destination.write_bytes(original)
+        self.objects[0]._folder = Path("invalid\0folder")
+
+        self.app.save_as(destination)
+
+        assert destination.read_bytes() == original
+        assert "Couldn't write to file" in self.app.view.messages[-1]
+        assert "XML 1.0" in self.app.view.messages[-1]
+
+    def test_save_as_reports_bounded_preflight_and_preserves_destination(
+        self,
+        do_setup,
+        tmp_path,
+        monkeypatch,
+    ):
+        destination = tmp_path / "results.xml"
+        original = b"existing results"
+        destination.write_bytes(original)
+        monkeypatch.setattr(app.results, "MAX_RESULTS_GROUPS", 1)
+
+        self.app.save_as(destination)
+
+        assert destination.read_bytes() == original
+        assert "Couldn't write to file" in self.app.view.messages[-1]
+        assert "group count" in self.app.view.messages[-1]
 
     def test_get_objects_after_sort(self, do_setup):
         objects = self.objects
@@ -356,13 +868,31 @@ class TestCaseDupeGuruWithResults:
 
     def test_ignore(self, do_setup):
         app = self.app
+        # The synthetic fixture gives both members the same path by default,
+        # which a real scan removes before grouping and which cannot form a
+        # persistent path-pair relationship.
+        self.objects[4]._folder = Path("other-basepath")
         self.rtable.select([4])  # The dupe of the second, 2 sized group
         app.add_selected_to_ignore_list()
-        eq_(len(app.ignore_list), 1)
+        assert len(app.ignore_list) == 1, app.view.messages
         self.rtable.select([1])  # first dupe of the 3 dupes group
         app.add_selected_to_ignore_list()
         # BOTH the ref and the other dupe should have been added
         eq_(len(app.ignore_list), 3)
+
+    def test_ignore_selection_over_limit_is_atomic(self, do_setup, monkeypatch):
+        app = self.app
+        self.rtable.select([1])
+        selected_before = tuple(app.selected_dupes)
+        result_count_before = len(app.results.dupes)
+        monkeypatch.setattr(ignore_module, "IGNORE_XML_MAX_EDGES", 1)
+
+        app.add_selected_to_ignore_list()
+
+        assert len(app.ignore_list) == 0
+        assert tuple(app.selected_dupes) == selected_before
+        assert len(app.results.dupes) == result_count_before
+        assert "safety limits" in app.view.messages[-1]
 
     def test_purge_ignorelist(self, do_setup, tmpdir):
         app = self.app
@@ -432,6 +962,7 @@ class TestCaseDupeGuruRenameSelected:
         files = fs.get_files(p)
         for f in files:
             f.is_ref = False
+            f.begin_review_scan()
         matches = engine.getmatches(files)
         groups = engine.get_groups(matches)
         g = groups[0]
@@ -439,6 +970,8 @@ class TestCaseDupeGuruRenameSelected:
         app = TestApp()
         app.app.results.groups = groups
         self.app = app.app
+        self.app.directories.add_path(p)
+        self.app.results.scan_receipt = ScanReceipt.completed(len(files))
         self.rtable = app.rtable
         self.rtable.refresh()
         self.groups = groups

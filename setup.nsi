@@ -44,23 +44,31 @@ SetCompressor /SOLID lzma
 !verbose pop
 
 ; Application Specific Defines
-!define APPNAME "dupeGuru"
-!define COMPANYNAME "Hardcoded Software"
-!define DESCRIPTION "dupeGuru is a tool to find duplicate files on your computer."
+!define APPNAME "dupeGuru Neo"
+!define APPID "dupeGuruNeo"
+!define APPBINARY "dupeguru-neo"
+!define CLIBINARY "dupeguru"
+!define COMPANYNAME "AiWithYou"
+!define DESCRIPTION "Verified duplicate detection and large media-library organization."
 !define APPLICENSE "LICENSE"           ; License is not in build directory
 !define APPICON "images\dgse_logo.ico" ; nor is the icon
+!define APPNOTICE "THIRD_PARTY_NOTICES.md"
+!define HSCOMMONLICENSE "hscommon\LICENSE"
+!define SOURCELOCK "release-sources.json"
+!define DEPENDENCYLOCK "requirements-release.txt"
+!define PORTABLENOTICE "docs\PORTABLE-NOTICE.txt"
 !define DISTDIR "dist"
-!define HELPURL "https://github.com/arsenetar/dupeguru/issues"
-!define UPDATEURL "https://dupeguru.voltaicideas.net/"
-!define ABOUTURL "https://dupeguru.voltaicideas.net/"
+!define HELPURL "https://github.com/AiWithYou/dupeguru_neo/issues"
+!define UPDATEURL "https://github.com/AiWithYou/dupeguru_neo/releases"
+!define ABOUTURL "https://github.com/AiWithYou/dupeguru_neo"
 
 ; Static Defines
 !define UNINSTALLREGBASE "Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
 ; Derived Defines
-!define BASEREGKEY "Software\${COMPANYNAME}\${APPNAME}" ;without root key
+!define BASEREGKEY "Software\${COMPANYNAME}\${APPID}" ;without root key
 !define VENDORREGKEY "Software\${COMPANYNAME}" ;without root key
-!define UNINSTALLREG "${UNINSTALLREGBASE}\${APPNAME}" ;without root key
+!define UNINSTALLREG "${UNINSTALLREGBASE}\${APPID}" ;without root key
 !define INSTPATH "${COMPANYNAME}\${APPNAME}" ;without programs / appdata
 
 ; Global vars
@@ -98,7 +106,7 @@ var InstallSize
 
 Name "${APPNAME}"
 !system 'mkdir "${DISTDIR}"'
-OutFile "${DISTDIR}\${APPNAME}_win${BITS}_${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONPATCH}.exe"
+OutFile "${DISTDIR}\${APPBINARY}_win${BITS}_${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONPATCH}.exe"
 Icon "${APPICON}"
 
 ;==============================================================================
@@ -132,6 +140,7 @@ Icon "${APPICON}"
 !insertmacro MUI_LANGUAGE "German"
 !insertmacro MUI_LANGUAGE "Greek"
 !insertmacro MUI_LANGUAGE "Italian"
+!insertmacro MUI_LANGUAGE "Japanese"
 !insertmacro MUI_LANGUAGE "Korean"
 !insertmacro MUI_LANGUAGE "Polish"
 !insertmacro MUI_LANGUAGE "Russian"
@@ -163,12 +172,19 @@ Section "!Application" AppSec
   SetOutPath "$INSTDIR" ; set from result of installer pages
 
   ; Files to install
-  File /r "${SOURCEPATH}\${APPNAME}-win${BITS}\*"
+  File /r /x "${CLIBINARY}.exe" "${SOURCEPATH}\${APPBINARY}-win${BITS}\*"
+  File "${SOURCEPATH}\${APPBINARY}-win${BITS}\${CLIBINARY}.exe"
+  File /oname=LICENSE "${APPLICENSE}"
+  File /oname=THIRD_PARTY_NOTICES.md "${APPNOTICE}"
+  File /oname=HSCOMMON-BSD-3-CLAUSE.txt "${HSCOMMONLICENSE}"
+  File /oname=release-sources.json "${SOURCELOCK}"
+  File /oname=requirements-release.txt "${DEPENDENCYLOCK}"
+  File /oname=PORTABLE-NOTICE.txt "${PORTABLENOTICE}"
 
   ; Create Start Menu Items
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     CreateDirectory "$SMPROGRAMS\$StartMenuFolder"
-    CreateShortcut "$SMPROGRAMS\$StartMenuFolder\${APPNAME}.lnk" "$INSTDIR\${APPNAME}-win${BITS}.exe"
+    CreateShortcut "$SMPROGRAMS\$StartMenuFolder\${APPNAME}.lnk" "$INSTDIR\${APPBINARY}-win${BITS}.exe"
     CreateShortcut "$SMPROGRAMS\$StartMenuFolder\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
   !insertmacro MUI_STARTMENU_WRITE_END
 
@@ -188,26 +204,26 @@ Section "!Application" AppSec
 
   ; Set file association
   ReadRegStr $1 HKCR ".dupeguru" ""
-  StrCmp $1 "" NoBackup  ; is it empty
-  StrCmp $1 "${APPNAME}.File" NoBackup  ; is it our own
-  WriteRegStr HKCR ".dupeguru" "backup_val" "$1"  ; backup current value
-NoBackup:
-  WriteRegStr HKCR ".dupeguru" "" "${APPNAME}.File"  ; set our file association
+  StrCmp $1 "" NoAssociationBackup
+  StrCmp $1 "${APPID}.File" NoAssociationBackup
+  WriteRegStr HKCR ".dupeguru" "backup_val" "$1"
+NoAssociationBackup:
+  WriteRegStr HKCR ".dupeguru" "" "${APPID}.File"  ; set our file association
 
-  ReadRegStr $0 HKCR "${APPNAME}.File" ""
+  ReadRegStr $0 HKCR "${APPID}.File" ""
   StrCmp $0 "" 0 Skip
-    WriteRegStr HKCR "${APPNAME}.File" "" "${APPNAME} File"
-    WriteRegStr HKCR "${APPNAME}.File\shell" "" "open"
-    WriteRegStr HKCR "${APPNAME}.File\DefaultIcon" "" "$INSTDIR\${APPNAME}-win${BITS}.exe,0"
+    WriteRegStr HKCR "${APPID}.File" "" "${APPNAME} File"
+    WriteRegStr HKCR "${APPID}.File\shell" "" "open"
+    WriteRegStr HKCR "${APPID}.File\DefaultIcon" "" "$INSTDIR\${APPBINARY}-win${BITS}.exe,0"
 Skip:
-  WriteRegStr HKCR "${APPNAME}.File\shell\open\command" "" '"$INSTDIR\${APPNAME}-win${BITS}.exe" "%1"'
-  WriteRegStr HKCR "${APPNAME}.File\shell\edit" "" "Edit ${APPNAME} File"
-  WriteRegStr HKCR "${APPNAME}.File\shell\edit\command" "" '"$INSTDIR\${APPNAME}-win${BITS}.exe" "%1"'
+  WriteRegStr HKCR "${APPID}.File\shell\open\command" "" '"$INSTDIR\${APPBINARY}-win${BITS}.exe" "%1"'
+  WriteRegStr HKCR "${APPID}.File\shell\edit" "" "Edit ${APPNAME} File"
+  WriteRegStr HKCR "${APPID}.File\shell\edit\command" "" '"$INSTDIR\${APPBINARY}-win${BITS}.exe" "%1"'
 
   ; Uninstall Entry
   WriteRegStr SHCTX "${UNINSTALLREG}" "DisplayName" "${APPNAME} ${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONPATCH}"
   WriteRegStr SHCTX "${UNINSTALLREG}" "DisplayVersion" "${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONPATCH}"
-  WriteRegStr SHCTX "${UNINSTALLREG}" "DisplayIcon" "$INSTDIR\${APPNAME}.exe"
+  WriteRegStr SHCTX "${UNINSTALLREG}" "DisplayIcon" "$INSTDIR\${APPBINARY}-win${BITS}.exe"
   WriteRegDWORD SHCTX "${UNINSTALLREG}" "VersionMajor" ${VERSIONMAJOR}
   WriteRegDWORD SHCTX "${UNINSTALLREG}" "VersionMinor" ${VERSIONMINOR}
   WriteRegDWORD SHCTX "${UNINSTALLREG}" "VersionPatch" ${VERSIONPATCH}
@@ -245,30 +261,36 @@ Section "Uninstall"
   ; Remove Files & Folders in Install Folder
   RMDir /r "$INSTDIR\core"
   RMDir /r "$INSTDIR\help"
-  RMDir /r "$INSTDIR\PyQt5"
+  RMDir /r "$INSTDIR\PyQt6"
   RMDir /r "$INSTDIR\qt"
   RMDir /r "$INSTDIR\locale"
+  RMDir /r "$INSTDIR\_internal"
   Delete "$INSTDIR\*.exe"
   Delete "$INSTDIR\*.dll"
   Delete "$INSTDIR\*.pyd"
   Delete "$INSTDIR\*.zip"
   Delete "$INSTDIR\*.manifest"
+  Delete "$INSTDIR\LICENSE"
+  Delete "$INSTDIR\THIRD_PARTY_NOTICES.md"
+  Delete "$INSTDIR\HSCOMMON-BSD-3-CLAUSE.txt"
+  Delete "$INSTDIR\release-sources.json"
+  Delete "$INSTDIR\requirements-release.txt"
+  Delete "$INSTDIR\PORTABLE-NOTICE.txt"
 
   ; Remove Install Folder if empty
   RMDir "$INSTDIR"
 
- ReadRegStr $1 HKCR ".dupeguru" ""
-  StrCmp $1 "${APPNAME}.File" 0 NotOwn ; only do this if we own it
+  ReadRegStr $1 HKCR ".dupeguru" ""
+  StrCmp $1 "${APPID}.File" 0 NotOwn ; only do this if we own it
   ReadRegStr $1 HKCR ".dupeguru" "backup_val"
-  StrCmp $1 "" 0 Restore ; if backup="" then delete the whole key
-  DeleteRegKey HKCR ".dupeGuru"
+  StrCmp $1 "" 0 RestoreAssociation
+  DeleteRegKey HKCR ".dupeguru"
   Goto NotOwn
-
-Restore:
+RestoreAssociation:
   WriteRegStr HKCR ".dupeguru" "" $1
   DeleteRegValue HKCR ".dupeguru" "backup_val"
 NotOwn:
-  DeleteRegKey HKCR "${APPNAME}.File" ;Delete key with association name settings
+  DeleteRegKey HKCR "${APPID}.File" ;Delete key with association name settings
 
   ; Remove registry keys and vendor keys (if empty)
   DeleteRegKey  SHCTX "${BASEREGKEY}"
@@ -281,8 +303,8 @@ SectionEnd
 ;==============================================================================
 
 Function .onInit
-  ${IfNot} ${AtLeastWin7}
-    MessageBox MB_OK "Windows 7 and above required"
+  ${IfNot} ${AtLeastWin10}
+    MessageBox MB_OK "Windows 10 or Windows 11 is required"
     Quit
   ${EndIf}
   !if ${BITS} == "64"

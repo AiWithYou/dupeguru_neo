@@ -4,7 +4,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-import logging
+import sqlite3
 
 from pytest import raises, skip
 from hscommon.testutil import eq_
@@ -117,20 +117,17 @@ class TestCaseSqliteCache(BaseTestCaseCache):
         else:
             return SqliteCache()
 
-    def test_corrupted_db(self, tmpdir, monkeypatch):
-        # If we don't do this monkeypatching, we get a weird exception about trying to flush a
-        # closed file. I've tried setting logging level and stuff, but nothing worked. So, there we
-        # go, a dirty monkeypatch.
-        monkeypatch.setattr(logging, "warning", lambda *args, **kw: None)
+    def test_corrupted_db_is_rejected_without_replacing_it(self, tmpdir):
         dbname = str(tmpdir.join("foo.db"))
-        fp = open(dbname, "w")
-        fp.write("invalid sqlite content")
-        fp.close()
-        c = self.get_cache(dbname)  # should not raise a DatabaseError
-        c["foo"] = [[(1, 2, 3)]] * 8
-        del c
-        c = self.get_cache(dbname)
-        eq_(c["foo"], [[(1, 2, 3)]] * 8)
+        original = b"invalid sqlite content"
+        with open(dbname, "wb") as fp:
+            fp.write(original)
+
+        with raises(sqlite3.DatabaseError):
+            self.get_cache(dbname)
+
+        with open(dbname, "rb") as fp:
+            assert fp.read() == original
 
 
 class TestCaseCacheSQLEscape:

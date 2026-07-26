@@ -6,8 +6,8 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QDockWidget, QWidget
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QDockWidget, QWidget
 
 from qt.util import move_to_screen_center
 from qt.details_table import DetailsModel
@@ -16,11 +16,11 @@ from hscommon.plat import ISLINUX
 
 class DetailsDialog(QDockWidget):
     def __init__(self, parent, app, **kwargs):
-        super().__init__(parent, Qt.Tool, **kwargs)
+        super().__init__(parent, Qt.WindowType.Tool, **kwargs)
         self.parent = parent
         self.app = app
         self.model = app.model.details_panel
-        self.setAllowedAreas(Qt.AllDockWidgetAreas)
+        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
         self._setupUi()
         # To avoid saving uninitialized geometry on appWillSavePrefs, we track whether our dialog
         # has been shown. If it has, we know that our geometry should be saved.
@@ -31,8 +31,11 @@ class DetailsDialog(QDockWidget):
         self.tableView.setModel(self.tableModel)
         self.model.view = self
         self.app.willSavePrefs.connect(self.appWillSavePrefs)
-        # self.setAttribute(Qt.WA_DeleteOnClose)
-        parent.addDockWidget(area if self._wasDocked else Qt.BottomDockWidgetArea, self)
+        # self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        parent.addDockWidget(
+            area if self._wasDocked else Qt.DockWidgetArea.BottomDockWidgetArea,
+            self,
+        )
 
     def _setupUi(self):  # Virtual
         pass
@@ -61,9 +64,9 @@ class DetailsDialog(QDockWidget):
 
         features = self.features()
         if self.app.prefs.details_dialog_vertical_titlebar:
-            self.setFeatures(features | QDockWidget.DockWidgetVerticalTitleBar)
-        elif features & QDockWidget.DockWidgetVerticalTitleBar:
-            self.setFeatures(features ^ QDockWidget.DockWidgetVerticalTitleBar)
+            self.setFeatures(features | QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar)
+        elif features & QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar:
+            self.setFeatures(features ^ QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar)
 
     # --- Events
     def appWillSavePrefs(self):

@@ -1,4 +1,4 @@
-# Push translation source to Transifex
+# Optionally push translation sources to Transifex.
 name: Transifex Sync
 
 on:
@@ -9,18 +9,84 @@ on:
       - locale/*.pot
 
 env:
-  TX_VERSION: "v1.6.10"
+  TX_ARCHIVE_SHA256: "dcc747ae863dd5a232b6a322f78b8621f43cd6032189ee89e979418cc24927f2"
+  TX_BINARY_SHA256: "32645dc27b82e25d39de6027bbb0ccef5f92a81badac9bd24e736b9eefb63f22"
+  TX_VERSION: "1.6.10"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: transifex-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   push-source:
-    runs-on: ubuntu-latest
+    if: github.repository == 'AiWithYou/dupeguru_neo'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-      - name: Get Transifex Client
+      - name: Check optional Transifex integration
+        id: transifex
+        shell: bash
+        env:
+          TRANSIFEX_CONFIGURED: ${{ secrets.TX_TOKEN != '' }}
         run: |
-          curl -o- https://raw.githubusercontent.com/transifex/cli/master/install.sh | bash -s -- $TX_VERSION
+          set -euo pipefail
+          if [[ "${TRANSIFEX_CONFIGURED}" != "true" ]]; then
+            printf 'enabled=false\n' >> "${GITHUB_OUTPUT}"
+            printf '%s\n' \
+              '::notice title=Transifex sync skipped::Optional TX_TOKEN repository secret is not configured; no translation source was uploaded.'
+            {
+              printf '### Transifex sync\n\n'
+              printf 'Skipped: optional repository secret `TX_TOKEN` is not configured.\n\n'
+              printf 'No Transifex client was downloaded and no translation source was uploaded.\n'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          else
+            printf 'enabled=true\n' >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Check out the exact revision
+        if: steps.transifex.outputs.enabled == 'true'
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch and verify the pinned Transifex client
+        if: steps.transifex.outputs.enabled == 'true'
+        env:
+          TX_TOOL_DIRECTORY: ${{ runner.temp }}/dupeguru-tx-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/tx-${TX_VERSION}-linux-amd64.tar.gz"
+          test ! -e "${archive}"
+          test ! -e "${TX_TOOL_DIRECTORY}"
+          curl --fail --location --show-error --silent \
+            --retry 5 --retry-all-errors --connect-timeout 30 \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            --output "${archive}" \
+            "https://github.com/transifex/cli/releases/download/v${TX_VERSION}/tx-linux-amd64.tar.gz"
+          printf '%s  %s\n' "${TX_ARCHIVE_SHA256}" "${archive}" | sha256sum --check --strict
+          python scripts/verified_transifex.py \
+            --archive "${archive}" \
+            --output-directory "${TX_TOOL_DIRECTORY}" \
+            --version "${TX_VERSION}" \
+            --sha256 "${TX_ARCHIVE_SHA256}"
+          test "$(sha256sum "${TX_TOOL_DIRECTORY}/tx" | cut -d' ' -f1)" = "${TX_BINARY_SHA256}"
+          test "$("${TX_TOOL_DIRECTORY}/tx" --version)" = "TX Client, version=${TX_VERSION}"
       - name: Update & Push Translation Sources
+        if: steps.transifex.outputs.enabled == 'true'
         env:
           TX_TOKEN: ${{ secrets.TX_TOKEN }}
+          TX_TOOL_DIRECTORY: ${{ runner.temp }}/dupeguru-tx-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          ./tx push -s --use-git-timestamps
+          set -euo pipefail
+          tx_executable="${TX_TOOL_DIRECTORY}/tx"
+          test -f "${tx_executable}"
+          test ! -L "${tx_executable}"
+          test "$(readlink --canonicalize-existing "${tx_executable}")" = "${tx_executable}"
+          test "$(sha256sum "${tx_executable}" | cut -d' ' -f1)" = "${TX_BINARY_SHA256}"
+          test "$("${tx_executable}" --version)" = "TX Client, version=${TX_VERSION}"
+          "${tx_executable}" push -s --use-git-timestamps
+          {
+            printf '### Transifex sync\n\n'
+            printf 'Uploaded translation sources with the pinned, digest-verified Transifex client.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"

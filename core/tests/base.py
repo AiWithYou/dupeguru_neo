@@ -6,15 +6,20 @@
 
 from hscommon.testutil import TestApp as TestAppBase, CallLogger, eq_, with_app  # noqa
 from pathlib import Path
+import tempfile
 from hscommon.util import get_file_ext, format_size
 from hscommon.gui.column import Column
 from hscommon.jobprogress.job import nulljob, JobCancelled
 
-from core import engine, prioritize
+from core import app as core_app_module
+from core import engine, fs, prioritize
 from core.engine import getwords
 from core.app import DupeGuru as DupeGuruBase
 from core.gui.result_table import ResultTable as ResultTableBase
 from core.gui.prioritize_dialog import PrioritizeDialog
+
+_TEST_APPDATA = tempfile.mkdtemp(prefix="dupeguru-test-appdata-")
+_ORIGINAL_SPECIAL_FOLDER_PATH = core_app_module.desktop.special_folder_path
 
 
 class DupeGuruView:
@@ -63,8 +68,23 @@ class DupeGuru(DupeGuruBase):
     METADATA_TO_READ = ["size"]
 
     def __init__(self):
-        DupeGuruBase.__init__(self, DupeGuruView())
-        self.appdata = "/tmp"
+        # Core construction opens the process-wide hash cache immediately.
+        # Unit tests must never connect that singleton to the developer's real
+        # application data, and repeated TestApp instances must close the
+        # preceding test connection before reusing the isolated database.
+        if fs.filesdb.conn is not None:
+            fs.filesdb.close()
+            fs.filesdb.conn = None
+            fs.filesdb.lock = None
+        original_special_folder_path = core_app_module.desktop.special_folder_path
+        use_isolated_default = original_special_folder_path is _ORIGINAL_SPECIAL_FOLDER_PATH
+        if use_isolated_default:
+            core_app_module.desktop.special_folder_path = lambda *_args, **_kwargs: _TEST_APPDATA
+        try:
+            DupeGuruBase.__init__(self, DupeGuruView())
+        finally:
+            if use_isolated_default:
+                core_app_module.desktop.special_folder_path = original_special_folder_path
         self._recreate_result_table()
 
     def _prioritization_categories(self):
@@ -107,6 +127,10 @@ class NamedObject:
             "size": format_size(size, 0, 1, False),
             "extension": self.extension if hasattr(self, "extension") else "---",
         }
+
+    def compare_bytes(self, other):
+        """Explicit byte-comparison protocol used by exact-engine test doubles."""
+        return self.digest == other.digest
 
     @property
     def path(self):

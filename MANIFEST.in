@@ -1,5 +1,31 @@
-recursive-include core *.h
-recursive-include core *.m
+include LICENSE
+include SECURITY.md
+include THIRD_PARTY_NOTICES.md
+include README.md
+include build.py
+include package.py
+include pyproject.toml
+include release-sources.json
+include requirements-release.txt
 include run.py
-graft locale
-graft help
+include run_cli.py
+include setup.cfg
+include setup.py
+include hscommon/LICENSE
+recursive-include core *.h *.m
+recursive-include docs *.md *.txt
+recursive-include images *.icns *.ico *.png *.xcf
+recursive-include pkg *.desktop *.json *.py Makefile changelog control copyright dirs format options rules
+recursive-include scripts *.py
+recursive-include locale *.po *.pot
+include help/changelog
+recursive-include help *.tmpl
+recursive-include help app.rst automation.rst base.rst build.rst catalog.rst column.rst conflict.rst
+recursive-include help contribute.rst dataset.rst deletion_options.rst desktop.rst directories.rst
+recursive-include help engine.rst faq.rst folders.rst fs.rst index.rst job.rst media_review.rst notify.rst
+recursive-include help path.rst performer.rst preferences.rst progress_window.rst quick_start.rst
+recursive-include help reprioritize.rst results.rst scan.rst selectable_list.rst table.rst text_field.rst
+recursive-include help tree.rst util.rst video.rst
+recursive-exclude help changelog.* conf.*
+include help/changelog.tmpl
+include help/conf.tmpl

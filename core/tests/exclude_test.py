@@ -7,14 +7,22 @@
 import io
 from xml.etree import ElementTree as ET
 
+import pytest
+
 from hscommon.testutil import eq_
 from hscommon.plat import ISWINDOWS
 
+import core.exclude as exclude_module
 from core.tests.base import DupeGuru
-from core.exclude import ExcludeList, ExcludeDict, default_regexes, AlreadyThereException
+from core.exclude import (
+    ExcludeDict,
+    ExcludeList,
+    ExcludeListLimitError,
+    ExcludeListLoadError,
+    default_regexes,
+)
 
 from re import error
-
 
 # Two slightly different implementations here, one around a list of lists,
 # and another around a dictionary.
@@ -55,8 +63,11 @@ class TestCaseListXMLLoading:
         eq_(len(e2), 2)
         eq_(e2.marked_count, 1)
 
-    def test_load_xml_with_garbage_and_missing_elements(self):
-        root = ET.Element("foobar")  # The root element shouldn't matter
+    def test_invalid_schema_is_rejected_without_partial_state(self):
+        self.exclude_list.add("existing")
+        self.exclude_list.mark("existing")
+        before = list(self.exclude_list)
+        root = ET.Element("foobar")
         exclude_node = ET.SubElement(root, "bogus")
         exclude_node.set("regex", "None")
         exclude_node.set("marked", "y")
@@ -78,17 +89,246 @@ class TestCaseListXMLLoading:
         tree = ET.ElementTree(root)
         tree.write(f, encoding="utf-8")
         f.seek(0)
-        self.exclude_list.load_from_xml(f)
-        print(f"{[x for x in self.exclude_list]}")
-        # only the two "exclude" nodes should be added,
-        eq_(3, len(self.exclude_list))
-        # None should be marked
-        eq_(0, self.exclude_list.marked_count)
+        failure = self.exclude_list.load_from_xml(f)
+
+        assert isinstance(failure, ExcludeListLoadError)
+        assert list(self.exclude_list) == before
+
+    @pytest.mark.parametrize("regex", [r".*", r"one))"])
+    def test_dangerous_or_invalid_regex_is_typed_failure_and_preserves_state(self, regex):
+        self.exclude_list.add("existing")
+        self.exclude_list.mark("existing")
+        before = list(self.exclude_list)
+        payload = (
+            '<?xml version="1.0" encoding="utf-8"?>' '<exclude_list><exclude regex="{}" marked="y"/></exclude_list>'
+        ).format(regex)
+
+        failure = self.exclude_list.load_from_xml(io.BytesIO(payload.encode("utf-8")))
+
+        assert isinstance(failure, ExcludeListLoadError)
+        assert list(self.exclude_list) == before
+
+    def test_loader_builds_entries_without_quadratic_add_or_mark_calls(self, monkeypatch):
+        def unexpected_call(*_args, **_kwargs):
+            raise AssertionError("transactional loader must bulk-build its state")
+
+        monkeypatch.setattr(self.exclude_list, "add", unexpected_call)
+        monkeypatch.setattr(self.exclude_list, "mark", unexpected_call)
+        payload = b'<exclude_list><exclude regex="one" marked="y"/>' b'<exclude regex="two" marked="n"/></exclude_list>'
+
+        assert self.exclude_list.load_from_xml(io.BytesIO(payload)) is None
+        assert list(self.exclude_list) == [(False, "two"), (True, "one")]
+
+    def test_caller_specific_item_limit_is_enforced_transactionally(self, monkeypatch):
+        self.exclude_list.add("existing")
+        before = list(self.exclude_list)
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_ITEMS", 2)
+        payload = (
+            b'<exclude_list><exclude regex="one" marked="n"/>'
+            b'<exclude regex="two" marked="n"/>'
+            b'<exclude regex="three" marked="n"/></exclude_list>'
+        )
+
+        failure = self.exclude_list.load_from_xml(io.BytesIO(payload))
+
+        assert isinstance(failure, ExcludeListLoadError)
+        assert list(self.exclude_list) == before
+
+    def test_individually_valid_but_uncombinable_union_is_rejected(self):
+        if not self.exclude_list._use_union:
+            pytest.skip("separate-regex mode does not combine expressions")
+        payload = (
+            b'<exclude_list><exclude regex="(?P&lt;name&gt;one)" marked="y"/>'
+            b'<exclude regex="(?P&lt;name&gt;two)" marked="y"/></exclude_list>'
+        )
+
+        failure = self.exclude_list.load_from_xml(io.BytesIO(payload))
+
+        assert isinstance(failure, ExcludeListLoadError)
+        assert len(self.exclude_list) == 0
+
+    def test_caller_specific_regex_length_limit_preserves_state(self, monkeypatch):
+        self.exclude_list.add("old")
+        before = list(self.exclude_list)
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_REGEX_CHARS", 3)
+
+        failure = self.exclude_list.load_from_xml(
+            io.BytesIO(b'<exclude_list><exclude regex="four" marked="n"/></exclude_list>')
+        )
+
+        assert isinstance(failure, ExcludeListLoadError)
+        assert list(self.exclude_list) == before
 
 
 class TestCaseDictXMLLoading(TestCaseListXMLLoading):
     def setup_method(self, method):
         self.exclude_list = ExcludeDict()
+
+
+@pytest.mark.parametrize("exclude_class", [ExcludeList, ExcludeDict])
+class TestRuntimeBoundedExclusionList:
+    def test_add_item_limit_is_atomic(self, exclude_class, monkeypatch):
+        exclude_list = exclude_class()
+        exclude_list.add("kept")
+        before = list(exclude_list)
+        revision = exclude_list.revision
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_ITEMS", 1)
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.add("rejected")
+
+        assert list(exclude_list) == before
+        assert exclude_list.revision == revision
+
+    def test_add_regex_and_total_limits_are_atomic(
+        self,
+        exclude_class,
+        monkeypatch,
+    ):
+        exclude_list = exclude_class()
+        exclude_list.add("one")
+        before = list(exclude_list)
+        revision = exclude_list.revision
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_REGEX_CHARS", 3)
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_TOTAL_REGEX_CHARS", 5)
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.add("four")
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.add("two")
+
+        assert list(exclude_list) == before
+        assert exclude_list.revision == revision
+
+    def test_rename_limit_and_duplicate_are_atomic(
+        self,
+        exclude_class,
+        monkeypatch,
+    ):
+        exclude_list = exclude_class()
+        exclude_list.add("one")
+        exclude_list.mark("one")
+        exclude_list.add("two")
+        before = list(exclude_list)
+        revision = exclude_list.revision
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.rename("one", "two")
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_REGEX_CHARS", 3)
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.rename("one", "long")
+
+        assert list(exclude_list) == before
+        assert exclude_list.revision == revision
+
+    def test_xml_byte_and_character_limits_are_atomic(
+        self,
+        exclude_class,
+        monkeypatch,
+    ):
+        exclude_list = exclude_class()
+        before = list(exclude_list)
+        revision = exclude_list.revision
+        original_byte_limit = exclude_module.EXCLUDE_XML_MAX_BYTES
+        empty_payload_size = len(
+            ET.tostring(
+                ET.Element("exclude_list"),
+                encoding="utf-8",
+                xml_declaration=True,
+            )
+        )
+        monkeypatch.setattr(
+            exclude_module,
+            "EXCLUDE_XML_MAX_BYTES",
+            empty_payload_size,
+        )
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.add("one")
+        monkeypatch.setattr(
+            exclude_module,
+            "EXCLUDE_XML_MAX_BYTES",
+            original_byte_limit,
+        )
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.add("control\x01character")
+
+        assert list(exclude_list) == before
+        assert exclude_list.revision == revision
+
+    def test_save_revalidates_and_preserves_existing_destination(
+        self,
+        exclude_class,
+        monkeypatch,
+        tmp_path,
+    ):
+        exclude_list = exclude_class()
+        exclude_list.add("one")
+        destination = tmp_path / "exclude_list.xml"
+        original = b"existing file must survive failed validation"
+        destination.write_bytes(original)
+        monkeypatch.setattr(exclude_module, "EXCLUDE_XML_MAX_ITEMS", 1)
+        # Simulate a state created by older/unbounded code without using the now
+        # bounded public mutation path.
+        if isinstance(exclude_list._excluded, dict):
+            exclude_list._excluded["two"] = {
+                "index": 0,
+                "compilable": True,
+                "error": None,
+                "compiled": exclude_list.compile_re("two")[2],
+            }
+            exclude_list._excluded["one"]["index"] = 1
+        else:
+            exclude_list._excluded.insert(
+                0,
+                ["two", True, None, exclude_list.compile_re("two")[2]],
+            )
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.save_to_xml(destination)
+
+        assert destination.read_bytes() == original
+
+    def test_union_mark_failure_is_atomic(self, exclude_class):
+        exclude_list = exclude_class(union_regex=True)
+        first = r"(?P<same>one)"
+        second = r"(?P<same>two)"
+        exclude_list.add(first)
+        exclude_list.mark(first)
+        exclude_list.add(second)
+        before = list(exclude_list)
+        revision = exclude_list.revision
+
+        with pytest.raises(ExcludeListLimitError):
+            exclude_list.mark(second)
+
+        assert list(exclude_list) == before
+        assert exclude_list.revision == revision
+
+    def test_all_public_mark_operations_update_revision(self, exclude_class):
+        exclude_list = exclude_class()
+        exclude_list.add("one")
+        exclude_list.add("two")
+
+        revision = exclude_list.revision
+        exclude_list.mark_all()
+        assert exclude_list.revision > revision
+        assert list(exclude_list) == [(True, "two"), (True, "one")]
+
+        revision = exclude_list.revision
+        exclude_list.mark_invert()
+        assert exclude_list.revision > revision
+        assert list(exclude_list) == [(False, "two"), (False, "one")]
+
+        revision = exclude_list.revision
+        exclude_list.mark_toggle_multiple(["one", "two"])
+        assert exclude_list.revision > revision
+        assert list(exclude_list) == [(True, "two"), (True, "one")]
+
+        revision = exclude_list.revision
+        exclude_list.mark_none()
+        assert exclude_list.revision > revision
+        assert list(exclude_list) == [(False, "two"), (False, "one")]
 
 
 class TestCaseListEmpty:
@@ -138,23 +378,17 @@ class TestCaseListEmpty:
         eq_(len(compiled_files), 0)
 
     def test_force_add_not_compilable(self):
-        """Used when loading from XML for example"""
+        """Forced invalid entries can no longer create an unloadable document."""
         regex = r"one))"
-        self.exclude_list.add(regex, forced=True)
-        marked = self.exclude_list.mark(regex)
-        eq_(marked, False)  # can't be marked since not compilable
-        eq_(len(self.exclude_list), 1)
+        with pytest.raises(ExcludeListLimitError):
+            self.exclude_list.add(regex, forced=True)
+        eq_(len(self.exclude_list), 0)
         eq_(len(self.exclude_list.compiled), 0)
         compiled_files = [x for x in self.exclude_list.compiled_files]
         eq_(len(compiled_files), 0)
-        # adding a duplicate
-        regex = r"one))"
-        try:
+        with pytest.raises(ExcludeListLimitError):
             self.exclude_list.add(regex, forced=True)
-        except Exception as e:
-            # we should have this exception, and it shouldn't be added
-            assert type(e) is AlreadyThereException
-        eq_(len(self.exclude_list), 1)
+        eq_(len(self.exclude_list), 0)
         eq_(len(self.exclude_list.compiled), 0)
 
     def test_rename_regex(self):
@@ -162,18 +396,16 @@ class TestCaseListEmpty:
         self.exclude_list.add(regex)
         self.exclude_list.mark(regex)
         regex_renamed = r"one))"
-        # Not compilable, can't be marked
-        self.exclude_list.rename(regex, regex_renamed)
-        assert regex not in self.exclude_list
-        assert regex_renamed in self.exclude_list
-        eq_(self.exclude_list.is_marked(regex_renamed), False)
-        self.exclude_list.mark(regex_renamed)
-        eq_(self.exclude_list.is_marked(regex_renamed), False)
+        # An invalid rename is rejected without changing the original entry.
+        with pytest.raises(ExcludeListLimitError):
+            self.exclude_list.rename(regex, regex_renamed)
+        assert regex in self.exclude_list
+        assert regex_renamed not in self.exclude_list
+        assert self.exclude_list.is_marked(regex)
         regex_renamed_compilable = r"two"
-        self.exclude_list.rename(regex_renamed, regex_renamed_compilable)
+        self.exclude_list.rename(regex, regex_renamed_compilable)
         assert regex_renamed_compilable in self.exclude_list
         eq_(self.exclude_list.is_marked(regex_renamed), False)
-        self.exclude_list.mark(regex_renamed_compilable)
         eq_(self.exclude_list.is_marked(regex_renamed_compilable), True)
         eq_(len(self.exclude_list), 1)
         # Should still be marked after rename

@@ -3,8 +3,8 @@
 # http://www.gnu.org/licenses/gpl-3.0.html
 
 import re
-from PyQt5.QtCore import Qt, pyqtSlot
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtWidgets import (
     QPushButton,
     QLineEdit,
     QVBoxLayout,
@@ -26,7 +26,7 @@ tr = trget("ui")
 
 class ExcludeListDialog(QDialog):
     def __init__(self, app, parent, model, **kwargs):
-        flags = Qt.CustomizeWindowHint | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+        flags = Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowSystemMenuHint
         super().__init__(parent, flags, **kwargs)
         self.app = app
         self.specific_actions = frozenset()
@@ -60,29 +60,40 @@ class ExcludeListDialog(QDialog):
         self.testLine = QLineEdit()
         self.tableView = QTableView()
         triggers = (
-            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.SelectedClicked
         )
         self.tableView.setEditTriggers(triggers)
-        self.tableView.setSelectionMode(QTableView.ExtendedSelection)
-        self.tableView.setSelectionBehavior(QTableView.SelectRows)
+        self.tableView.setSelectionMode(QTableView.SelectionMode.ExtendedSelection)
+        self.tableView.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.tableView.setShowGrid(False)
         vheader = self.tableView.verticalHeader()
         vheader.setSectionsMovable(True)
         vheader.setVisible(False)
         hheader = self.tableView.horizontalHeader()
         hheader.setSectionsMovable(False)
-        hheader.setSectionResizeMode(QHeaderView.Fixed)
+        hheader.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
         hheader.setStretchLastSection(True)
         hheader.setHighlightSections(False)
         hheader.setVisible(True)
         gridlayout.addWidget(self.inputLine, 0, 0)
-        gridlayout.addWidget(self.buttonAdd, 0, 1, Qt.AlignLeft)
-        gridlayout.addWidget(self.buttonRemove, 1, 1, Qt.AlignLeft)
-        gridlayout.addWidget(self.buttonRestore, 2, 1, Qt.AlignLeft)
-        gridlayout.addWidget(self.buttonHelp, 3, 1, Qt.AlignLeft)
+        gridlayout.addWidget(self.buttonAdd, 0, 1, Qt.AlignmentFlag.AlignLeft)
+        gridlayout.addWidget(self.buttonRemove, 1, 1, Qt.AlignmentFlag.AlignLeft)
+        gridlayout.addWidget(self.buttonRestore, 2, 1, Qt.AlignmentFlag.AlignLeft)
+        gridlayout.addWidget(self.buttonHelp, 3, 1, Qt.AlignmentFlag.AlignLeft)
         gridlayout.addWidget(self.buttonClose, 4, 1)
         gridlayout.addWidget(self.tableView, 1, 0, 6, 1)
-        gridlayout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding), 4, 1)
+        gridlayout.addItem(
+            QSpacerItem(
+                0,
+                0,
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Expanding,
+            ),
+            4,
+            1,
+        )
         gridlayout.addWidget(self.buttonTestString, 6, 1)
         gridlayout.addWidget(self.testLine, 6, 0)
 
@@ -157,11 +168,9 @@ class ExcludeListDialog(QDialog):
         self.table.refresh()
 
     def display_help_message(self):
-        self.app.show_message(
-            tr(
-                """\
+        self.app.show_message(tr("""\
 These (case sensitive) python regular expressions will filter out files during scans.<br>\
-Directores will also have their <strong>default state</strong> set to Excluded \
+Directories will also have their <strong>default state</strong> set to Excluded \
 in the Directories tab if their name happens to match one of the selected regular expressions.<br>\
 For each file collected, two tests are performed to determine whether or not to completely ignore it:<br>\
 <li>1. Regular expressions with no path separator in them will be compared to the file name only.</li>
@@ -172,6 +181,4 @@ You can test the regular expression with the "test string" button after pasting 
 <code>C:\\\\User\\My Pictures\\test.png</code><br><br>
 Matching regular expressions will be highlighted.<br>\
 If there is at least one highlight, the path or filename tested will be ignored during scans.<br><br>\
-Directories and files starting with a period '.' are filtered out by default.<br><br>"""
-            )
-        )
+Directories and files starting with a period '.' are filtered out by default.<br><br>"""))

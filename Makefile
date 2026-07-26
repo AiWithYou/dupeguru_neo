@@ -1,7 +1,6 @@
 PYTHON ?= python3
 PYTHON_VERSION_MINOR := $(shell ${PYTHON} -c "import sys; print(sys.version_info.minor)")
-PYRCC5 ?= pyrcc5
-REQ_MINOR_VERSION = 7
+REQ_MINOR_VERSION = 10
 PREFIX ?= /usr/local
 
 # Window compatability via Msys2
@@ -35,7 +34,7 @@ endif
 # Our build scripts are not very "make like" yet and perform their task in a bundle. For now, we
 # use one of each file to act as a representative, a target, of these groups.
 
-packages = hscommon core qt
+packages = hscommon core qt images
 localedirs = $(wildcard locale/*/LC_MESSAGES)
 pofiles = $(wildcard locale/*/LC_MESSAGES/*.po)
 mofiles = $(patsubst %.po,%.mo,$(pofiles))
@@ -43,7 +42,7 @@ mofiles = $(patsubst %.po,%.mo,$(pofiles))
 vpath %.po $(localedirs)
 vpath %.mo $(localedirs)
 
-all: | env i18n modules qt/dg_rc.py
+all: | env i18n modules
 	@echo "Build complete! You can run dupeGuru with 'make run'"
 
 run:
@@ -60,8 +59,8 @@ ifndef NO_VENV
 	@${PYTHON} -m venv -h > /dev/null || \
 		echo "Creation of our virtualenv failed. If you're on Ubuntu, you probably need python3-venv."
 endif
-	@${PYTHON} -c 'import PyQt5' >/dev/null 2>&1 || \
-		{ echo "PyQt 5.4+ required. Install it and try again. Aborting"; exit 1; }
+	@${PYTHON} -c 'import PyQt6' >/dev/null 2>&1 || \
+		{ echo "PyQt 6.11+ required. Install it and try again. Aborting"; exit 1; }
 
 env: | reqs
 ifndef NO_VENV
@@ -75,9 +74,6 @@ endif
 
 build/help: | env
 	$(VENV_PYTHON) build.py --doc
-
-qt/dg_rc.py: qt/dg.qrc
-	$(PYRCC5) qt/dg.qrc > qt/dg_rc.py
 
 i18n: $(mofiles)
 
@@ -97,9 +93,12 @@ install: all pyc
 	mkdir -p ${DESTDIR}${PREFIX}/share/dupeguru
 	cp -rf ${packages} locale ${DESTDIR}${PREFIX}/share/dupeguru
 	cp -f run.py ${DESTDIR}${PREFIX}/share/dupeguru/run.py
+	cp -f run_cli.py ${DESTDIR}${PREFIX}/share/dupeguru/run_cli.py
 	chmod 755 ${DESTDIR}${PREFIX}/share/dupeguru/run.py
+	chmod 755 ${DESTDIR}${PREFIX}/share/dupeguru/run_cli.py
 	mkdir -p ${DESTDIR}${PREFIX}/bin
-	ln -sf ${PREFIX}/share/dupeguru/run.py ${DESTDIR}${PREFIX}/bin/dupeguru
+	ln -sf ${PREFIX}/share/dupeguru/run_cli.py ${DESTDIR}${PREFIX}/bin/dupeguru
+	ln -sf ${PREFIX}/share/dupeguru/run.py ${DESTDIR}${PREFIX}/bin/dupeguru-gui
 	mkdir -p ${DESTDIR}${PREFIX}/share/applications
 	cp -f pkg/dupeguru.desktop ${DESTDIR}${PREFIX}/share/applications
 	mkdir -p ${DESTDIR}${PREFIX}/share/pixmaps
@@ -112,6 +111,7 @@ installdocs: build/help
 uninstall:
 	rm -rf "${DESTDIR}${PREFIX}/share/dupeguru"
 	rm -f "${DESTDIR}${PREFIX}/bin/dupeguru"
+	rm -f "${DESTDIR}${PREFIX}/bin/dupeguru-gui"
 	rm -f "${DESTDIR}${PREFIX}/share/applications/dupeguru.desktop"
 	rm -f "${DESTDIR}${PREFIX}/share/pixmaps/dupeguru.png"
 

@@ -14,6 +14,8 @@ from hscommon.util import dedupe, rem_file_ext, get_file_ext
 from hscommon.trans import tr
 
 from core import engine
+from core.keeper import choose_keeper
+from core.scan_receipt import ScanIssue, ScanReceipt
 
 # It's quite ugly to have scan types from all editions all put in the same class, but because there's
 # there will be some nasty bugs popping up (ScanType is used in core when in should exclusively be
@@ -55,19 +57,26 @@ def remove_dupe_paths(files):
     # have case-sensitive filesystems, and in those, we don't want to falsely remove duplicates,
     # that's why we have a `samefile` mechanism.
     result = []
-    path2file = {}
+    path2files = {}
     for f in files:
-        normalized = str(f.path).lower()
-        if normalized in path2file:
+        normalized = op.normcase(op.normpath(str(f.path)))
+        existing_files = path2files.setdefault(normalized, [])
+        same_physical_path = False
+        for existing in existing_files:
+            if op.normpath(str(f.path)) == op.normpath(str(existing.path)):
+                same_physical_path = True
+                break
             try:
-                if op.samefile(normalized, str(path2file[normalized].path)):
-                    continue  # same file, it's a dupe
-                else:
-                    pass  # We don't treat them as dupes
+                if op.samefile(str(f.path), str(existing.path)):
+                    same_physical_path = True
+                    break
             except OSError:
-                continue  # File doesn't exist? Well, treat them as dupes
-        else:
-            path2file[normalized] = f
+                # Failure to prove identity is not proof that the entries are
+                # the same; retain both and let later verification decide.
+                continue
+        if same_physical_path:
+            continue
+        existing_files.append(f)
         result.append(f)
     return result
 
@@ -75,6 +84,16 @@ def remove_dupe_paths(files):
 class Scanner:
     def __init__(self):
         self.discarded_file_count = 0
+        self.scan_receipt = None
+
+    def _pair_is_in_scope(self, first, second):
+        if self.comparison_scope == "all":
+            return True
+        if self.comparison_scope != "cross_pool":
+            raise ValueError("Invalid comparison scope: {}".format(self.comparison_scope))
+        first_pool = getattr(first, "comparison_pool", "incoming")
+        second_pool = getattr(second, "comparison_pool", "incoming")
+        return first_pool != second_pool
 
     def _getmatches(self, files, j):
         if (
@@ -91,8 +110,10 @@ class Scanner:
                 files = [f for f in files if f.size >= self.size_threshold]
             if self.large_size_threshold:
                 files = [f for f in files if f.size <= self.large_size_threshold]
-        if self.scan_type in {ScanType.CONTENTS, ScanType.FOLDERS}:
-            return engine.getmatches_by_contents(files, bigsize=self.big_file_size_threshold, j=j)
+        if self.scan_type == ScanType.CONTENTS:
+            return engine.getgroups_by_contents(files, bigsize=self.big_file_size_threshold, j=j)
+        elif self.scan_type == ScanType.FOLDERS:
+            return engine.getgroups_by_folders(files, j=j)
         else:
             j = j.start_subjob([2, 8])
             kw = {}
@@ -135,6 +156,169 @@ class Scanner:
         return len(dupe.path.parts) > len(ref.path.parts)
 
     @staticmethod
+    def _prioritize_group(group):
+        decision = choose_keeper(group)
+        group.keeper_decision = decision
+        group.prioritize(decision.sort_key)
+
+    def _partition_exact_candidates(self, candidates, ignore_list):
+        """Greedily color ignore edges without scanning every prior member."""
+
+        partitions = []
+        partitions_by_kind = {}
+        assigned = {}
+        for file in candidates:
+            extension = get_file_ext(file.name)
+            kind = None if self.mix_file_kind else extension
+            path = str(file.path)
+            forbidden = set()
+            if ignore_list:
+                for neighbor in ignore_list.ignored_neighbors(path):
+                    assignment = assigned.get(neighbor)
+                    if assignment is not None and assignment[0] == kind:
+                        forbidden.add(assignment[1])
+            color = 0
+            while color in forbidden:
+                color += 1
+            kind_partitions = partitions_by_kind.setdefault(kind, [])
+            if color == len(kind_partitions):
+                partition = {"extension": extension, "files": []}
+                kind_partitions.append(partition)
+                partitions.append(partition)
+            else:
+                partition = kind_partitions[color]
+            partition["files"].append(file)
+            assigned[path] = (kind, color)
+        return partitions
+
+    def _postprocess_exact_groups(
+        self,
+        scan_result,
+        ignore_list,
+        j,
+        *,
+        revalidate,
+        force_exists=False,
+        fail_on_group_error=False,
+    ):
+        """Apply the shared exact-result policies without pair expansion."""
+
+        j.set_progress(100, tr("Almost done! Fiddling with results..."))
+        exact_groups = []
+        for exact_group in scan_result:
+            candidates = list(exact_group)
+            if self.include_exists_check or force_exists:
+                existing = [file for file in candidates if file.exists()]
+                if force_exists and len(existing) != len(candidates):
+                    raise OSError("A catalog-projected exact file disappeared before grouping")
+                candidates = existing
+            if self.size_threshold:
+                candidates = [file for file in candidates if file.size >= self.size_threshold]
+            if self.large_size_threshold:
+                candidates = [file for file in candidates if file.size <= self.large_size_threshold]
+            partitions = self._partition_exact_candidates(candidates, ignore_list)
+            for partition in partitions:
+                if len(partition["files"]) < 2:
+                    continue
+                if (
+                    self.comparison_scope == "cross_pool"
+                    and len({getattr(file, "comparison_pool", "incoming") for file in partition["files"]}) < 2
+                ):
+                    continue
+                try:
+                    if revalidate:
+                        group = engine.build_verified_exact_group(
+                            partition["files"],
+                            exact_group.evidence.digest,
+                            size=exact_group.evidence.size,
+                            algorithm=exact_group.evidence.algorithm,
+                        )
+                    else:
+                        evidence = engine.ExactEvidence(
+                            kind=engine.VerificationKind.VERIFIED_EXACT,
+                            algorithm=exact_group.evidence.algorithm,
+                            digest=exact_group.evidence.digest,
+                            size=exact_group.evidence.size,
+                        )
+                        group = engine.Group.from_exact_files(
+                            partition["files"],
+                            evidence,
+                        )
+                    exact_groups.append(group)
+                except (OSError, TypeError, ValueError) as error:
+                    if fail_on_group_error:
+                        raise
+                    logging.warning("Exact partition changed before grouping: %s", error)
+        logging.info("Found %d byte-verified exact groups", len(exact_groups))
+        self.discarded_file_count = 0
+        groups = [group for group in exact_groups if any(not file.is_ref for file in group)]
+        logging.info("Created %d groups", len(groups))
+        for group in groups:
+            self._prioritize_group(group)
+        return groups
+
+    def get_dupe_groups_from_verified_exact(
+        self,
+        exact_groups,
+        ignore_list=None,
+        j=job.nulljob,
+    ):
+        """Postprocess catalog byte-verified groups without rereading all pairs."""
+
+        if self.comparison_scope not in {"all", "cross_pool"}:
+            raise ValueError("Invalid comparison scope: {}".format(self.comparison_scope))
+        return self._postprocess_exact_groups(
+            exact_groups,
+            ignore_list,
+            j,
+            revalidate=False,
+            force_exists=True,
+            fail_on_group_error=True,
+        )
+
+    def _postprocess_folder_groups(self, scan_result, ignore_list, j):
+        """Apply folder policies without expanding transitive groups into pairs."""
+
+        j.set_progress(100, tr("Almost done! Fiddling with results..."))
+        candidates_by_group = []
+        matched_paths = set()
+        for source_group in scan_result:
+            candidates = list(source_group)
+            if self.include_exists_check:
+                candidates = [folder for folder in candidates if folder.exists()]
+            if len(candidates) < 2:
+                continue
+            candidates_by_group.append(candidates)
+            matched_paths.update(folder.path for folder in candidates)
+
+        nested_paths = {path for path in matched_paths if any(parent in matched_paths for parent in path.parents)}
+        groups = []
+        for candidates in candidates_by_group:
+            for partition in self._partition_exact_candidates(candidates, ignore_list):
+                files = partition["files"]
+                if len(files) < 2:
+                    continue
+                # Suppress a duplicate sub-tree when every member is already
+                # represented by a matching ancestor.  If an unrelated third
+                # folder has the same manifest, retain the complete transitive
+                # group instead of recreating a partial pair graph.
+                if all(folder.path in nested_paths for folder in files):
+                    continue
+                if (
+                    self.comparison_scope == "cross_pool"
+                    and len({getattr(folder, "comparison_pool", "incoming") for folder in files}) < 2
+                ):
+                    continue
+                groups.append(engine.Group.from_unverified_transitive_files(files))
+
+        self.discarded_file_count = 0
+        groups = [group for group in groups if any(not folder.is_ref for folder in group)]
+        logging.info("Created %d folder groups", len(groups))
+        for group in groups:
+            self._prioritize_group(group)
+        return groups
+
+    @staticmethod
     def get_scan_options():
         """Returns a list of scanning options for this scanner.
 
@@ -143,12 +327,64 @@ class Scanner:
         raise NotImplementedError()
 
     def get_dupe_groups(self, files, ignore_list=None, j=job.nulljob):
+        if self.comparison_scope not in {"all", "cross_pool"}:
+            raise ValueError("Invalid comparison scope: {}".format(self.comparison_scope))
         for f in (f for f in files if not hasattr(f, "is_ref")):
             f.is_ref = False
         files = remove_dupe_paths(files)
         logging.info("Getting matches. Scan type: %d", self.scan_type)
-        matches = self._getmatches(files, j)
+        scan_result = self._getmatches(files, j)
+        if isinstance(scan_result, engine.ExactGroupList):
+            failures = tuple(scan_result.verification_failures)
+            if failures:
+                failed_paths = {
+                    path for failure in failures for path in (failure.first_path, failure.second_path) if path
+                }
+                failed_count = min(len(files), max(1, len(failed_paths)))
+                self.scan_receipt = ScanReceipt.incomplete(
+                    discovered=len(files),
+                    analyzed=max(0, len(files) - failed_count),
+                    failed=failed_count,
+                    issues=tuple(
+                        ScanIssue(
+                            code=(
+                                "byte_verification_failed" if failure.phase == "byte_compare" else "exact_hash_failed"
+                            ),
+                            path=failure.second_path or failure.first_path,
+                            message=(
+                                ("Final byte comparison failed between {!r} and {!r}: {}: {}").format(
+                                    failure.first_path,
+                                    failure.second_path,
+                                    failure.error_type,
+                                    failure.message,
+                                )
+                                if failure.phase == "byte_compare"
+                                else ("Exact-scan {} failed for {!r}: {}: {}").format(
+                                    failure.phase,
+                                    failure.first_path,
+                                    failure.error_type,
+                                    failure.message,
+                                )
+                            ),
+                        )
+                        for failure in failures
+                    ),
+                )
+            return self._postprocess_exact_groups(
+                scan_result,
+                ignore_list,
+                j,
+                revalidate=True,
+            )
+        if isinstance(scan_result, engine.FolderGroupList):
+            return self._postprocess_folder_groups(
+                scan_result,
+                ignore_list,
+                j,
+            )
+        matches = scan_result
         logging.info("Found %d matches" % len(matches))
+        matches = [match for match in matches if self._pair_is_in_scope(match.first, match.second)]
         j.set_progress(100, tr("Almost done! Fiddling with results..."))
         # In removing what we call here "false matches", we first want to remove, if we scan by
         # folders, we want to remove folder matches for which the parent is also in a match (they're
@@ -201,7 +437,7 @@ class Scanner:
         groups = [g for g in groups if any(not f.is_ref for f in g)]
         logging.info("Created %d groups" % len(groups))
         for g in groups:
-            g.prioritize(self._key_func, self._tie_breaker)
+            self._prioritize_group(g)
         return groups
 
     match_similar_words = False
@@ -214,3 +450,4 @@ class Scanner:
     big_file_size_threshold = 0
     word_weighting = False
     include_exists_check = True
+    comparison_scope = "all"

@@ -4,132 +4,258 @@ msgstr ""
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: utf-8\n"
 
-#: core\app.py:44
+#: core\app.py:76
 msgid "There are no marked duplicates. Nothing has been done."
 msgstr ""
 
-#: core\app.py:45
+#: core\app.py:77
 msgid "There are no selected duplicates. Nothing has been done."
 msgstr ""
 
-#: core\app.py:46
+#: core\app.py:78
+msgid ""
+"Run the configured external command for {} selected file(s)?\n"
+"\n"
+"External commands run outside dupeGuru's safety model. They can modify or permanently delete files, including protected or perceptually similar files. dupeGuru cannot verify or undo those changes."
+msgstr ""
+
+#: core\app.py:105
 msgid "You're about to open many files at once. Depending on what those files are opened with, doing so can create quite a mess. Continue?"
 msgstr ""
 
-#: core\app.py:73
+#: core\app.py:133
 msgid "Scanning for duplicates"
 msgstr ""
 
-#: core\app.py:74
+#: core\app.py:134
 msgid "Loading"
 msgstr ""
 
-#: core\app.py:75
+#: core\app.py:135
 msgid "Moving"
 msgstr ""
 
-#: core\app.py:76
+#: core\app.py:136
 msgid "Copying"
 msgstr ""
 
-#: core\app.py:77
-msgid "Sending to Trash"
+#: core\app.py:137
+msgid "Moving verified duplicates to quarantine"
 msgstr ""
 
-#: core\app.py:289
+#: core\app.py:138
+msgid "Restoring quarantined files"
+msgstr ""
+
+#: core\app.py:337
+msgid "No files were changed because another batch preflight failed."
+msgstr ""
+
+#: core\app.py:448
 msgid "A previous action is still hanging in there. You can't start a new one yet. Wait a few seconds, then try again."
 msgstr ""
 
-#: core\app.py:300
+#: core\app.py:466
+msgid ""
+"The scan stopped before matching because direct folder discovery reached a safety limit. No partial results were analyzed, and bulk file actions are disabled.\n"
+"\n"
+"{}\n"
+"\n"
+"For a very large exact-match library, select the Contents scan so the Persistent Catalog can process it in bounded resumable batches."
+msgstr ""
+
+#: core\app.py:476
+msgid "The scan is incomplete. Results are shown for review, but bulk file actions are disabled until a complete rescan succeeds."
+msgstr ""
+
+#: core\app.py:484
 msgid "No duplicates found."
 msgstr ""
 
-#: core\app.py:315
+#: core\app.py:499
 msgid "All marked files were copied successfully."
 msgstr ""
 
-#: core\app.py:317
+#: core\app.py:501
 msgid "All marked files were moved successfully."
 msgstr ""
 
-#: core\app.py:319
-msgid "All marked files were deleted successfully."
+#: core\app.py:503
+msgid "All selected byte-verified files were moved to recoverable quarantine."
 msgstr ""
 
-#: core\app.py:321
-msgid "All marked files were successfully sent to Trash."
+#: core\app.py:512
+msgid ""
+"{} file(s) were restored; {} could not be restored.\n"
+"\n"
+"{}"
 msgstr ""
 
-#: core\app.py:326
+#: core\app.py:516
+msgid "{} file(s) were restored to their original paths. Run a new scan to refresh the results."
+msgstr ""
+
+#: core\app.py:523
 msgid "Could not load file: {}"
 msgstr ""
 
-#: core\app.py:382
+#: core\app.py:600
 msgid "'{}' already is in the list."
 msgstr ""
 
-#: core\app.py:384
+#: core\app.py:602
 msgid "'{}' does not exist."
 msgstr ""
 
-#: core\app.py:392
+#: core\app.py:610
 msgid "All selected %d matches are going to be ignored in all subsequent scans. Continue?"
 msgstr ""
 
-#: core\app.py:469
+#: core\app.py:642
+msgid ""
+"The selected matches were not added because the persistent ignore list would exceed its safety limits. No ignore relationships were changed.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:787
+msgid "copied"
+msgstr ""
+
+#: core\app.py:787
+msgid "moved"
+msgstr ""
+
+#: core\app.py:789
+msgid ""
+"No files were {}. Organizer operations require a complete current scan and an Incoming Files target.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:796
 msgid "Select a directory to copy marked files to"
 msgstr ""
 
-#: core\app.py:471
+#: core\app.py:798
 msgid "Select a directory to move marked files to"
 msgstr ""
 
-#: core\app.py:510
+#: core\app.py:818
+msgid ""
+"No files were changed. Bulk actions require a complete current scan and byte-verified exact duplicates.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:835
+msgid ""
+"No files were changed because a safe action plan could not be built:\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:850
+msgid "There is no restorable quarantine batch in this session. Use the quarantine CLI list command to inspect older batches."
+msgstr ""
+
+#: core\app.py:856
+msgid "Restore {} quarantined file(s) to their original paths? Existing paths will never be overwritten."
+msgstr ""
+
+#: core\app.py:880
 msgid "Select a destination for your exported CSV"
 msgstr ""
 
-#: core\app.py:516 core\app.py:777 core\app.py:787
+#: core\app.py:886 core\app.py:1262 core\app.py:1272
 msgid "Couldn't write to file: {}"
 msgstr ""
 
-#: core\app.py:539
+#: core\app.py:909
 msgid "You have no custom command set up. Set it up in your preferences."
 msgstr ""
 
-#: core\app.py:701 core\app.py:713
+#: core\app.py:930
+msgid "The custom command could not be started."
+msgstr ""
+
+#: core\app.py:950
+msgid ""
+"The folder list could not be loaded because it is invalid or exceeds the supported safety limits. The current folder list was kept and the invalid source will not be replaced unless the folder selection is changed.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:965
+msgid ""
+"The ignore list could not be loaded because it is invalid or exceeds the supported safety limits. The current ignore list was kept.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:979
+msgid ""
+"The exclusion list could not be loaded because it is invalid or exceeds the supported safety limits. The current exclusion list was kept.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:993
+msgid "The folder list could not be loaded because it is invalid or exceeds the supported safety limits. The current folder list was kept."
+msgstr ""
+
+#: core\app.py:1115 core\app.py:1127
 msgid "You are about to remove %d files from results. Continue?"
 msgstr ""
 
-#: core\app.py:749
+#: core\app.py:1147
+msgid "The file was not renamed. {}"
+msgstr ""
+
+#: core\app.py:1187
 msgid "{} duplicate groups were changed by the re-prioritization."
 msgstr ""
 
-#: core\app.py:797
+#: core\app.py:1211
+msgid ""
+"The folder list was not saved because it is invalid or exceeds the supported safety limits. Any existing folder-list file was kept unchanged.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:1241
+msgid ""
+"The exclusion list was not saved because it is invalid or exceeds the supported safety limits. Any existing exclusion-list file was kept unchanged.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: core\app.py:1661
 msgid "The selected directories contain no scannable file."
 msgstr ""
 
-#: core\app.py:813
+#: core\app.py:1671
 msgid "Collecting files to scan"
 msgstr ""
 
-#: core\app.py:863
+#: core\app.py:1797
 msgid "%s (%d discarded)"
 msgstr ""
 
-#: core\directories.py:191
+#: core\directories.py:516
 msgid "Collected {} files to scan"
 msgstr ""
 
-#: core\directories.py:207
+#: core\directories.py:579
 msgid "Collected {} folders to scan"
 msgstr ""
 
-#: core\engine.py:27
+#: core\engine.py:30
 msgid "%d matches found from %d groups"
 msgstr ""
 
-#: core\gui\deletion_options.py:71
-msgid "You are sending {} file(s) to the Trash."
+#: core\gui\deletion_options.py:44
+msgid "{} byte-verified file(s) will be moved to a recoverable quarantine. Every file and its keeper will be revalidated before anything moves. Permanent finalization is always a separate explicit operation."
 msgstr ""
 
 #: core\gui\exclude_list_table.py:14
@@ -156,31 +282,27 @@ msgstr ""
 msgid "Tags"
 msgstr ""
 
-#: core\me\scanner.py:24 core\pe\scanner.py:22 core\se\scanner.py:17
+#: core\me\scanner.py:24 core\pe\scanner.py:30 core\se\scanner.py:17
 msgid "Contents"
 msgstr ""
 
-#: core\pe\matchblock.py:66
+#: core\pe\matchblock.py:170
 msgid "Analyzed %d/%d pictures"
 msgstr ""
 
-#: core\pe\matchblock.py:183
-msgid "Performed %d/%d chunk matches"
+#: core\pe\matchblock.py:330
+msgid "Indexing picture fingerprints"
 msgstr ""
 
-#: core\pe\matchblock.py:191
-msgid "Preparing for matching"
-msgstr ""
-
-#: core\pe\matchblock.py:240
-msgid "Verified %d/%d matches"
+#: core\pe\matchblock.py:352
+msgid "Finding and verifying picture candidates"
 msgstr ""
 
 #: core\pe\matchexif.py:19
 msgid "Read EXIF of %d/%d pictures"
 msgstr ""
 
-#: core\pe\scanner.py:23
+#: core\pe\scanner.py:31
 msgid "EXIF Timestamp"
 msgstr ""
 
@@ -188,51 +310,59 @@ msgstr ""
 msgid "None"
 msgstr ""
 
-#: core\prioritize.py:102
+#: core\prioritize.py:104
 msgid "Ends with number"
 msgstr ""
 
-#: core\prioritize.py:103
+#: core\prioritize.py:105
 msgid "Doesn't end with number"
 msgstr ""
 
-#: core\prioritize.py:104
+#: core\prioritize.py:106
 msgid "Longest"
 msgstr ""
 
-#: core\prioritize.py:105
+#: core\prioritize.py:107
 msgid "Shortest"
 msgstr ""
 
-#: core\prioritize.py:142
+#: core\prioritize.py:108
+msgid "Longest Path"
+msgstr ""
+
+#: core\prioritize.py:109
+msgid "Shortest Path"
+msgstr ""
+
+#: core\prioritize.py:152
 msgid "Highest"
 msgstr ""
 
-#: core\prioritize.py:142
+#: core\prioritize.py:152
 msgid "Lowest"
 msgstr ""
 
-#: core\prioritize.py:171
+#: core\prioritize.py:181
 msgid "Newest"
 msgstr ""
 
-#: core\prioritize.py:171
+#: core\prioritize.py:181
 msgid "Oldest"
 msgstr ""
 
-#: core\results.py:135
+#: core\results.py:863
 msgid "%d / %d (%s / %s) duplicates marked."
 msgstr ""
 
-#: core\results.py:142
+#: core\results.py:870
 msgid " filter: %s"
 msgstr ""
 
-#: core\scanner.py:114
+#: core\scanner.py:135
 msgid "Read metadata of %d/%d files"
 msgstr ""
 
-#: core\scanner.py:152
+#: core\scanner.py:206 core\scanner.py:282 core\scanner.py:388
 msgid "Almost done! Fiddling with results..."
 msgstr ""
 

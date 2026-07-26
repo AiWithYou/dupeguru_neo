@@ -10,13 +10,7 @@ from optparse import OptionParser
 import shutil
 from multiprocessing import Pool
 
-from hscommon import sphinxgen
-from hscommon.build import (
-    add_to_pythonpath,
-    print_and_do,
-    fix_qt_resource_file,
-)
-from hscommon import loc
+from hscommon.build import add_to_pythonpath
 import subprocess
 
 
@@ -56,15 +50,17 @@ def parse_args():
         dest="modules",
         help="Build the python modules.",
     )
-    (options, args) = parser.parse_args()
+    options, args = parser.parse_args()
     return options
 
 
 def build_one_help(language):
+    from hscommon import sphinxgen
+
     print(f"Generating Help in {language}")
     current_path = Path(".").absolute()
     changelog_path = current_path.joinpath("help", "changelog")
-    tixurl = "https://github.com/arsenetar/dupeguru/issues/{}"
+    tixurl = "https://github.com/AiWithYou/dupeguru_neo/issues/{}"
     changelogtmpl = current_path.joinpath("help", "changelog.tmpl")
     conftmpl = current_path.joinpath("help", "conf.tmpl")
     help_basepath = current_path.joinpath("help", language)
@@ -89,6 +85,8 @@ def build_help():
 
 
 def build_localizations():
+    from hscommon import loc
+
     loc.compile_all_po("locale")
     locale_dest = Path("build", "locale")
     if locale_dest.exists():
@@ -97,6 +95,8 @@ def build_localizations():
 
 
 def build_updatepot():
+    from hscommon import loc
+
     print("Building .pot files from source files")
     print("Building core.pot")
     loc.generate_pot(["core"], Path("locale", "core.pot"), ["tr"])
@@ -107,11 +107,15 @@ def build_updatepot():
 
 
 def build_mergepot():
+    from hscommon import loc
+
     print("Updating .po files using .pot files")
     loc.merge_pots_into_pos("locale")
 
 
 def build_normpo():
+    from hscommon import loc
+
     loc.normalize_all_pos("locale")
 
 
@@ -122,22 +126,18 @@ def build_pe_modules():
 
 
 def build_normal():
-    print("Building dupeGuru with UI qt")
+    print("Building dupeGuru Neo with UI qt")
     add_to_pythonpath(".")
     print("Building dupeGuru")
     build_pe_modules()
     print("Building localizations")
     build_localizations()
-    print("Building Qt stuff")
-    Path("qt", "dg_rc.py").unlink(missing_ok=True)
-    print_and_do("pyrcc5 {} > {}".format(Path("qt", "dg.qrc"), Path("qt", "dg_rc.py")))
-    fix_qt_resource_file(Path("qt", "dg_rc.py"))
     build_help()
 
 
 def main():
-    if sys.version_info < (3, 7):
-        sys.exit("Python < 3.7 is unsupported.")
+    if sys.version_info < (3, 10):
+        sys.exit("Python < 3.10 is unsupported.")
     options = parse_args()
     if options.clean and Path("build").exists():
         shutil.rmtree("build")

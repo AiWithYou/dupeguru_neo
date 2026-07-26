@@ -9,14 +9,22 @@ on:
   schedule:
     - cron: "24 20 * * 2"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       contents: read
       security-events: write
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -26,6 +34,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
       # Initializes the CodeQL tools for scanning.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@5d4e8d1aca955e8d8589aabd499c5cae939e33c7 # v4.31.9
@@ -36,11 +46,23 @@ jobs:
           # Prefix the list here with "+" to use these queries and those in the config file.
           # queries: ./path/to/local/query, your-org/your-repo/queries@main
       - if: matrix.language == 'cpp'
-        name: Build Cpp
-        run: |
-          sudo apt-get update
-          sudo apt-get install python3-pyqt5
-          make modules
+        name: Set up Python 3.12
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - if: matrix.language == 'cpp'
+        name: Install native-module build dependencies
+        run: >-
+          python -m pip install
+          --constraint requirements-release.txt
+          "pip==26.1.2"
+          "setuptools==83.0.0"
+          "wheel==0.47.0"
+          --editable .
+      - if: matrix.language == 'cpp'
+        name: Build native modules
+        run: python build.py --modules
       - if: matrix.language == 'python'
         name: Autobuild
         uses: github/codeql-action/autobuild@5d4e8d1aca955e8d8589aabd499c5cae939e33c7 # v4.31.9

@@ -1,0 +1,12 @@
+# Exact runtime dependency constraints used by CI and tagged release builds.
+# Keep setup.cfg ranges broad for downstream packagers; release jobs pass this
+# file with pip's -c/--constraint option and record its SHA-256 in metadata.
+distro==1.9.0
+mutagen==1.48.1
+Pillow==12.3.0
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.1
+PyQt6_sip==13.11.1
+semantic-version==2.10.0
+xxhash==3.8.1
+pywin32==312; sys_platform == "win32"

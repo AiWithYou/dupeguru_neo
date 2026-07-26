@@ -1,7 +1,8 @@
 {
 	"pkgname": "dupeguru",
-	"longname": "dupeGuru",
+	"longname": "dupeGuru Neo",
 	"execname": "dupeguru",
+	"guiexecname": "dupeguru-gui",
 	"arch": "any",
 	"iconpath": "dupeguru"
 }

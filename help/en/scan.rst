@@ -95,16 +95,27 @@ have found otherwise. The scan process also is significantly slower with this op
 Contents scans
 --------------
 
-Contents scans are much simpler than worded scans. We read files and if the contents is exactly the
-same, we consider the two files duplicates.
+Contents scans establish byte equality. Files are first grouped by size. Fast
+partial and multi-position sample hashes may reject non-matches, but they are
+never reported as exact evidence. Surviving candidates receive a full streaming
+digest and are finally compared byte for byte through stable file handles.
 
-This is, of course, quite longer than comparing filenames and, to avoid needlessly reading whole
-file contents, we start by looking at file sizes. After having grouped our files by size, we discard
-every file that is alone in its group. Then, we proceed to read the contents of our remaining files.
+An exact group is accepted only if the files remain the same physical objects
+and content generations throughout those reads. A hash collision therefore
+cannot turn different payloads into a verified group. The result window labels
+this state **Byte-verified exact**. A later duplicate-removal quarantine action
+performs a new SHA-256 and byte comparison rather than trusting the scan result
+indefinitely.
 
-MD5 hashes are used to compute compare contents. Yes, it is widely known that forging files having
-the same MD5 hash is easy, but this file has to be knowingly forged. The possibilities of two files
-having the same MD5 hash *and* the same size by accident is still very, very small.
+In a direct Contents scan, each file carries an in-memory baseline snapshot
+captured at scan start. Strict digest reads and each
+representative-to-member byte comparison also validate snapshots from their
+opened handles. These in-memory snapshots last only for the current result set.
+A Persistent Catalog uses a different contract: its complete ``scan_id``
+snapshot proves enumeration coverage, while a positive persisted
+``verification_id`` identifies a byte comparison between two cataloged content
+versions. Neither kind of scan evidence is action authority by itself;
+quarantine always creates a new live proof.
 
 The :ref:`filter hardness <filter-hardness>` preference is ignored in this scan.
 
@@ -113,14 +124,31 @@ Folders
 
 This is a special Contents scan type. It works like a normal contents scan, but
 instead of trying to find duplicate files, it tries to find duplicate folders.
-A folder is duplicate to another if all files it contains have the same
-contents as the other folder's file.
+A folder candidate matches another when its recursively aggregated manifest
+digest matches. The digest represents the folder tree; it is not a streaming
+byte comparison of one file object and does not establish
+**Byte-verified exact** evidence.
 
 This scan is, of course, recursive and subfolders are checked. dupeGuru keeps only the biggest
 fishes. Therefore, if two folders that are considered as matching contain subfolders, these
 subfolders will not be included in the final results.
 
-With this mode, we end up with folders as results instead of files.
+With this mode, we end up with folders as aggregate, review-only results
+instead of files. Folder results are gray aggregate evidence: they authorize
+neither duplicate-removal quarantine nor the program-managed organizer Copy or
+Move path. A deliberately configured External Command is a separate,
+explicitly confirmed trust boundary and does not inherit dupeGuru's evidence,
+no-overwrite, or recovery guarantees.
+
+Exact hash cache
+----------------
+
+Version 5 writes exact-file hash evidence to ``hash_cache_v3.sqlite3`` in the
+application-data directory. The older ``hash_cache.db`` is never opened,
+imported, renamed, deleted, or overwritten. It is left in place, and the first
+Version 5 contents scan recalculates hashes into the new marker-owned cache.
+This one-time rehash is intentional: unmarked SQLite files are not treated as
+application-owned state.
 
 .. _picture-blocks-scan:
 
@@ -131,29 +159,30 @@ dupeGuru Picture mode stands apart of its two friends. Its scan types are comple
 The first one is its "Contents" scan, which is a bit too generic, hence the name we use here,
 "Picture blocks".
 
-We start by opening every picture in RGB bitmap mode, then we "blockify" the picture. We create a
-15x15 grid and compute the average color of each grid tile. This is the "picture analysis" phase.
-It's very time consuming and the result is cached in a database (the "picture cache").
+We decode the first image frame, apply EXIF orientation, convert a valid embedded
+ICC profile to sRGB, composite transparency onto a defined white background,
+and calculate a deterministic perceptual hash and 15x15 color grid. These
+features are cached against the file's current content generation.
 
-Once we've done that, we can start comparing them. Each tile in the grid (an average color) is
-compared to its corresponding grid on the other picture and a color diff is computer (it's simply
-a sum of the difference of R, G and B on each side). All these sums are added up to a final "score".
+The perceptual-hash MultiIndex retrieves all fingerprints within the configured
+Hamming radius. Detailed tile comparison then runs only for those candidates.
+Each corresponding average color produces a difference, and the accumulated
+difference becomes the visual score.
 
 If that score is smaller or equal to ``100 - threshold``, we have a match.
 
-A threshold of 100 adds an additional constraint that pictures have to be exactly the same (it's
-possible, due to averaging, that the tile comparison yields ``0`` for pictures that aren't exactly
-the same, but since "100%" suggests "exactly the same", we discard those ocurrences). If you want
-to get pictures that are very, very similar but still allow a bit of fuzzy differences, go for 99%.
+Visual scores are capped below the exact label. Even a perfect decoded-pixel
+score is an **Approximate similarity** result because encoding, metadata, and
+non-image payloads may differ. Use Standard mode's Contents scan when you need
+byte-exact evidence. Approximate results cannot authorize duplicate-removal
+quarantine. A complete, current scan may still support an explicit organizer
+Copy or Move for an Incoming Files item.
 
-This second part of the scan is CPU intensive and can take quite a bit of time. This task has been
-made to take advatange of multi-core CPUs and has been optimized to the best of my abilities, but
-the fact of the matter is that, due to the fuzziness of the task, we still have to compare every picture
-to every other, making the algorithm quadratic (if ``N`` is the number of pictures to compare, the
-number of comparisons to perform is ``N*N``).
-
-This algorithm is very naive, but in the field, it works rather well. If you master a better
-algorithm and want to improve dupeGuru, by all means, let me know!
+Candidate indexing usually removes nearly all pair comparisons in a diverse
+library. A pathological set in which many images share nearly identical
+fingerprints can still approach quadratic candidate volume; the scanner bounds
+worker queues and reports cancellation, decoder errors, or resource limits as
+incomplete instead of silently returning a complete scan.
 
 EXIF Timestamp
 --------------
@@ -164,5 +193,5 @@ tag. If the tag is the same for two pictures, they're considered duplicates.
 **Warning:** Modified pictures often keep the same EXIF timestamp, so watch out for false positives
 when you use that scan type.
 
-.. _Levenshtein distance: http://en.wikipedia.org/wiki/Levenshtein_distance
-.. _get_close_matches: http://docs.python.org/3/library/difflib.html#difflib.get_close_matches
+.. _Levenshtein distance: https://en.wikipedia.org/wiki/Levenshtein_distance
+.. _get_close_matches: https://docs.python.org/3/library/difflib.html#difflib.get_close_matches

@@ -2,15 +2,16 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt5.QtCore import QObject, Qt, QSize, QRectF, QPointF, QPoint, pyqtSlot, pyqtSignal, QEvent
-from PyQt5.QtGui import QPixmap, QPainter, QPalette, QCursor, QIcon, QKeySequence
-from PyQt5.QtWidgets import (
+from math import isfinite
+
+from PyQt6.QtCore import QObject, Qt, QSize, QRectF, QPointF, QPoint, QTimer, pyqtSlot, pyqtSignal, QEvent
+from PyQt6.QtGui import QPixmap, QPainter, QPalette, QCursor, QIcon, QKeySequence, QAction, QActionGroup
+from PyQt6.QtWidgets import (
     QGraphicsView,
     QGraphicsScene,
     QGraphicsPixmapItem,
     QToolBar,
     QToolButton,
-    QAction,
     QWidget,
     QScrollArea,
     QApplication,
@@ -19,11 +20,31 @@ from PyQt5.QtWidgets import (
 )
 from hscommon.trans import trget
 from hscommon.plat import ISLINUX
+from qt.pe.comparison import (
+    ComparisonError,
+    ComparisonMode,
+    absolute_difference_heatmap,
+    alpha_overlay,
+    load_bounded_image,
+    load_normalized_pair,
+)
+from qt.resources import resource_path
 
 tr = trget("ui")
 
 MAX_SCALE = 12.0
 MIN_SCALE = 0.1
+
+
+def _clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def _clamp_unit_point(point):
+    return QPointF(
+        _clamp(float(point.x()), 0.0, 1.0),
+        _clamp(float(point.y()), 0.0, 1.0),
+    )
 
 
 def create_actions(actions, target):
@@ -57,22 +78,22 @@ class ViewerToolBar(QToolBar):
         ACTIONS = [
             (
                 "actionZoomIn",
-                QKeySequence.ZoomIn,
+                QKeySequence.StandardKey.ZoomIn,
                 (
                     QIcon.fromTheme("zoom-in")
                     if ISLINUX and not self.parent.app.prefs.details_dialog_override_theme_icons
-                    else QIcon(QPixmap(":/" + "zoom_in"))
+                    else QIcon(resource_path("zoom_in"))
                 ),
                 tr("Increase zoom"),
                 controller.zoomIn,
             ),
             (
                 "actionZoomOut",
-                QKeySequence.ZoomOut,
+                QKeySequence.StandardKey.ZoomOut,
                 (
                     QIcon.fromTheme("zoom-out")
                     if ISLINUX and not self.parent.app.prefs.details_dialog_override_theme_icons
-                    else QIcon(QPixmap(":/" + "zoom_out"))
+                    else QIcon(resource_path("zoom_out"))
                 ),
                 tr("Decrease zoom"),
                 controller.zoomOut,
@@ -83,7 +104,7 @@ class ViewerToolBar(QToolBar):
                 (
                     QIcon.fromTheme("zoom-original")
                     if ISLINUX and not self.parent.app.prefs.details_dialog_override_theme_icons
-                    else QIcon(QPixmap(":/" + "zoom_original"))
+                    else QIcon(resource_path("zoom_original"))
                 ),
                 tr("Normal size"),
                 controller.zoomNormalSize,
@@ -94,7 +115,7 @@ class ViewerToolBar(QToolBar):
                 (
                     QIcon.fromTheme("zoom-best-fit")
                     if ISLINUX and not self.parent.app.prefs.details_dialog_override_theme_icons
-                    else QIcon(QPixmap(":/" + "zoom_best_fit"))
+                    else QIcon(resource_path("zoom_best_fit"))
                 ),
                 tr("Best fit"),
                 controller.zoomBestFit,
@@ -106,11 +127,14 @@ class ViewerToolBar(QToolBar):
 
     def createButtons(self):
         self.buttonImgSwap = QToolButton(self)
-        self.buttonImgSwap.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.buttonImgSwap.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.buttonImgSwap.setIcon(
-            QIcon.fromTheme("view-refresh", self.style().standardIcon(QStyle.SP_BrowserReload))
+            QIcon.fromTheme(
+                "view-refresh",
+                self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload),
+            )
             if ISLINUX and not self.parent.app.prefs.details_dialog_override_theme_icons
-            else QIcon(QPixmap(":/" + "exchange"))
+            else QIcon(resource_path("exchange"))
         )
         self.buttonImgSwap.setText("Swap images")
         self.buttonImgSwap.setToolTip("Swap images")
@@ -118,22 +142,22 @@ class ViewerToolBar(QToolBar):
         self.buttonImgSwap.released.connect(self.controller.swapImages)
 
         self.buttonZoomIn = QToolButton(self)
-        self.buttonZoomIn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.buttonZoomIn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.buttonZoomIn.setDefaultAction(self.actionZoomIn)
         self.buttonZoomIn.setEnabled(False)
 
         self.buttonZoomOut = QToolButton(self)
-        self.buttonZoomOut.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.buttonZoomOut.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.buttonZoomOut.setDefaultAction(self.actionZoomOut)
         self.buttonZoomOut.setEnabled(False)
 
         self.buttonNormalSize = QToolButton(self)
-        self.buttonNormalSize.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.buttonNormalSize.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.buttonNormalSize.setDefaultAction(self.actionNormalSize)
         self.buttonNormalSize.setEnabled(True)
 
         self.buttonBestFit = QToolButton(self)
-        self.buttonBestFit.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.buttonBestFit.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.buttonBestFit.setDefaultAction(self.actionBestFit)
         self.buttonBestFit.setEnabled(False)
 
@@ -142,12 +166,77 @@ class ViewerToolBar(QToolBar):
         self.addWidget(self.buttonZoomOut)
         self.addWidget(self.buttonNormalSize)
         self.addWidget(self.buttonBestFit)
+        self._createModeActions()
+
+    def _createModeActions(self):
+        self.modeActionGroup = QActionGroup(self)
+        self.modeActionGroup.setExclusive(True)
+        actions = (
+            (
+                "actionSideBySide",
+                "S",
+                tr("Side-by-side comparison (Alt+1)"),
+                "Alt+1",
+                ComparisonMode.SIDE_BY_SIDE,
+                self.controller.showSideBySide,
+            ),
+            (
+                "actionAlphaOverlay",
+                "O",
+                tr("Alpha overlay comparison (Alt+2)"),
+                "Alt+2",
+                ComparisonMode.ALPHA_OVERLAY,
+                self.controller.showAlphaOverlay,
+            ),
+            (
+                "actionBlink",
+                "B",
+                tr("Blink comparison (Alt+3)"),
+                "Alt+3",
+                ComparisonMode.BLINK,
+                self.controller.showBlink,
+            ),
+            (
+                "actionDifference",
+                "D",
+                tr("Absolute difference heatmap (Alt+4)"),
+                "Alt+4",
+                ComparisonMode.DIFFERENCE_HEATMAP,
+                self.controller.showDifferenceHeatmap,
+            ),
+        )
+        self._mode_actions = {}
+        for name, text, tooltip, shortcut, mode, handler in actions:
+            action = QAction(text, self)
+            action.setCheckable(True)
+            action.setToolTip(tooltip)
+            action.setStatusTip(tooltip)
+            action.setShortcut(QKeySequence(shortcut))
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            action.triggered.connect(handler)
+            self.modeActionGroup.addAction(action)
+            self.parent.addAction(action)
+            setattr(self, name, action)
+            self._mode_actions[mode] = action
+        self._mode_actions[ComparisonMode.SIDE_BY_SIDE].setChecked(True)
+
+    def setComparisonMode(self, mode):
+        action = self._mode_actions.get(mode)
+        if action is not None:
+            action.setChecked(True)
+
+    def setComparisonAvailable(self, available):
+        for mode, action in self._mode_actions.items():
+            if mode is not ComparisonMode.SIDE_BY_SIDE:
+                action.setEnabled(available)
 
 
 class BaseController(QObject):
     """Abstract Base class. Singleton.
     Base proxy interface to keep image viewers synchronized.
     Relays function calls, keep tracks of things."""
+
+    comparisonStatusChanged = pyqtSignal(str, bool)
 
     def __init__(self, parent):
         super().__init__()
@@ -163,6 +252,17 @@ class BaseController(QObject):
         self.parent = parent  # To change buttons' states
         self.cached_group = None
         self.same_dimensions = True
+        self.comparisonMode = ComparisonMode.SIDE_BY_SIDE
+        self._comparison_key = None
+        self._comparison_pair = None
+        self._comparison_error = ""
+        self._comparison_rendered_pixmaps = {}
+        self._sideSelectedPixmap = QPixmap()
+        self._sideReferencePixmap = QPixmap()
+        self._blink_show_reference = False
+        self._blinkTimer = QTimer(self)
+        self._blinkTimer.setInterval(450)
+        self._blinkTimer.timeout.connect(self._advanceBlink)
 
     def setupViewers(self, selected_viewer, reference_viewer):
         self.selectedViewer = selected_viewer
@@ -178,28 +278,220 @@ class BaseController(QObject):
     def updateView(self, ref, dupe, group):
         # To keep current scale accross dupes from the same group
         previous_same_dimensions = self.same_dimensions
-        self.same_dimensions = True
         same_group = True
         if group != self.cached_group:
             same_group = False
             self.resetState()
         self.cached_group = group
 
-        self.selectedPixmap = QPixmap(str(dupe.path))
-        if ref is dupe:  # currently selected file is the actual reference file
-            self.referencePixmap = QPixmap()
-            self.scaledReferencePixmap = QPixmap()
-            self.parent.verticalToolBar.buttonImgSwap.setEnabled(False)
-            self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
-        else:
-            self.referencePixmap = QPixmap(str(ref.path))
-            self.parent.verticalToolBar.buttonImgSwap.setEnabled(True)
-            if ref.dimensions != dupe.dimensions:
-                self.same_dimensions = False
-            self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
+        comparison_key = self._comparisonKey(ref, dupe)
+        if comparison_key != self._comparison_key:
+            self._comparison_key = comparison_key
+            self._loadComparisonImages(ref, dupe)
+        self._applyComparisonMode()
+        self.parent.verticalToolBar.buttonNormalSize.setEnabled(not self.selectedPixmap.isNull())
         self.updateButtonsAsPerDimensions(previous_same_dimensions)
+        self._updateComparisonControls()
         self.updateBothImages(same_group)
         self.centerViews(same_group and self.referencePixmap.isNull())
+
+    @staticmethod
+    def _comparisonKey(ref, dupe):
+        def file_key(file):
+            return (
+                str(getattr(file, "path", "")),
+                getattr(file, "size", None),
+                getattr(file, "mtime", None),
+            )
+
+        return file_key(dupe), file_key(ref)
+
+    def _loadComparisonImages(self, ref, dupe):
+        self._blinkTimer.stop()
+        self._comparison_pair = None
+        self._comparison_error = ""
+        self._comparison_rendered_pixmaps.clear()
+        self._sideSelectedPixmap = QPixmap()
+        self._sideReferencePixmap = QPixmap()
+        selected_path = getattr(dupe, "path", "")
+        reference_path = getattr(ref, "path", "")
+
+        if ref is dupe:
+            try:
+                bounded = load_bounded_image(selected_path)
+                self._sideSelectedPixmap = QPixmap.fromImage(bounded.image)
+            except ComparisonError as error:
+                self._comparison_error = str(error)
+            return
+
+        try:
+            self._comparison_pair = load_normalized_pair(selected_path, reference_path)
+            self._sideSelectedPixmap = QPixmap.fromImage(self._comparison_pair.selected)
+            self._sideReferencePixmap = QPixmap.fromImage(self._comparison_pair.reference)
+            return
+        except ComparisonError as error:
+            self._comparison_error = str(error)
+
+        # A malformed image must not make the other pane disappear. Decode
+        # each side independently with the same hard display limits.
+        try:
+            selected = load_bounded_image(selected_path)
+            self._sideSelectedPixmap = QPixmap.fromImage(selected.image)
+        except ComparisonError:
+            pass
+        try:
+            reference = load_bounded_image(reference_path)
+            self._sideReferencePixmap = QPixmap.fromImage(reference.image)
+        except ComparisonError:
+            pass
+
+    def _applyComparisonMode(self):
+        self._blinkTimer.stop()
+        self._blink_show_reference = False
+        self.selectedPixmap = self._sideSelectedPixmap
+        self.referencePixmap = self._sideReferencePixmap
+        mode = self.comparisonMode
+        pair = self._comparison_pair
+
+        if mode is not ComparisonMode.SIDE_BY_SIDE and pair is None:
+            label = self._comparisonModeLabel(mode)
+            reason = self._comparison_error or tr("A second readable image is required.")
+            self._setComparisonStatus(tr("%s unavailable: %s") % (label, reason), True)
+        elif pair is None:
+            if self._comparison_error:
+                self._setComparisonStatus(
+                    tr("Side-by-side fallback: %s") % self._comparison_error,
+                    True,
+                )
+            elif self.selectedPixmap.isNull():
+                self._setComparisonStatus(tr("No readable image is selected."), True)
+            else:
+                self._setComparisonStatus(
+                    tr("Side-by-side · select another image to compare."),
+                    False,
+                )
+        else:
+            try:
+                if mode is ComparisonMode.ALPHA_OVERLAY:
+                    self.selectedPixmap = self._derivedComparisonPixmap(mode)
+                elif mode is ComparisonMode.BLINK:
+                    self.selectedPixmap = self._sideSelectedPixmap
+                    self._blinkTimer.start()
+                elif mode is ComparisonMode.DIFFERENCE_HEATMAP:
+                    self.selectedPixmap = self._derivedComparisonPixmap(mode)
+                self.referencePixmap = self._sideReferencePixmap
+                self._setComparisonStatus(self._comparisonSuccessStatus(mode, pair), False)
+            except (RuntimeError, ValueError) as error:
+                self.selectedPixmap = self._sideSelectedPixmap
+                self.referencePixmap = self._sideReferencePixmap
+                self._setComparisonStatus(
+                    tr("%s failed: %s") % (self._comparisonModeLabel(mode), error),
+                    True,
+                )
+
+        self.same_dimensions = (
+            not self.selectedPixmap.isNull()
+            and not self.referencePixmap.isNull()
+            and self.selectedPixmap.size() == self.referencePixmap.size()
+        )
+
+    def _derivedComparisonPixmap(self, mode):
+        cached = self._comparison_rendered_pixmaps.get(mode)
+        if cached is not None:
+            return cached
+        if mode is ComparisonMode.ALPHA_OVERLAY:
+            image = alpha_overlay(self._comparison_pair)
+        elif mode is ComparisonMode.DIFFERENCE_HEATMAP:
+            image = absolute_difference_heatmap(self._comparison_pair)
+        else:
+            raise ValueError(f"{mode.value} has no derived comparison frame")
+        pixmap = QPixmap.fromImage(image)
+        self._comparison_rendered_pixmaps[mode] = pixmap
+        return pixmap
+
+    @staticmethod
+    def _comparisonModeLabel(mode):
+        labels = {
+            ComparisonMode.SIDE_BY_SIDE: tr("Side-by-side"),
+            ComparisonMode.ALPHA_OVERLAY: tr("Alpha overlay"),
+            ComparisonMode.BLINK: tr("Blink"),
+            ComparisonMode.DIFFERENCE_HEATMAP: tr("Difference heatmap"),
+        }
+        return labels[mode]
+
+    def _comparisonSuccessStatus(self, mode, pair):
+        size = pair.display_size
+        bounded = tr(" · display-bounded") if pair.bounded else ""
+        return tr("%s · normalized to %d×%d%s · originals unchanged") % (
+            self._comparisonModeLabel(mode),
+            size.width(),
+            size.height(),
+            bounded,
+        )
+
+    def _setComparisonStatus(self, message, is_error):
+        self.comparisonStatusChanged.emit(message, is_error)
+
+    def _updateComparisonControls(self):
+        toolbar = getattr(self.parent, "verticalToolBar", None)
+        if toolbar is None:
+            return
+        toolbar.setComparisonMode(self.comparisonMode)
+        toolbar.setComparisonAvailable(self._comparison_pair is not None)
+        toolbar.buttonImgSwap.setEnabled(
+            self.comparisonMode is ComparisonMode.SIDE_BY_SIDE
+            and not self.selectedPixmap.isNull()
+            and not self.referencePixmap.isNull()
+        )
+
+    def _clearComparisonContext(self):
+        self._blinkTimer.stop()
+        self._comparison_key = None
+        self._comparison_pair = None
+        self._comparison_error = ""
+        self._comparison_rendered_pixmaps.clear()
+        self._sideSelectedPixmap = QPixmap()
+        self._sideReferencePixmap = QPixmap()
+        self._blink_show_reference = False
+
+    def setComparisonMode(self, mode):
+        mode = ComparisonMode(mode)
+        self.comparisonMode = mode
+        previous_same_dimensions = self.same_dimensions
+        self._applyComparisonMode()
+        self.updateButtonsAsPerDimensions(previous_same_dimensions)
+        self._updateComparisonControls()
+        if self.selectedViewer is not None and self.referenceViewer is not None:
+            self.updateBothImages(True)
+
+    @pyqtSlot()
+    def showSideBySide(self):
+        self.setComparisonMode(ComparisonMode.SIDE_BY_SIDE)
+
+    @pyqtSlot()
+    def showAlphaOverlay(self):
+        self.setComparisonMode(ComparisonMode.ALPHA_OVERLAY)
+
+    @pyqtSlot()
+    def showBlink(self):
+        self.setComparisonMode(ComparisonMode.BLINK)
+
+    @pyqtSlot()
+    def showDifferenceHeatmap(self):
+        self.setComparisonMode(ComparisonMode.DIFFERENCE_HEATMAP)
+
+    def pauseComparisonAnimation(self):
+        self._blinkTimer.stop()
+
+    @pyqtSlot()
+    def _advanceBlink(self):
+        if self.comparisonMode is not ComparisonMode.BLINK or self._comparison_pair is None:
+            self._blinkTimer.stop()
+            return
+        self._blink_show_reference = not self._blink_show_reference
+        self.selectedPixmap = self._sideReferencePixmap if self._blink_show_reference else self._sideSelectedPixmap
+        if self.selectedViewer is not None:
+            self._updateImage(self.selectedPixmap, self.selectedViewer, True)
 
     def updateBothImages(self, same_group=False):
         # WARNING this is called on every resize event,
@@ -228,16 +520,25 @@ class BaseController(QObject):
                 return target_size
             # zoomed in state, expand
             # only if not same_group, we need full update
-            scaledpixmap = pixmap.scaled(target_size, Qt.KeepAspectRatioByExpanding, Qt.FastTransformation)
+            scaledpixmap = pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.FastTransformation,
+            )
         else:
             # best fit, keep ratio always
-            scaledpixmap = pixmap.scaled(target_size, Qt.KeepAspectRatio, Qt.FastTransformation)
+            scaledpixmap = pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation,
+            )
         viewer.setImage(scaledpixmap)
         return target_size
 
     def resetState(self):
         """Only called when the group of dupes has changed. We reset our
         controller internal state and buttons, center view on viewers."""
+        self._clearComparisonContext()
         self.selectedPixmap = QPixmap()
         self.scaledSelectedPixmap = QPixmap()
         self.referencePixmap = QPixmap()
@@ -259,6 +560,7 @@ class BaseController(QObject):
     def resetViewersState(self):
         """No item from the model, disable and clear everything."""
         # only called by the details dialog
+        self._clearComparisonContext()
         self.selectedPixmap = QPixmap()
         self.scaledSelectedPixmap = QPixmap()
         self.referencePixmap = QPixmap()
@@ -283,6 +585,8 @@ class BaseController(QObject):
         self.selectedViewer.setEnabled(False)
         self.referenceViewer.setImage(self.referencePixmap)  # null
         self.referenceViewer.setEnabled(False)
+        self._setComparisonStatus(tr("No image is selected for comparison."), False)
+        self._updateComparisonControls()
 
     @pyqtSlot()
     def zoomIn(self):
@@ -313,22 +617,12 @@ class BaseController(QObject):
         self.parent.verticalToolBar.buttonZoomOut.setEnabled(self.current_scale > MIN_SCALE)
         self.parent.verticalToolBar.buttonNormalSize.setEnabled(round(self.current_scale, 1) != 1.0)
         self.parent.verticalToolBar.buttonBestFit.setEnabled(self.bestFit is False)
+        self._updateComparisonControls()
 
     def updateButtonsAsPerDimensions(self, previous_same_dimensions):
-        if not self.same_dimensions:
-            self.parent.verticalToolBar.buttonZoomIn.setEnabled(False)
-            self.parent.verticalToolBar.buttonZoomOut.setEnabled(False)
-            if not self.bestFit:
-                self.zoomBestFit()
-                self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
-                if not self.referencePixmap.isNull():
-                    self.parent.verticalToolBar.buttonImgSwap.setEnabled(True)
-            return
-        if not self.bestFit and not previous_same_dimensions:
-            self.zoomBestFit()
-            self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
-            if self.referencePixmap.isNull():
-                self.parent.verticalToolBar.buttonImgSwap.setEnabled(False)
+        del previous_same_dimensions
+        if not self.bestFit:
+            self.updateButtons()
 
     @pyqtSlot()
     def zoomBestFit(self):
@@ -353,6 +647,7 @@ class BaseController(QObject):
         self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
         self.parent.verticalToolBar.buttonBestFit.setEnabled(False)
         self.parent.verticalToolBar.buttonImgSwap.setEnabled(True)
+        self._updateComparisonControls()
 
     def setBestFit(self, value):
         self.bestFit = value
@@ -372,14 +667,11 @@ class BaseController(QObject):
         self.selectedViewer.scaleToNormalSize()
         self.referenceViewer.scaleToNormalSize()
 
-        if self.same_dimensions:
-            self.parent.verticalToolBar.buttonZoomIn.setEnabled(True)
-            self.parent.verticalToolBar.buttonZoomOut.setEnabled(True)
-        else:
-            # we can't allow swapping pixmaps of different dimensions
-            self.parent.verticalToolBar.buttonImgSwap.setEnabled(False)
+        self.parent.verticalToolBar.buttonZoomIn.setEnabled(True)
+        self.parent.verticalToolBar.buttonZoomOut.setEnabled(True)
         self.parent.verticalToolBar.buttonNormalSize.setEnabled(False)
         self.parent.verticalToolBar.buttonBestFit.setEnabled(True)
+        self._updateComparisonControls()
 
     def centerViews(self, only_selected=False):
         self.selectedViewer.centerViewAndUpdate()
@@ -407,8 +699,6 @@ class QWidgetController(BaseController):
 
     @pyqtSlot(QPointF)
     def onDraggedMouse(self, delta):
-        if not self.same_dimensions:
-            return
         if self.sender() is self.referenceViewer:
             self.selectedViewer.onDraggedMouse(delta)
         else:
@@ -427,6 +717,7 @@ class ScrollAreaController(BaseController):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self._syncing_viewports = False
 
     def _setupConnections(self):
         super()._setupConnections()
@@ -434,28 +725,50 @@ class ScrollAreaController(BaseController):
         self.referenceViewer.connectScrollBars()
 
     def updateBothImages(self, same_group=False):
-        super().updateBothImages(same_group)
-        if not self.referenceViewer.isEnabled():
+        center = self.selectedViewer.normalizedViewportCenter()
+        self._syncing_viewports = True
+        try:
+            super().updateBothImages(same_group)
+            if self.selectedViewer.isEnabled():
+                self.selectedViewer.setNormalizedViewportCenter(center)
+            if self.referenceViewer.isEnabled():
+                self.referenceViewer.setNormalizedViewportCenter(center)
+        finally:
+            self._syncing_viewports = False
+
+    def _otherViewer(self, source):
+        if source is self.selectedViewer:
+            return self.referenceViewer
+        if source is self.referenceViewer:
+            return self.selectedViewer
+        return None
+
+    def _syncViewportFrom(self, source):
+        if self._syncing_viewports or source is None or source.ignore_signal or not source.isEnabled():
             return
-        self.referenceViewer._horizontalScrollBar.setValue(self.selectedViewer._horizontalScrollBar.value())
-        self.referenceViewer._verticalScrollBar.setValue(self.selectedViewer._verticalScrollBar.value())
+        target = self._otherViewer(source)
+        if target is None or not target.isEnabled():
+            return
+        center = source.normalizedViewportCenter()
+        self._syncing_viewports = True
+        try:
+            target.setNormalizedViewportCenter(center)
+        finally:
+            self._syncing_viewports = False
 
     @pyqtSlot(QPoint)
     def onDraggedMouse(self, delta):
-        self.selectedViewer.ignore_signal = True
-        self.referenceViewer.ignore_signal = True
-
-        if self.same_dimensions:
-            self.selectedViewer.onDraggedMouse(delta)
-            self.referenceViewer.onDraggedMouse(delta)
-        else:
-            if self.sender() is self.selectedViewer:
-                self.selectedViewer.onDraggedMouse(delta)
-            else:
-                self.referenceViewer.onDraggedMouse(delta)
-
-        self.selectedViewer.ignore_signal = False
-        self.referenceViewer.ignore_signal = False
+        source = self.sender()
+        target = self._otherViewer(source)
+        if self._syncing_viewports or target is None:
+            return
+        self._syncing_viewports = True
+        try:
+            source.panBy(delta)
+            if target.isEnabled():
+                target.setNormalizedViewportCenter(source.normalizedViewportCenter())
+        finally:
+            self._syncing_viewports = False
 
     @pyqtSlot()
     def swapImages(self):
@@ -464,40 +777,75 @@ class ScrollAreaController(BaseController):
         self.selectedViewer.setCachedPixmap()
         super().swapImages()
 
-    @pyqtSlot(float, QPointF)
-    def onMouseWheel(self, scale, delta):
-        self.scaleImagesAt(scale)
-        self.selectedViewer.adjustScrollBarsScaled(delta)
-        # Signal from scrollbars will automatically change the other:
-        # self.referenceViewer.adjustScrollBarsScaled(delta)
+    @pyqtSlot(float, QPointF, QPointF)
+    def onMouseWheel(self, zoom_state, image_anchor, viewport_anchor):
+        source = self.sender()
+        target = self._otherViewer(source)
+        if self._syncing_viewports or target is None:
+            return
+        self._syncing_viewports = True
+        try:
+            source.setNormalizedZoomState(zoom_state)
+            target.setNormalizedZoomState(zoom_state)
+            source.setNormalizedPointAtViewportFraction(
+                image_anchor,
+                viewport_anchor,
+            )
+            if target.isEnabled():
+                target.setNormalizedViewportCenter(source.normalizedViewportCenter())
+            self.current_scale = source.current_scale
+        finally:
+            self._syncing_viewports = False
+        self.updateButtons()
 
     @pyqtSlot(int)
     def onVScrollBarChanged(self, value):
-        if not self.same_dimensions:
-            return
-        if self.sender() is self.referenceViewer._verticalScrollBar:
-            if not self.selectedViewer.ignore_signal:
-                self.selectedViewer._verticalScrollBar.setValue(value)
+        del value
+        sender = self.sender()
+        if sender is self.referenceViewer._verticalScrollBar:
+            source = self.referenceViewer
+        elif sender is self.selectedViewer._verticalScrollBar:
+            source = self.selectedViewer
         else:
-            if not self.referenceViewer.ignore_signal:
-                self.referenceViewer._verticalScrollBar.setValue(value)
+            return
+        self._syncViewportFrom(source)
 
     @pyqtSlot(int)
     def onHScrollBarChanged(self, value):
-        if not self.same_dimensions:
-            return
-        if self.sender() is self.referenceViewer._horizontalScrollBar:
-            if not self.selectedViewer.ignore_signal:
-                self.selectedViewer._horizontalScrollBar.setValue(value)
+        del value
+        sender = self.sender()
+        if sender is self.referenceViewer._horizontalScrollBar:
+            source = self.referenceViewer
+        elif sender is self.selectedViewer._horizontalScrollBar:
+            source = self.selectedViewer
         else:
-            if not self.referenceViewer.ignore_signal:
-                self.referenceViewer._horizontalScrollBar.setValue(value)
+            return
+        self._syncViewportFrom(source)
 
     @pyqtSlot(float)
     def scaleImagesBy(self, factor):
-        super().scaleImagesBy(factor)
-        # The other is automatically updated via sigals
-        self.selectedViewer.adjustScrollBarsFactor(factor)
+        scale = _clamp(
+            self.current_scale * factor,
+            MIN_SCALE,
+            MAX_SCALE,
+        )
+        self.scaleImagesAt(scale)
+
+    @pyqtSlot(float)
+    def scaleImagesAt(self, scale):
+        source = self.selectedViewer if self.selectedViewer.isEnabled() else self.referenceViewer
+        center = source.normalizedViewportCenter()
+        zoom_state = source.normalizedZoomStateForScale(scale)
+        self._syncing_viewports = True
+        try:
+            self.selectedViewer.setNormalizedZoomState(zoom_state)
+            self.referenceViewer.setNormalizedZoomState(zoom_state)
+            self.selectedViewer.setNormalizedViewportCenter(center)
+            self.referenceViewer.setNormalizedViewportCenter(center)
+            self.current_scale = self.selectedViewer.current_scale
+        finally:
+            self._syncing_viewports = False
+        self.updateButtons()
 
     @pyqtSlot()
     def zoomBestFit(self):
@@ -582,34 +930,17 @@ class GraphicsViewController(BaseController):
         self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
         if not self.referencePixmap.isNull():
             self.parent.verticalToolBar.buttonImgSwap.setEnabled(True)
+        self._updateComparisonControls()
         # else:
-        #     self.referenceViewer.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        #     self.referenceViewer.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        #     self.referenceViewer.setVerticalScrollBarPolicy(
+        #         Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        #     )
+        #     self.referenceViewer.setHorizontalScrollBarPolicy(
+        #         Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        #     )
 
     def updateView(self, ref, dupe, group):
-        # Keep current scale accross dupes from the same group
-        previous_same_dimensions = self.same_dimensions
-        self.same_dimensions = True
-        same_group = True
-        if group != self.cached_group:
-            same_group = False
-            self.resetState()
-        self.cached_group = group
-
-        self.selectedPixmap = QPixmap(str(dupe.path))
-        if ref is dupe:  # currently selected file is the actual reference file
-            self.same_dimensions = False
-            self.referencePixmap = QPixmap()
-            self.parent.verticalToolBar.buttonImgSwap.setEnabled(False)
-            self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
-        else:
-            self.referencePixmap = QPixmap(str(ref.path))
-            self.parent.verticalToolBar.buttonImgSwap.setEnabled(True)
-            if ref.dimensions != dupe.dimensions:
-                self.same_dimensions = False
-            self.parent.verticalToolBar.buttonNormalSize.setEnabled(True)
-        self.updateButtonsAsPerDimensions(previous_same_dimensions)
-        self.updateBothImages(same_group)
+        super().updateView(ref, dupe, group)
 
     def updateBothImages(self, same_group=False):
         """This is called only during resize events and while bestFit."""
@@ -634,6 +965,7 @@ class GraphicsViewController(BaseController):
     def resetState(self):
         """Only called when the group of dupes has changed. We reset our
         controller internal state and buttons, center view on viewers."""
+        self._clearComparisonContext()
         self.selectedPixmap = QPixmap()
         self.referencePixmap = QPixmap()
         self.setBestFit(True)
@@ -655,6 +987,7 @@ class GraphicsViewController(BaseController):
     def resetViewersState(self):
         """No item from the model, disable and clear everything."""
         # only called by the details dialog
+        self._clearComparisonContext()
         self.selectedPixmap = QPixmap()
         self.scaledSelectedPixmap = QPixmap()
         self.referencePixmap = QPixmap()
@@ -676,6 +1009,8 @@ class GraphicsViewController(BaseController):
         self.selectedViewer.setEnabled(False)
         self.referenceViewer.setImage(self.referencePixmap)  # null
         self.referenceViewer.setEnabled(False)
+        self._setComparisonStatus(tr("No image is selected for comparison."), False)
+        self._updateComparisonControls()
 
     @pyqtSlot(float)
     def scaleImagesBy(self, factor):
@@ -689,7 +1024,6 @@ class GraphicsViewController(BaseController):
 class QWidgetImageViewer(QWidget):
     """Use a QPixmap, but no scrollbars and no keyboard key sequence for navigation."""
 
-    # FIXME: panning while zoomed-in is broken (due to delta not interpolated right?
     mouseDragged = pyqtSignal(QPointF)
     mouseWheeled = pyqtSignal(float)
 
@@ -740,7 +1074,7 @@ class QWidgetImageViewer(QWidget):
         self.update()
 
     def changeEvent(self, event):
-        if event.type() == QEvent.EnabledChange:
+        if event.type() == QEvent.Type.EnabledChange:
             if self.isEnabled():
                 self.connectMouseSignals()
                 return
@@ -754,15 +1088,15 @@ class QWidgetImageViewer(QWidget):
         if self.bestFit or not self.isEnabled():
             event.ignore()
             return
-        if event.button() & (Qt.LeftButton | Qt.MidButton | Qt.RightButton):
+        if event.button() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton | Qt.MouseButton.RightButton):
             self._drag = True
         else:
             self._drag = False
             event.ignore()
             return
 
-        self._lastMouseClickPoint = event.pos()
-        self._app.setOverrideCursor(Qt.ClosedHandCursor)
+        self._lastMouseClickPoint = event.position()
+        self._app.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
         self.setMouseTracking(True)
         event.accept()
 
@@ -771,33 +1105,36 @@ class QWidgetImageViewer(QWidget):
             event.ignore()
             return
 
-        self._mousePanningDelta += (event.pos() - self._lastMouseClickPoint) * 1.0 / self.current_scale
-        self._lastMouseClickPoint = event.pos()
         if self._drag:
+            self._mousePanningDelta += (event.position() - self._lastMouseClickPoint) * (1.0 / self.current_scale)
+            self._lastMouseClickPoint = event.position()
             self.mouseDragged.emit(self._mousePanningDelta)
             self.update()
+            event.accept()
+            return
+        event.ignore()
 
     def mouseReleaseEvent(self, event):
         if self.bestFit or not self.isEnabled():
             event.ignore()
             return
-        # if event.button() == Qt.LeftButton:
+        # if event.button() == Qt.MouseButton.LeftButton:
         self._drag = False
 
         self._app.restoreOverrideCursor()
         self.setMouseTracking(False)
 
     def wheelEvent(self, event):
-        if self.bestFit or not self.controller.same_dimensions or not self.isEnabled():
+        if self.bestFit or not self.isEnabled():
             event.ignore()
             return
 
         if event.angleDelta().y() > 0:
-            if self.current_scale > MAX_SCALE:
+            if self.current_scale >= MAX_SCALE:
                 return
             self.mouseWheeled.emit(1.25)  # zoom-in
         else:
-            if self.current_scale < MIN_SCALE:
+            if self.current_scale <= MIN_SCALE:
                 return
             self.mouseWheeled.emit(0.8)  # zoom-out
 
@@ -871,7 +1208,7 @@ class ScrollAreaImageViewer(QScrollArea):
     """Implementation using a pixmap container in a simple scroll area."""
 
     mouseDragged = pyqtSignal(QPoint)
-    mouseWheeled = pyqtSignal(float, QPointF)
+    mouseWheeled = pyqtSignal(float, QPointF, QPointF)
 
     def __init__(self, parent, name=""):
         super().__init__(parent)
@@ -881,7 +1218,6 @@ class ScrollAreaImageViewer(QScrollArea):
         self._scaledpixmap = None
         self._rect = QRectF()
         self._lastMouseClickPoint = QPointF()
-        self._mousePanningDelta = QPoint()
         self.current_scale = 1.0
         self._drag = False
         self._dragConnection = None
@@ -893,18 +1229,18 @@ class ScrollAreaImageViewer(QScrollArea):
         self.label = ScalablePixmap(self)
         # This is to avoid sending signals twice on scrollbar updates
         self.ignore_signal = False
-        self.setBackgroundRole(QPalette.Dark)
+        self.setBackgroundRole(QPalette.ColorRole.Dark)
         self.setWidgetResizable(False)
-        self.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-        self.setAlignment(Qt.AlignCenter)
+        self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._verticalScrollBar = self.verticalScrollBar()
         self._horizontalScrollBar = self.horizontalScrollBar()
 
         if self.prefs.details_dialog_viewers_show_scrollbars:
             self.toggleScrollBars()
         else:
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self.setWidget(self.label)
         self.setVisible(True)
@@ -916,14 +1252,14 @@ class ScrollAreaImageViewer(QScrollArea):
         if not self.prefs.details_dialog_viewers_show_scrollbars:
             return
         # Ensure that it's off on the first run
-        if self.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded:
+        if self.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded:
             if force_on:
                 return
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         else:
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def connectMouseSignals(self):
         if not self._dragConnection:
@@ -942,8 +1278,14 @@ class ScrollAreaImageViewer(QScrollArea):
     def connectScrollBars(self):
         """Only call once controller is connected."""
         # Cyclic connections are handled by Qt
-        self._verticalScrollBar.valueChanged.connect(self.controller.onVScrollBarChanged, Qt.UniqueConnection)
-        self._horizontalScrollBar.valueChanged.connect(self.controller.onHScrollBarChanged, Qt.UniqueConnection)
+        self._verticalScrollBar.valueChanged.connect(
+            self.controller.onVScrollBarChanged,
+            Qt.ConnectionType.UniqueConnection,
+        )
+        self._horizontalScrollBar.valueChanged.connect(
+            self.controller.onHScrollBarChanged,
+            Qt.ConnectionType.UniqueConnection,
+        )
 
     def contextMenuEvent(self, event):
         """Block parent's (main window) context menu on right click."""
@@ -956,14 +1298,14 @@ class ScrollAreaImageViewer(QScrollArea):
         if self.bestFit:
             event.ignore()
             return
-        if event.button() & (Qt.LeftButton | Qt.MidButton | Qt.RightButton):
+        if event.button() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton | Qt.MouseButton.RightButton):
             self._drag = True
         else:
             self._drag = False
             event.ignore()
             return
         self._lastMouseClickPoint = event.pos()
-        self._app.setOverrideCursor(Qt.ClosedHandCursor)
+        self._app.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
         self.setMouseTracking(True)
         super().mousePressEvent(event)
 
@@ -987,22 +1329,30 @@ class ScrollAreaImageViewer(QScrollArea):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event):
-        if self.bestFit or not self.controller.same_dimensions:
+        if self.bestFit or not self.isEnabled():
             event.ignore()
             return
-        old_scale = self.current_scale
+        old_scale = _clamp(self.current_scale, MIN_SCALE, MAX_SCALE)
         if event.angleDelta().y() > 0:  # zoom-in
-            if old_scale < MAX_SCALE:
-                self.current_scale *= 1.25
+            new_scale = min(MAX_SCALE, old_scale * 1.25)
         else:
-            if old_scale > MIN_SCALE:  # zoom-out
-                self.current_scale *= 0.8
-        if old_scale == self.current_scale:
+            new_scale = max(MIN_SCALE, old_scale * 0.8)
+        if old_scale == new_scale:
+            event.accept()
             return
 
-        delta_to_pos = (event.position() / old_scale) - (self.label.pos() / old_scale)
-        delta = (delta_to_pos * self.current_scale) - (delta_to_pos * old_scale)
-        self.mouseWheeled.emit(self.current_scale, delta)
+        position = QPointF(event.position())
+        viewport_size = self.viewport().size()
+        viewport_anchor = QPointF(
+            position.x() / max(1, viewport_size.width()),
+            position.y() / max(1, viewport_size.height()),
+        )
+        self.mouseWheeled.emit(
+            self.normalizedZoomStateForScale(new_scale),
+            self.normalizedPointAtViewportPosition(position),
+            _clamp_unit_point(viewport_anchor),
+        )
+        event.accept()
 
     def setImage(self, pixmap):
         self._pixmap = pixmap
@@ -1032,49 +1382,148 @@ class ScrollAreaImageViewer(QScrollArea):
         return True if not self.pixmap.isNull() else False
 
     def scaleBy(self, factor):
-        self.current_scale *= factor
-        # factor has to be either 1.25 or 0.8 here
-        self.label.resize(self.label.size().__imul__(factor))
+        self.scaleAt(self.current_scale * factor)
+
+    def scaleAt(self, scale):
+        scale = _clamp(float(scale), MIN_SCALE, MAX_SCALE)
+        self.current_scale = scale
+        self.label.resize(
+            QSize(
+                max(0, round(self._pixmap.width() * scale)),
+                max(0, round(self._pixmap.height() * scale)),
+            )
+        )
         self.label.current_scale = self.current_scale
         self.label.update()
 
-    def scaleAt(self, scale):
-        self.current_scale = scale
-        self.label.resize(self._pixmap.size().__imul__(scale))
-        self.label.current_scale = scale
-        self.label.update()
-        # self.label.adjustSize()
+    @staticmethod
+    def normalizedZoomStateForScale(scale):
+        scale = float(scale)
+        if not isfinite(scale):
+            raise ValueError("scale must be finite")
+        return (_clamp(scale, MIN_SCALE, MAX_SCALE) - MIN_SCALE) / (MAX_SCALE - MIN_SCALE)
 
-    def adjustScrollBarsFactor(self, factor):
-        """After scaling, no mouse position, default to center."""
-        # scrollBar.setMaximum(scrollBar.maximum() - scrollBar.minimum() + scrollBar.pageStep())
-        self._horizontalScrollBar.setValue(
-            int(factor * self._horizontalScrollBar.value() + ((factor - 1) * self._horizontalScrollBar.pageStep() / 2))
+    def normalizedZoomState(self):
+        return self.normalizedZoomStateForScale(self.current_scale)
+
+    def setNormalizedZoomState(self, state):
+        state = float(state)
+        if not isfinite(state):
+            raise ValueError("normalized zoom state must be finite")
+        self.scaleAt(MIN_SCALE + _clamp(state, 0.0, 1.0) * (MAX_SCALE - MIN_SCALE))
+
+    @staticmethod
+    def _normalizedAxisCenter(scrollbar, content_size, viewport_size):
+        if content_size <= 0 or content_size <= viewport_size:
+            return 0.5
+        center = scrollbar.value() + (viewport_size / 2.0)
+        return _clamp(center / content_size, 0.0, 1.0)
+
+    def normalizedViewportCenter(self):
+        viewport_size = self.viewport().size()
+        return QPointF(
+            self._normalizedAxisCenter(
+                self._horizontalScrollBar,
+                self.label.width(),
+                viewport_size.width(),
+            ),
+            self._normalizedAxisCenter(
+                self._verticalScrollBar,
+                self.label.height(),
+                viewport_size.height(),
+            ),
         )
-        self._verticalScrollBar.setValue(
-            int(factor * self._verticalScrollBar.value() + ((factor - 1) * self._verticalScrollBar.pageStep() / 2))
+
+    @staticmethod
+    def _setNormalizedAxisPoint(
+        scrollbar,
+        content_size,
+        viewport_size,
+        normalized_point,
+        viewport_fraction,
+    ):
+        if content_size <= viewport_size:
+            scrollbar.setValue(scrollbar.minimum())
+            return
+        desired = normalized_point * content_size - viewport_fraction * viewport_size
+        scrollbar.setValue(
+            round(
+                _clamp(
+                    desired,
+                    scrollbar.minimum(),
+                    scrollbar.maximum(),
+                )
+            )
         )
 
-    def adjustScrollBarsScaled(self, delta):
-        """After scaling with the mouse, update relative to mouse position."""
-        self._horizontalScrollBar.setValue(int(self._horizontalScrollBar.value() + delta.x()))
-        self._verticalScrollBar.setValue(int(self._verticalScrollBar.value() + delta.y()))
+    def setNormalizedPointAtViewportFraction(
+        self,
+        normalized_point,
+        viewport_fraction,
+    ):
+        normalized_point = _clamp_unit_point(normalized_point)
+        viewport_fraction = _clamp_unit_point(viewport_fraction)
+        viewport_size = self.viewport().size()
+        self._setNormalizedAxisPoint(
+            self._horizontalScrollBar,
+            self.label.width(),
+            viewport_size.width(),
+            normalized_point.x(),
+            viewport_fraction.x(),
+        )
+        self._setNormalizedAxisPoint(
+            self._verticalScrollBar,
+            self.label.height(),
+            viewport_size.height(),
+            normalized_point.y(),
+            viewport_fraction.y(),
+        )
 
-    def adjustScrollBarsAuto(self):
-        """After panning, update accordingly."""
-        self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - self._mousePanningDelta.x()))
-        self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - self._mousePanningDelta.y()))
+    def setNormalizedViewportCenter(self, center):
+        self.setNormalizedPointAtViewportFraction(
+            center,
+            QPointF(0.5, 0.5),
+        )
 
-    def adjustScrollBarCentered(self):
-        """Just center in the middle."""
-        self._horizontalScrollBar.setValue(int(self._horizontalScrollBar.maximum() / 2))
-        self._verticalScrollBar.setValue(int(self._verticalScrollBar.maximum() / 2))
+    def normalizedPointAtViewportPosition(self, position):
+        position = QPointF(position)
+        label_position = self.label.pos()
+        width = self.label.width()
+        height = self.label.height()
+        if width <= 0 or height <= 0:
+            return QPointF(0.5, 0.5)
+        return _clamp_unit_point(
+            QPointF(
+                (position.x() - label_position.x()) / width,
+                (position.y() - label_position.y()) / height,
+            )
+        )
+
+    @staticmethod
+    def _setScrollBarClamped(scrollbar, value):
+        scrollbar.setValue(
+            round(
+                _clamp(
+                    value,
+                    scrollbar.minimum(),
+                    scrollbar.maximum(),
+                )
+            )
+        )
+
+    def panBy(self, delta):
+        self._setScrollBarClamped(
+            self._horizontalScrollBar,
+            self._horizontalScrollBar.value() - delta.x(),
+        )
+        self._setScrollBarClamped(
+            self._verticalScrollBar,
+            self._verticalScrollBar.value() - delta.y(),
+        )
 
     def resetCenter(self):
         """Resets origin"""
-        self._mousePanningDelta = QPoint()
         self.current_scale = 1.0
-        # self.scaleAt(1.0)
 
     def setCenter(self, point):
         self._lastMouseClickPoint = point
@@ -1091,10 +1540,8 @@ class ScrollAreaImageViewer(QScrollArea):
 
     @pyqtSlot(QPoint)
     def onDraggedMouse(self, delta):
-        """Update position from mouse delta sent by the other panel."""
-        self._mousePanningDelta = delta
-        # Signal from scrollbars had already synced the values here
-        self.adjustScrollBarsAuto()
+        """Pan this viewport by a screen-space mouse delta."""
+        self.panBy(delta)
 
 
 class GraphicsViewViewer(QGraphicsView):
@@ -1128,7 +1575,7 @@ class GraphicsViewViewer(QGraphicsView):
         self.other_viewer = None
         # specific to this class
         self._scene = QGraphicsScene()
-        self._scene.setBackgroundBrush(Qt.black)
+        self._scene.setBackgroundBrush(Qt.GlobalColor.black)
         self._item = QGraphicsPixmapItem()
         self.setScene(self._scene)
         self._scene.addItem(self._item)
@@ -1140,12 +1587,12 @@ class GraphicsViewViewer(QGraphicsView):
         if self.prefs.details_dialog_viewers_show_scrollbars:
             self.toggleScrollBars()
         else:
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
-        self.setAlignment(Qt.AlignCenter)
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
         self.setMouseTracking(True)
 
     def connectMouseSignals(self):
@@ -1165,21 +1612,27 @@ class GraphicsViewViewer(QGraphicsView):
     def connectScrollBars(self):
         """Only call once controller is connected."""
         # Cyclic connections are handled by Qt
-        self._verticalScrollBar.valueChanged.connect(self.controller.onVScrollBarChanged, Qt.UniqueConnection)
-        self._horizontalScrollBar.valueChanged.connect(self.controller.onHScrollBarChanged, Qt.UniqueConnection)
+        self._verticalScrollBar.valueChanged.connect(
+            self.controller.onVScrollBarChanged,
+            Qt.ConnectionType.UniqueConnection,
+        )
+        self._horizontalScrollBar.valueChanged.connect(
+            self.controller.onHScrollBarChanged,
+            Qt.ConnectionType.UniqueConnection,
+        )
 
     def toggleScrollBars(self, force_on=False):
         if not self.prefs.details_dialog_viewers_show_scrollbars:
             return
         # Ensure that it's off on the first run
-        if self.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded:
+        if self.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded:
             if force_on:
                 return
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         else:
-            self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-            self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
     def contextMenuEvent(self, event):
         """Block parent's (main window) context menu on right click."""
@@ -1189,14 +1642,14 @@ class GraphicsViewViewer(QGraphicsView):
         if self.bestFit:
             event.ignore()
             return
-        if event.button() & (Qt.LeftButton | Qt.MidButton | Qt.RightButton):
+        if event.button() & (Qt.MouseButton.LeftButton | Qt.MouseButton.MiddleButton | Qt.MouseButton.RightButton):
             self._drag = True
         else:
             self._drag = False
             event.ignore()
             return
         self._lastMouseClickPoint = event.pos()
-        self._app.setOverrideCursor(Qt.ClosedHandCursor)
+        self._app.setOverrideCursor(Qt.CursorShape.ClosedHandCursor)
         self.setMouseTracking(True)
         # We need to propagate to scrollbars, so we send back up
         super().mousePressEvent(event)
@@ -1299,7 +1752,10 @@ class GraphicsViewViewer(QGraphicsView):
 
     def fitScale(self):
         self.bestFit = True
-        super().fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+        super().fitInView(
+            self._scene.sceneRect(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
         self.setNewCenter(self._scene.sceneRect().center())
 
     @pyqtSlot()

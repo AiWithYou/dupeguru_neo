@@ -1,55 +1,50 @@
-## How to build dupeGuru for macos
-These instructions are for the Qt version of the UI on macOS.
+# Building dupeGuru Neo on macOS
 
-*Note: The Cocoa UI of dupeGuru is hosted in a separate repo: https://github.com/arsenetar/dupeguru-cocoa and is no longer "supported".*
-### Prerequisites
+## Prerequisites
 
-- [Python 3.7+][python]
-- [Xcode 12.3][xcode] or just Xcode command line tools (older versions can be used if not interested in arm macs)
-- [Homebrew][homebrew]
-- [qt5](https://www.qt.io/)
+- CPython 3.10–3.14 (a current python.org, Homebrew, or pyenv build)
+- Xcode command-line tools
+- Git
 
-#### Prerequisite setup
-1. Install Xcode if desired
-2. Install [Homebrew][homebrew], if not on the path after install (arm based Macs) create `~/.zshrc`
-with `export PATH="/opt/homebrew/bin:$PATH"`. Will need to reload terminal or source the file to take
-effect.
-3. Install qt5 with `brew`. If you are using a version of macos without system python 3.7+ then you will
-also need to install that via brew or with pyenv.
+PyQt6 wheels include the required Qt runtime. A Homebrew Qt 5 installation is
+not used.
 
-        $ brew install qt5
+## Development build
 
-    NOTE: Using `brew` to install qt5 is to allow pyqt5 to build without a native wheel
-    available.  If you are using an intel based mac you can probably skip this step.
+```sh
+git clone https://github.com/AiWithYou/dupeguru_neo.git
+cd dupeguru_neo
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[test,build]'
+python build.py --modules
+python run.py --self-test
+python run.py
+```
 
-4. May need to launch a new terminal to have everything working.
+## Tests
 
-### With build.py
-OSX comes with a version of python 3 by default in newer versions of OSX.  To produce universal
-builds either the 3.8 version shipped in macos or 3.9.1 or newer needs to be used. If needing to
-build pyqt5 from source then the first line below is needed, else it may be omitted. (Path shown is
-for an arm mac.)
+```sh
+python -m pytest core hscommon qt/tests
+python -m black --check .
+python -m flake8 .
+```
 
-    $ export PATH="/opt/homebrew/opt/qt/bin:$PATH"
-    $ cd <dupeGuru directory>
-    $ python3 -m venv ./env
-    $ source ./env/bin/activate
-    $ pip install -r requirements.txt
-    $ python build.py
-    $ python run.py
+## Application bundle
 
-### Generate OSX Packages
-The extra requirements need to be installed to run packaging: `pip install -r requirements-extra.txt`.
-Run the following in the respective virtual environment.
+```sh
+python build.py --clean
+python package.py
+```
 
-    $ python package.py
+The resulting portable `.app` can be inspected and tested locally. Distribution
+as a Gatekeeper-trusted application additionally requires a Developer ID
+Application certificate, hardened-runtime signing, Apple notarization, and
+stapling. CI smoke-tests the local bundle but does not upload it or publish it
+as an official release asset. A future native release also requires the
+complete native source, license, and SBOM gate in `docs/RELEASE.md`.
 
-This will produce a dupeGuru.app in the dist folder.
-
-### Running tests
-The complete test suite can be run with tox just like on linux. NOTE: The extra requirements need to
-be installed to run unit tests: `pip install -r requirements-extra.txt`.
-
-[python]: http://www.python.org/
-[homebrew]: https://brew.sh/
-[xcode]: https://developer.apple.com/xcode/
+Apple resource forks, extended attributes, ACLs, and Finder metadata are not
+part of the ordinary payload-equality proof. Review
+`docs/SAFETY_MODEL.md` before using automated actions on archival libraries.

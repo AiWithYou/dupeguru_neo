@@ -1,0 +1,145 @@
+{
+  "schema": "dupeguru.release-source-lock",
+  "schema_version": 1,
+  "portable_python_version": "3.12.13",
+  "portable_builder": {
+    "name": "PyInstaller",
+    "version": "6.21.0"
+  },
+  "sources": [
+    {
+      "filename": "distro-1.9.0.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "distro",
+      "provides": [
+        "distro"
+      ],
+      "sha256": "2fa77c6fd8940f116ee1d6b94a2f90b13b5ea8d019b98bc8bafdcabcdd9bdbed",
+      "size": 60722,
+      "url": "https://files.pythonhosted.org/packages/fc/f8/98eea607f65de6527f8a2e8885fc8015d3e6f5775df186e443e0964a11c3/distro-1.9.0.tar.gz",
+      "version": "1.9.0"
+    },
+    {
+      "filename": "mutagen-1.48.1.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "mutagen",
+      "provides": [
+        "mutagen"
+      ],
+      "sha256": "8f95637ab9f6f305cec6bd1294e197debe207998e3e068596563c74f86b0a173",
+      "size": 1276978,
+      "url": "https://files.pythonhosted.org/packages/df/70/1675da133ea92227da41bf5b24e1c66be597ff736a1533ade41da986852f/mutagen-1.48.1.tar.gz",
+      "version": "1.48.1"
+    },
+    {
+      "filename": "pillow-12.3.0.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "Pillow",
+      "provides": [
+        "pillow"
+      ],
+      "sha256": "3b8182a766685eaa002637e28b4ec8d6b18819a0c71f579bf0dbaa5830297cce",
+      "size": 47025035,
+      "url": "https://files.pythonhosted.org/packages/1c/3d/bb7fca845737cf9d7dbde16ed1843984665ff2e0a518f5db43e77ec540b9/pillow-12.3.0.tar.gz",
+      "version": "12.3.0"
+    },
+    {
+      "filename": "pyqt6-6.11.0.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "PyQt6",
+      "provides": [
+        "pyqt6"
+      ],
+      "sha256": "45dd60aa69976de1918b5ced6b4e7b6a25abd2a919ecef5fd5826ecc76718889",
+      "size": 1087430,
+      "url": "https://files.pythonhosted.org/packages/8b/47/b25c13eca5bebc6505394d0223e46d7ebf0c57dcac2ed908d7d19b18ab6b/pyqt6-6.11.0.tar.gz",
+      "version": "6.11.0"
+    },
+    {
+      "filename": "qt-everywhere-src-6.11.1.tar.xz",
+      "kind": "qt-official-source",
+      "name": "Qt",
+      "provides": [
+        "pyqt6-qt6"
+      ],
+      "sha256": "252acef8c5ae68074d91cadba2ee4a83465051bbb970dd26e8f0daa0f3904e03",
+      "size": 1017723080,
+      "url": "https://download.qt.io/official_releases/qt/6.11/6.11.1/single/qt-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
+      "filename": "pyqt6_sip-13.11.1.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "PyQt6-sip",
+      "provides": [
+        "pyqt6-sip"
+      ],
+      "sha256": "869c5b48afe38e55b1ee0dd72182b0886e968cc509b98023ff50010b013ce1be",
+      "size": 92574,
+      "url": "https://files.pythonhosted.org/packages/90/24/a753e1af94b9ae5b2da63d4598457308da3cdbf0838c959381db086ccc86/pyqt6_sip-13.11.1.tar.gz",
+      "version": "13.11.1"
+    },
+    {
+      "filename": "semantic_version-2.10.0.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "semantic-version",
+      "provides": [
+        "semantic-version"
+      ],
+      "sha256": "bdabb6d336998cbb378d4b9db3a4b56a1e3235701dc05ea2690d9a997ed5041c",
+      "size": 52289,
+      "url": "https://files.pythonhosted.org/packages/7d/31/f2289ce78b9b473d582568c234e104d2a342fd658cc288a7553d83bb8595/semantic_version-2.10.0.tar.gz",
+      "version": "2.10.0"
+    },
+    {
+      "filename": "xxhash-3.8.1.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "xxhash",
+      "provides": [
+        "xxhash"
+      ],
+      "sha256": "b0de4bf3aa66363552d52c6a89003c479911f12098cd48a53d44a0f7a25f7c46",
+      "size": 86223,
+      "url": "https://files.pythonhosted.org/packages/8e/63/71aa56b151a1b28770037a61bd4e461c2619cfc8866a4fcaf1548605e325/xxhash-3.8.1.tar.gz",
+      "version": "3.8.1"
+    },
+    {
+      "filename": "pywin32-b312.tar.gz",
+      "kind": "git-commit-archive",
+      "name": "pywin32",
+      "provides": [
+        "pywin32"
+      ],
+      "revision": "2a277cb5552756c2b4d42b524dc36d25e0bb6354",
+      "sha256": "c5900d127ffd1b4594080925e343725f8b896423d57e96f66863f443e9098da6",
+      "size": 4812587,
+      "tag": "b312",
+      "url": "https://codeload.github.com/mhammond/pywin32/tar.gz/2a277cb5552756c2b4d42b524dc36d25e0bb6354",
+      "version": "312"
+    },
+    {
+      "filename": "pyinstaller-6.21.0.tar.gz",
+      "kind": "pypi-sdist",
+      "name": "PyInstaller",
+      "provides": [
+        "pyinstaller-bootloader"
+      ],
+      "sha256": "bb9fab705983e393a2d1cac77d6972513057ad800215fd861dc15ff5272e98fd",
+      "size": 4061519,
+      "url": "https://files.pythonhosted.org/packages/d5/4d/ec706c3fcf39e26888c35b39615ff4d5865d184069666c47492cff1fbe50/pyinstaller-6.21.0.tar.gz",
+      "version": "6.21.0"
+    },
+    {
+      "filename": "Python-3.12.13.tar.xz",
+      "kind": "python-official-source",
+      "name": "CPython",
+      "provides": [
+        "cpython-runtime"
+      ],
+      "sha256": "c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684",
+      "size": 20801708,
+      "url": "https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tar.xz",
+      "version": "3.12.13"
+    }
+  ]
+}
