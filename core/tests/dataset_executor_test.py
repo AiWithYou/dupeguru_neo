@@ -5,8 +5,11 @@
 import json
 import os
 import shutil
+import stat
+import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,6 +133,23 @@ def operation_document_path(case):
 
 def operation_journal_path(case):
     return operation_directory(case) / "journal.jsonl"
+
+
+def fake_stat(**changes):
+    values = {
+        "st_dev": 7,
+        "st_ino": 11,
+        "st_mode": stat.S_IFREG | 0o600,
+        "st_size": 23,
+        "st_mtime_ns": 101,
+        "st_ctime_ns": 103,
+        "st_nlink": 1,
+        "st_uid": 1000,
+        "st_gid": 1000,
+        "st_flags": 0,
+    }
+    values.update(changes)
+    return SimpleNamespace(**values)
 
 
 def journal_values(case):
@@ -722,6 +742,124 @@ def test_finalize_replays_every_durable_tombstone_interruption(tmp_path, crash_p
     assert journal_values(case)[-1]["event"] == "finalized"
 
 
+def test_finalize_does_not_purge_an_unverified_atomic_rename(tmp_path):
+    case = build_plan(tmp_path)
+    base = DatasetBundleExecutor(state_root=case["state"], service=case["service"])
+    assert base.apply(case["plan"], execute=True).ok
+    adapter_base = type(executor_module.platform_file_system())
+
+    class UnverifiedFinalizeCommitFileSystem(adapter_base):
+        def rename_no_replace_verified(self, source, destination, verified_handle):
+            commit = super().rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
+            if Path(destination).name.startswith(".dg-f-"):
+                return replace(
+                    commit,
+                    postcondition_verified=False,
+                    verification_error="injected postcondition failure",
+                )
+            return commit
+
+    failed = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+        fs=UnverifiedFinalizeCommitFileSystem(),
+    ).finalize(case["plan"].plan_id, execute=True)
+
+    tombstone = latest_tombstone(case, "finalize_tombstone_prepared")
+    assert failed.state is ExecutionState.RECOVERY_REQUIRED
+    assert failed.code is ExecutionCode.SOURCE_CHANGED
+    assert failed.changed
+    assert tombstone.is_file()
+    assert not any(value["event"] == "file_finalized" for value in journal_values(case))
+
+    replay = base.finalize(case["plan"].plan_id, execute=True)
+    assert replay.state is ExecutionState.FINALIZED
+    assert replay.ok
+    assert not tombstone.exists()
+
+
+def test_finalize_verified_rename_rejects_a_last_moment_name_replacement(tmp_path):
+    case = build_plan(tmp_path)
+    base = DatasetBundleExecutor(state_root=case["state"], service=case["service"])
+    assert base.apply(case["plan"], execute=True).ok
+    adapter_base = type(executor_module.platform_file_system())
+    external = b"external finalize source replacement"
+
+    class ReplaceBeforeVerifiedFinalizeRenameFileSystem(adapter_base):
+        raced = False
+        preserved = None
+        replacement = None
+
+        def rename_no_replace_verified(self, source, destination, verified_handle):
+            if not self.raced and Path(destination).name.startswith(".dg-f-"):
+                self.raced = True
+                self.preserved = Path(source).with_name("verified-finalize-payload-preserved")
+                os.rename(source, self.preserved)
+                Path(source).write_bytes(external)
+                self.replacement = Path(source)
+            return super().rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
+
+    file_system = ReplaceBeforeVerifiedFinalizeRenameFileSystem()
+    failed = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+        fs=file_system,
+    ).finalize(case["plan"].plan_id, execute=True)
+
+    assert file_system.raced
+    assert failed.state is ExecutionState.RECOVERY_REQUIRED
+    assert failed.code is ExecutionCode.IO_ERROR
+    assert file_system.preserved.read_bytes() == b"identical image payload"
+    assert file_system.replacement.read_bytes() == external
+    assert not any(value["event"] == "file_tombstoned" for value in journal_values(case))
+    assert not any(value["event"] == "file_finalized" for value in journal_values(case))
+
+
+def test_finalize_verified_delete_preserves_a_last_moment_name_replacement(tmp_path):
+    case = build_plan(tmp_path)
+    base = DatasetBundleExecutor(state_root=case["state"], service=case["service"])
+    assert base.apply(case["plan"], execute=True).ok
+    adapter_base = type(executor_module.platform_file_system())
+    external = b"external finalize tombstone replacement"
+
+    class ReplaceBeforeVerifiedFinalizeDeleteFileSystem(adapter_base):
+        raced = False
+        preserved = None
+        replacement = None
+
+        def delete_verified_regular_file(self, path, verified_handle):
+            if not self.raced and Path(path).name.startswith(".dg-f-"):
+                self.raced = True
+                self.preserved = Path(path).with_name("verified-finalize-tombstone-preserved")
+                os.rename(path, self.preserved)
+                Path(path).write_bytes(external)
+                self.replacement = Path(path)
+            return super().delete_verified_regular_file(path, verified_handle)
+
+    file_system = ReplaceBeforeVerifiedFinalizeDeleteFileSystem()
+    failed = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+        fs=file_system,
+    ).finalize(case["plan"].plan_id, execute=True)
+
+    assert file_system.raced
+    assert failed.state is ExecutionState.RECOVERY_REQUIRED
+    assert failed.code is ExecutionCode.SOURCE_CHANGED
+    assert failed.changed
+    assert file_system.preserved.read_bytes() == b"identical image payload"
+    assert file_system.replacement.read_bytes() == external
+    assert not any(value["event"] == "file_finalized" for value in journal_values(case))
+
+
 def test_finalize_both_names_collision_preserves_every_byte(tmp_path):
     case = build_plan(tmp_path)
     base = DatasetBundleExecutor(state_root=case["state"], service=case["service"])
@@ -1133,6 +1271,103 @@ def test_rollback_replays_an_interrupted_transaction_tombstone(tmp_path):
     assert len(source_payloads(case)) == 4
 
 
+def test_rollback_does_not_purge_an_unverified_cleanup_rename(tmp_path):
+    case = build_plan(tmp_path)
+    adapter_base = type(executor_module.platform_file_system())
+
+    class UnverifiedCleanupCommitFileSystem(adapter_base):
+        def rename_no_replace_verified(self, source, destination, verified_handle):
+            commit = super().rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
+            if Path(destination).name.startswith(".dg-ct-"):
+                return replace(
+                    commit,
+                    postcondition_verified=False,
+                    verification_error="injected postcondition failure",
+                )
+            return commit
+
+    copy_failed = False
+
+    def fail_copy(phase, _record):
+        nonlocal copy_failed
+        if phase == "copy_chunk" and not copy_failed:
+            copy_failed = True
+            raise OSError(28, "force temporary rollback")
+
+    failed = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+        fs=UnverifiedCleanupCommitFileSystem(),
+        volume_checker=lambda _proof, _path, _stat: False,
+        fault_hook=fail_copy,
+        copy_chunk_size=4,
+    ).apply(case["plan"], execute=True)
+
+    cleanup_tombstone = latest_tombstone(case, "cleanup_tombstone_prepared")
+    assert failed.state is ExecutionState.RECOVERY_REQUIRED
+    assert cleanup_tombstone.is_file()
+    assert not any(value["event"] == "cleanup_purged" for value in journal_values(case))
+
+    restored = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+    ).restore(case["plan"].plan_id, execute=True)
+    assert restored.state is ExecutionState.RESTORED
+    assert restored.ok
+    assert not cleanup_tombstone.exists()
+    assert len(source_payloads(case)) == 4
+
+
+def test_rollback_verified_delete_preserves_a_last_moment_cleanup_replacement(tmp_path):
+    case = build_plan(tmp_path)
+    adapter_base = type(executor_module.platform_file_system())
+    external = b"external cleanup tombstone replacement"
+
+    class ReplaceBeforeVerifiedCleanupDeleteFileSystem(adapter_base):
+        raced = False
+        preserved = None
+        replacement = None
+
+        def delete_verified_regular_file(self, path, verified_handle):
+            if not self.raced and Path(path).name.startswith(".dg-ct-"):
+                self.raced = True
+                self.preserved = Path(path).with_name("verified-cleanup-tombstone-preserved")
+                os.rename(path, self.preserved)
+                Path(path).write_bytes(external)
+                self.replacement = Path(path)
+            return super().delete_verified_regular_file(path, verified_handle)
+
+    copy_failed = False
+
+    def fail_copy(phase, _record):
+        nonlocal copy_failed
+        if phase == "copy_chunk" and not copy_failed:
+            copy_failed = True
+            raise OSError(28, "force temporary rollback")
+
+    file_system = ReplaceBeforeVerifiedCleanupDeleteFileSystem()
+    failed = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+        fs=file_system,
+        volume_checker=lambda _proof, _path, _stat: False,
+        fault_hook=fail_copy,
+        copy_chunk_size=4,
+    ).apply(case["plan"], execute=True)
+
+    assert file_system.raced
+    assert failed.state is ExecutionState.RECOVERY_REQUIRED
+    assert failed.code is ExecutionCode.ROLLBACK_FAILED
+    assert file_system.preserved.is_file()
+    assert file_system.replacement.read_bytes() == external
+    assert not any(value["event"] == "cleanup_purged" for value in journal_values(case))
+    assert len(source_payloads(case)) == 4
+
+
 @pytest.mark.parametrize(
     ("limit_name", "limit_value"),
     (
@@ -1515,8 +1750,12 @@ def test_execution_document_cleanup_preserves_replaced_temp_name(
     class ReplaceTempAfterPublicationFileSystem(adapter_base):
         replacement = None
 
-        def rename_no_replace(self, source, destination):
-            commit = super().rename_no_replace(source, destination)
+        def rename_no_replace_verified(self, source, destination, verified_handle):
+            commit = super().rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
             Path(source).write_bytes(external)
             self.replacement = Path(source)
             return commit
@@ -1743,7 +1982,7 @@ def test_source_mtime_or_symlink_change_fails_closed_before_execution(tmp_path):
     assert not link_case["state"].exists()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="exercises the Windows ChangeTime generation token")
+@pytest.mark.skipif(os.name != "nt", reason="exercises the Windows USN generation token")
 def test_same_content_rewrite_with_restored_mtime_fails_closed_before_execution(tmp_path):
     case = build_plan(tmp_path)
     source = case["duplicate"]
@@ -1762,3 +2001,224 @@ def test_same_content_rewrite_with_restored_mtime_fails_closed_before_execution(
     assert report.code is ExecutionCode.PLAN_INVALID
     assert source.read_bytes() == original
     assert not case["state"].exists()
+
+
+def test_atomic_rename_rebinds_the_held_handle_to_the_verified_destination(tmp_path):
+    source = tmp_path / "source.bin"
+    tombstone = tmp_path / "tombstone.bin"
+    source.write_bytes(b"rename generation payload")
+    file_system = executor_module.platform_file_system()
+
+    with file_system.open_readonly(source) as handle:
+        before = os.fstat(handle.fileno())
+        commit = file_system.rename_no_replace_verified(
+            source,
+            tombstone,
+            handle,
+        )
+        rebound = executor_module._rebind_open_version_after_atomic_rename(
+            handle,
+            before,
+            tombstone,
+            commit,
+        )
+        current_path = os.stat(tombstone, follow_symlinks=False)
+        current_open = os.fstat(handle.fileno())
+
+    executor_module._require_open_version(rebound, current_path, tombstone)
+    executor_module._require_open_version(rebound, current_open, tombstone)
+    assert commit.preopened_source_used is (os.name == "nt")
+    assert not source.exists()
+    assert tombstone.read_bytes() == b"rename generation payload"
+
+
+@pytest.mark.parametrize(
+    ("source_identity", "destination_name", "postcondition_verified"),
+    (
+        ((7, 12), "tombstone.bin", True),
+        ((7, 11), "other.bin", True),
+        ((7, 11), "tombstone.bin", False),
+    ),
+)
+def test_atomic_rename_rebind_rejects_an_unverified_commit(
+    tmp_path,
+    monkeypatch,
+    source_identity,
+    destination_name,
+    postcondition_verified,
+):
+    before = fake_stat()
+    commit = executor_module.RenameCommit(
+        source_identity=source_identity,
+        destination_parent_identity=(7, 3),
+        destination_name=destination_name,
+        postcondition_verified=postcondition_verified,
+        verification_error=None if postcondition_verified else "injected verification failure",
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "_require_path_matches_stat",
+        lambda *_args, **_kwargs: pytest.fail("an unauthenticated rename reached path rebinding"),
+    )
+
+    with pytest.raises(DatasetExecutionError) as raised:
+        executor_module._rebind_open_version_after_atomic_rename(
+            SimpleNamespace(fileno=lambda: 17),
+            before,
+            tmp_path / "tombstone.bin",
+            commit,
+        )
+
+    assert raised.value.code is ExecutionCode.SOURCE_CHANGED
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_nlink",
+        "st_uid",
+        "st_gid",
+        "st_flags",
+    ),
+)
+def test_atomic_rename_rebind_rejects_every_non_generation_metadata_change(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    before = fake_stat()
+    current = fake_stat(st_ctime_ns=before.st_ctime_ns + 1)
+    setattr(current, field, getattr(current, field) + 1)
+    commit = executor_module.RenameCommit(
+        source_identity=(before.st_dev, before.st_ino),
+        destination_parent_identity=(7, 3),
+        destination_name="tombstone.bin",
+        postcondition_verified=True,
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "_require_path_matches_stat",
+        lambda *_args, **_kwargs: current,
+    )
+
+    with pytest.raises(DatasetExecutionError) as raised:
+        executor_module._rebind_open_version_after_atomic_rename(
+            SimpleNamespace(fileno=lambda: 17),
+            before,
+            tmp_path / "tombstone.bin",
+            commit,
+        )
+
+    assert raised.value.code is ExecutionCode.SOURCE_CHANGED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ctime is the file generation token")
+def test_atomic_rename_rebind_accepts_only_one_shared_post_rename_generation(
+    tmp_path,
+    monkeypatch,
+):
+    before = fake_stat()
+    current_path = fake_stat(st_ctime_ns=before.st_ctime_ns + 1)
+    current_open = fake_stat(st_ctime_ns=current_path.st_ctime_ns)
+    commit = executor_module.RenameCommit(
+        source_identity=(before.st_dev, before.st_ino),
+        destination_parent_identity=(7, 3),
+        destination_name="tombstone.bin",
+        postcondition_verified=True,
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "_require_path_matches_stat",
+        lambda *_args, **_kwargs: current_path,
+    )
+    monkeypatch.setattr(executor_module.os, "fstat", lambda _descriptor: current_open)
+
+    rebound = executor_module._rebind_open_version_after_atomic_rename(
+        SimpleNamespace(fileno=lambda: 17),
+        before,
+        tmp_path / "tombstone.bin",
+        commit,
+    )
+
+    assert rebound is current_open
+
+    current_open.st_ctime_ns += 1
+    with pytest.raises(DatasetExecutionError) as raised:
+        executor_module._rebind_open_version_after_atomic_rename(
+            SimpleNamespace(fileno=lambda: 17),
+            before,
+            tmp_path / "tombstone.bin",
+            commit,
+        )
+    assert raised.value.code is ExecutionCode.SOURCE_CHANGED
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ctime is the file generation token")
+def test_recovered_generation_replaces_runtime_ctime_without_masking_a_corrupt_proof(tmp_path):
+    case = build_plan(tmp_path)
+    source = case["duplicate"]
+    proof = next(
+        item.source for action in case["plan"].actions for item in action.files if Path(item.source.path) == source
+    )
+    before = source.stat()
+    original_mode = stat.S_IMODE(before.st_mode)
+    for _attempt in range(20):
+        os.chmod(source, original_mode ^ stat.S_IXUSR)
+        os.chmod(source, original_mode)
+        current = source.stat()
+        if current.st_ctime_ns != proof.ctime_ns:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.skip("filesystem did not expose a distinct ctime generation")
+
+    assert (current.st_dev, current.st_ino) == (before.st_dev, before.st_ino)
+    assert current.st_mode == before.st_mode
+    assert current.st_size == before.st_size
+    assert current.st_mtime_ns == before.st_mtime_ns
+    accepted_generation = executor_module.core_fs.FileSnapshot.from_path(
+        source,
+        current,
+    ).ctime_ns.hex()
+    assert accepted_generation != proof.generation_token
+
+    executor = DatasetBundleExecutor(
+        state_root=case["state"],
+        service=case["service"],
+    )
+    with executor.fs.open_readonly(source) as handle:
+        with pytest.raises(DatasetExecutionError) as stale:
+            executor._require_open_source(
+                handle,
+                os.fstat(handle.fileno()),
+                proof,
+                source,
+            )
+    assert stale.value.code is ExecutionCode.SOURCE_CHANGED
+
+    executor._accepted_generation_tokens = {
+        executor_module._path_key(proof.path): accepted_generation,
+    }
+    with executor.fs.open_readonly(source) as handle:
+        executor._require_open_source(
+            handle,
+            os.fstat(handle.fileno()),
+            proof,
+            source,
+        )
+
+    corrupt_proof = replace(proof, ctime_ns=proof.ctime_ns + 1)
+    with executor.fs.open_readonly(source) as handle:
+        with pytest.raises(DatasetExecutionError) as corrupt:
+            executor._require_open_source(
+                handle,
+                os.fstat(handle.fileno()),
+                corrupt_proof,
+                source,
+            )
+    assert corrupt.value.code is ExecutionCode.PLAN_INVALID

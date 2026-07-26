@@ -71,7 +71,7 @@ hashes must not be presented as a pre-install guarantee.
 
 ## Local rebuild outline
 
-1. Install CPython 3.12.13.
+1. Install CPython 3.13.14.
 2. Install dependencies under `requirements-release.txt` and the pinned build
    tools.
 3. Run `python build.py --clean`.

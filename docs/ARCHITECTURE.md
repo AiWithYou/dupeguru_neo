@@ -101,8 +101,9 @@ fingerprints are a secondary signal. Perceptual video relations never become
 
 `core.engine.getgroups_by_folders` groups equal recursive manifest digests in
 linear space. A folder manifest is aggregate evidence, not one file's byte
-stream, so folder groups remain unverified and review-only for
-duplicate-removal purposes.
+stream, so folder groups remain gray and unverified. They cannot enter either
+duplicate-removal quarantine or program-managed organizer Copy/Move. An
+External Command is a separate, explicitly confirmed trust boundary.
 
 ### Catalog
 
@@ -116,6 +117,29 @@ Catalog artifacts are accelerators. Before reuse, their content generation and
 algorithm policy must match the current file. Before duplicate-removal
 quarantine, all catalog-derived exact evidence is re-established against a live
 handle.
+
+Generation is a typed platform primitive rather than an mtime alias. POSIX
+binds inode ctime to the opened device/inode. Windows binds the file's current
+USN to the current volume USN-journal identifier while a no-follow handle
+denies write sharing. A regular file never accepts metadata `ChangeTime` as a
+content-generation fallback. Because directory membership changes do not
+reliably advance the directory object's USN, directory tokens additionally
+bind the root handle's stable `ChangeTime` and a twice-stable recursive tree
+digest to the mandatory journal and object USN values. Every descendant record
+uses an exact UTF-16 name, high-confidence 128-bit file identity, metadata and
+link count, plus handle-stable journal/file USN and `ChangeTime`; reparse entries
+are rejected. Each pass walks the subtree once and is bounded to 1,000,000
+entries, 256 MiB of names, 512 MiB of record metadata, depth 256, and 300
+seconds as checked between entries and at directory boundaries. The deadline
+cannot preempt a single blocking filesystem call; the filesystem or transport
+owns that lower-level timeout. A volume or share without the required Windows
+USN controls, or an unstable, unsupported, or over-budget tree observation,
+produces incomplete evidence instead of a timestamp fallback.
+
+Safe directory Copy/Move uses recursive tokens at the operation root and at its
+terminal verification boundary. Nested traversal snapshots are shallow because
+the terminal root token covers all descendants; this keeps each full proof to
+two linear tree passes instead of recursively re-walking every subtree.
 
 The catalog's `scan_snapshots` table records complete enumeration coverage for
 a `scan_id`; it does not prove content equality. Exact projection records in
@@ -143,10 +167,13 @@ plan; that plan does not assert equality.
 journaled transaction. Permanent finalization never unlinks a quarantine path
 directly: it first atomically isolates the verified inode under a random,
 same-directory tombstone, rechecks the held target and keeper handles, records
-the tombstoned state, and only then purges. Cross-volume rollback uses the same
-protocol for identities recorded when temporary and destination files were
-created. Replay completes an interrupted tombstone sequence; ambiguous
-two-name, missing-intent, or replacement states remain untouched for review.
+the tombstoned state, and only then purges. On Windows, both the no-replace
+rename and final delete disposition are bound to identity-checked handles for
+the verified object, with no path-operation fallback. Cross-volume rollback
+uses the same protocol for identities recorded when temporary and destination
+files were created. Replay completes an interrupted tombstone sequence;
+ambiguous two-name, missing-intent, or replacement states remain untouched for
+review.
 
 All executor documents and journals are stored below the canonical reserved
 `.dupeguru-neo-dataset-executor` child. A configured state path is a base

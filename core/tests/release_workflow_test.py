@@ -121,6 +121,96 @@ def test_ci_covers_every_supported_python_on_every_platform_with_pytest_9():
     assert ci.count("--constraint requirements-release.txt") >= 4
 
 
+def test_every_linux_ci_job_that_runs_qt_installs_the_minimal_egl_runtime():
+    ci = _workflow("default.yml")
+    dependency_step = """\
+      - name: Install the minimal Linux Qt runtime dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
+"""
+    assert ci.count(dependency_step) == 3
+    qt_entry_steps = {
+        "test": "- name: Install test dependencies",
+        "package": "- name: Install pinned packaging tools",
+        "portable": "- name: Install pinned portable-build tools",
+    }
+    for job_name, qt_entry_step in qt_entry_steps.items():
+        job = ci.split(f"  {job_name}:\n", 1)[1]
+        next_job = re.search(r"(?m)^  [a-z][a-z-]*:\n", job)
+        if next_job is not None:
+            job = job[: next_job.start()]
+        assert dependency_step in job
+        assert job.index(dependency_step) < job.index(qt_entry_step)
+
+
+def test_every_linux_release_job_that_runs_qt_installs_the_minimal_egl_runtime():
+    release = _workflow("release.yml")
+    dependency_step = """\
+      - name: Install the minimal Linux Qt runtime dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
+"""
+    assert release.count(dependency_step) == 3
+    qt_entry_steps = {
+        "quality": "- name: Install test dependencies",
+        "package": "- name: Install pinned package-verification tools",
+        "portable": "- name: Install pinned portable-build tools",
+    }
+    for job_name, qt_entry_step in qt_entry_steps.items():
+        job = release.split(f"  {job_name}:\n", 1)[1]
+        next_job = re.search(r"(?m)^  [a-z][a-z-]*:\n", job)
+        if next_job is not None:
+            job = job[: next_job.start()]
+        assert dependency_step in job
+        assert job.index(dependency_step) < job.index(qt_entry_step)
+
+
+def test_cross_platform_package_and_portable_jobs_pin_the_same_cpython_patch():
+    ci = _workflow("default.yml")
+    exact_setup = """\
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.13.14"
+          cache: pip
+"""
+    assert ci.count(exact_setup) == 2
+    for job_name in ("package", "portable"):
+        job = ci.split(f"  {job_name}:\n", 1)[1]
+        next_job = re.search(r"(?m)^  [a-z][a-z-]*:\n", job)
+        if next_job is not None:
+            job = job[: next_job.start()]
+        assert exact_setup in job
+        assert job.count("actions/setup-python@") == 1
+        assert 'python-version: "3.13"\n' not in job
+        assert 'python-version: "3.12.13"' not in job
+
+
+def test_every_release_control_and_artifact_job_pins_the_same_cpython_patch():
+    release = _workflow("release.yml")
+    for job_name in (
+        "validate",
+        "build",
+        "package",
+        "portable",
+        "assemble",
+        "attest-and-sign",
+        "publish",
+    ):
+        job = release.split(f"  {job_name}:\n", 1)[1]
+        next_job = re.search(r"(?m)^  [a-z][a-z-]*:\n", job)
+        if next_job is not None:
+            job = job[: next_job.start()]
+        assert job.count("actions/setup-python@") == 1
+        assert job.count('python-version: "3.13.14"') == 1
+        assert 'python-version: "3.13"\n' not in job
+        assert 'python-version: "3.12.13"' not in job
+
+
 def test_package_ci_has_build_validation_and_clean_install_smokes():
     ci = _workflow("default.yml")
     for required in (
@@ -190,13 +280,13 @@ def test_tag_release_builds_every_published_wheel_from_one_canonical_sdist():
         "Build the one canonical source distribution",
         "pyproject-build --sdist --outdir dist",
         "name: release-sdist",
-        "Python package / ${{ matrix.target }} / CPython 3.12",
+        "Python package / ${{ matrix.target }} / CPython 3.13",
         "target: linux-x86_64",
         "target: windows-x86_64",
         "target: macos-arm64",
-        'python-version: "3.12.13"',
+        'python-version: "3.13.14"',
         "Download the exact same canonical source distribution",
-        "Build this target's CPython 3.12 wheel from the canonical sdist",
+        "Build this target's CPython 3.13 wheel from the canonical sdist",
         '"dist/dupeguru_neo-${{ needs.validate.outputs.version }}.tar.gz"',
         "scripts/ci_artifact_smoke.py --artifacts dist --twine-check",
         "scripts/ci_artifact_smoke.py --artifacts dist --reproducible-wheel",
@@ -297,7 +387,7 @@ def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
     readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
     for text in (release_doc, readme):
         for required in (
-            "CPython 3.12.13",
+            "CPython 3.13.14",
             "Linux x86_64",
             "Windows x86_64",
             "macOS arm64",
@@ -398,6 +488,11 @@ def test_sdist_and_corresponding_source_keep_rebuild_inputs():
     incorporated_license = ROOT.joinpath("hscommon", "LICENSE").read_text(encoding="utf-8")
     fenced_license = notice.split("```text\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert fenced_license == incorporated_license
+    assert re.search(r"exact frozen\s+CPython 3\.13\.14", notice)
+    assert "`LICENSE.txt` or `LICENSE`" in notice
+    assert "or `LICENSE` from the" in notice
+    assert "SHA-256-pinned official CPython 3.13.14 source archive" in notice
+    assert "CPython 3.12.13" not in notice
 
 
 def test_nsis_and_frozen_windows_payload_keep_required_distribution_notices():
@@ -465,9 +560,35 @@ def test_release_metadata_and_reproducible_build_inputs_are_pinned():
         'f"-ffile-prefix-map={source_root}=."',
         'f"-fdebug-prefix-map={source_root}=."',
         "self.compiler.compile(",
+        'if sys.platform == "darwin":',
+        "self._configure_darwin()",
+        '("-Wl,-no_uuid",)',
         "def byte_compile(self, files):",
         'build_root.rglob("__pycache__")',
     ):
         assert required in setup_py
     assert 'PYTHONHASHSEED: "0"' in release
     assert "scripts/ci_artifact_smoke.py --artifacts dist --reproducible-wheel" in release
+
+
+def test_deterministic_darwin_native_builds_disable_random_macho_uuids():
+    setup_py = ROOT.joinpath("setup.py").read_text(encoding="utf-8")
+    build_extensions = setup_py.split("    def build_extensions(self):\n", 1)[1].split(
+        "    def _configure_msvc(self, source_root):\n",
+        1,
+    )[0]
+    assert re.search(
+        r"""if os\.environ\.get\("SOURCE_DATE_EPOCH"\) is not None:
+            .*?
+            elif compiler_type == "unix":
+                self\._configure_unix\(source_root\)
+                if sys\.platform == "darwin":
+                    self\._configure_darwin\(\)""",
+        build_extensions,
+        re.DOTALL,
+    )
+    darwin_configuration = setup_py.split("    def _configure_darwin(self):\n", 1)[1].split(
+        "    def _supported_compile_args(self, candidates):\n",
+        1,
+    )[0]
+    assert 'extension.extra_link_args, ("-Wl,-no_uuid",)' in darwin_configuration

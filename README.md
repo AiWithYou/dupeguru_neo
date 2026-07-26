@@ -22,10 +22,12 @@ candidates, but it can never authorize deletion.
   resource-limited input produces an incomplete receipt. Incomplete evidence
   does not silently acquire destructive capability.
 - **Persistent library catalog.** A local SQLite catalog tracks stable file
-  identities, paths, content generations, derived artifacts, scan coverage,
-  resumable work, and action history. Native identities preserve move history,
-  but a renamed file is analyzed again unless a trusted filesystem event
-  journal proves that its content did not change.
+  identities, paths, content generations, derived exact artifacts, immutable
+  scan history, and resumable work. Image features, thumbnails, video
+  fingerprints, and file-action recovery journals are separate durable stores
+  with independent validation and lifecycle rules. Native identities preserve
+  move history, but a renamed file is analyzed again unless a trusted
+  filesystem event journal proves that its content did not change.
 - **Indexed image similarity.** EXIF orientation, ICC color, and alpha are
   normalized before a deterministic perceptual hash narrows candidates.
   Existing 15×15 block comparison remains the final visual test. Visual
@@ -74,7 +76,7 @@ policy are separate concerns; see the safety model before automating removal.
 The release workflow tests the source tree on every supported Python version
 and operating system. A tagged release builds one canonical sdist, then uses
 that same sdist to build and byte-for-byte reproduce three native wheels with
-CPython 3.12.13: Linux x86_64, Windows x86_64, and macOS arm64. Those are the
+CPython 3.13.14: Linux x86_64, Windows x86_64, and macOS arm64. Those are the
 only published wheel targets. Other supported Python versions or architectures
 install from the sdist and therefore need a compiler.
 
@@ -82,8 +84,12 @@ The packaged Windows desktop application supports 64-bit Windows 10 and
 Windows 11.
 
 The live catalog must be stored on a local filesystem. Libraries on a NAS are
-supported at the capability level reported by that filesystem, but SQLite WAL
-files must not be placed on the share.
+supported only at the capability level reported by that filesystem, and
+SQLite WAL files must not be placed on the share. On Windows, every
+evidence-producing file observation additionally requires the source volume
+to expose a usable USN change journal. Filesystems or shares that do not
+support the required USN controls fail closed as incomplete; there is no
+timestamp fallback.
 
 Version 5 stores its exact-hash cache in `hash_cache_v3.sqlite3`. The older
 `hash_cache.db` is deliberately not opened, imported, renamed, deleted, or

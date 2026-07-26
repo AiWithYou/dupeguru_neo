@@ -323,7 +323,7 @@ def test_video_library_cache_rejects_same_path_size_mtime_with_new_file_identity
     )
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows ChangeTime integration")
+@pytest.mark.skipif(os.name != "nt", reason="Windows USN generation integration")
 def test_video_library_cache_rejects_in_place_edit_with_restored_mtime(tmp_path):
     root, paths = _make_library(tmp_path)
     cache = tmp_path / "video-cache.sqlite3"

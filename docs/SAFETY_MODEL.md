@@ -84,7 +84,8 @@ without `--execute`. A crash or cancellation at any state must leave enough
 journal information to determine whether the object is at its original path,
 in quarantine, restored, stale, or in conflict.
 Replaying an operation must be idempotent and must never delete an object whose
-identity or content is newer than the plan.
+physical identity changed or whose ordinary data stream differs from the
+payload authorized by the plan.
 
 Dataset bundle execution uses the same rule for a whole image-plus-sidecar
 transaction. Before a permanent dataset finalization, every surviving keeper
@@ -101,6 +102,12 @@ old and tombstone names exist, either name has a different identity, a keeper
 was replaced, or the tombstone has no matching journal record, recovery stops
 without unlinking either path.
 
+On Windows, verified regular-file rename consumes a DELETE-capable handle that
+has been matched to the still-live content-verification handle. Permanent purge
+sets delete disposition on an identity-checked handle to that same object; it
+never falls back to unlinking the tombstone name. A last-moment replacement at
+the tombstone path is therefore preserved and the operation fails closed.
+
 Rollback applies the same tombstone protocol to transaction-created
 cross-volume destinations and temporary copies. Their physical identities are
 journaled immediately after exclusive creation and before publication. A
@@ -108,6 +115,14 @@ partial copy may be removed by identity even though its content is incomplete;
 an unjournaled or replaced path is preserved. Same-volume rollback and restore
 use atomic no-replace rename and never resolve a two-name conflict by unlinking
 one of the names.
+
+Finalize payloads and published cross-volume destinations are re-hashed and
+byte-compared during replay. A partial-copy temporary is an executor-created,
+private artifact and is cleaned by its durable physical identity even when its
+bytes are incomplete; another same-user process reusing or rewriting that
+private inode is outside this ownership contract. Tombstone replay proves the
+current authorized payload, not that an identical-byte rewrite or a
+metadata-only update never occurred after the rename.
 
 Execution documents and journals have byte, line, file-record, and event
 limits. Journals are parsed one bounded line at a time. An oversized or
@@ -187,6 +202,45 @@ Strict digest reads and final byte comparisons also validate snapshots from
 their opened handles, and each comparison retains its two stable snapshots.
 That evidence is scoped to the current result set.
 
+A content-generation token is also mandatory; size and mtime alone are never
+accepted as freshness evidence. On Windows, a regular-file token combines the
+current volume USN-journal identifier with the file's current USN. Both values
+are observed twice through the same no-follow object handle while a second
+handle denies write sharing. `FILE_BASIC_INFO.ChangeTime` is metadata time, not
+a file-content counter, and is not accepted as a regular-file fallback.
+Directory membership changes do not reliably advance the directory object's
+own USN. The typed `windows-usn-journal-directory-tree` token therefore adds a
+canonical recursive tree digest to the root handle's journal identifier, object
+USN, and `ChangeTime`. Each descendant is opened without following reparses and
+is bound to a high-confidence volume plus 128-bit file ID. Its exact UTF-16
+name, type, size, mtime, attributes, link count, journal identifier, file USN,
+and `ChangeTime` are folded into the parent record; directory records recursively
+fold their sorted child-record digests. Reparse children are rejected rather
+than followed. Each complete tree pass visits every descendant once, and two
+independent passes must produce the same digest. Root and descendant identity,
+USN, `ChangeTime`, and link-count observations must also remain stable while
+their handles are open.
+
+Each tree pass fails closed above 1,000,000 descendants, 256 MiB of exact-name
+bytes, 512 MiB of bounded record metadata, or depth 256. A 300-second deadline
+is checked at every entry boundary and directory completion; it cannot preempt
+one blocking filesystem call, whose timeout remains a filesystem or transport
+property. Allocation, enumeration, identity, USN, reparse, resource-limit, and
+mid-observation changes also fail closed. `ChangeTime` is never accepted without
+working USN controls or as the only evidence of a tree change. Alternate data
+streams are not part of the unnamed-payload equality claim, although their
+changes ordinarily advance the descendant file USN and invalidate the tree
+token. A failed observation is incomplete and cannot authorize a file action.
+POSIX uses inode ctime bound to device/inode identity and the opened object;
+live SHA-256 and byte proofs are still required before quarantine.
+
+Directory Copy/Move validation takes the recursive token at the operation root
+and repeats that root proof at the terminal boundary. Per-directory snapshots
+inside the already bounded tree walk are intentionally shallow; the final root
+proof covers every descendant. This avoids recursively rescanning each subtree
+at every depth while preserving terminal detection of descendant content,
+identity, name, and hard-link changes.
+
 A catalog `scan_snapshots` row has a different purpose: it binds a complete
 `scan_id` to enumeration coverage and observed paths. It is not an exact
 content proof. Catalog exact projection reopens the files, validates the
@@ -208,16 +262,44 @@ authority. Quarantine always creates a fresh live SHA-256 and byte proof.
 
 Native identity is an optimization and a race-detection input, not proof that
 content is unchanged. Network filesystems, cloud placeholders, reparse points,
-mount aliases, and concurrent writers can reduce the capability level.
+mount aliases, and concurrent writers can reduce the capability level. On
+Windows, a stable identity still does not replace the separate USN-generation
+requirement; typical SMB and non-journaled volumes therefore remain
+read-incomplete for evidence-producing workflows.
 
 Linux requires `renameat2(RENAME_NOREPLACE)` and macOS requires
 `renameatx_np(RENAME_EXCL)` for dataset namespace mutations. Unsupported POSIX
 platforms or filesystems fail closed; there is no link-then-unlink or
-check-then-rename fallback. Windows uses its native non-overwriting rename
-contract.
+check-then-rename fallback. For a Windows regular-file copy or move, terminal
+verification and the native non-overwriting rename consume the same handle,
+opened with read/attribute/delete access and read sharing only. A callback that
+drops that preopened capability cannot produce a verified commit. Failed-staging
+cleanup likewise applies disposition to the identity-checked DELETE handle
+itself and never falls back to a path unlink.
 
-Catalog databases are local. A network share may contain scanned files but must
-not host the live SQLite catalog.
+The adapter's weaker `rename_no_replace()` entry point exists for publishing
+immutable application-state files and legacy operations that make no verified
+content claim. Safety-critical user-file executors are statically checked not to
+call it or a path-based `unlink`; their verified adapter and any subclass are a
+trusted internal boundary.
+
+Directory copies use an unpredictable private staging tree and repeat the full
+recursive token immediately before every candidate publication. Directory moves
+repeat the full source-tree token after preflight and immediately before every
+candidate rename. Windows does not expose one ordinary rename capability that
+freezes every descendant of an open directory, so a hostile process which can
+mutate a descendant in the final check-to-rename interval remains outside the
+directory-operation claim. Automatic verified duplicate removal acts on regular
+files and does not rely on that narrower directory guarantee.
+
+POSIX has no portable identity-conditional rename or unlink operand;
+descriptor-bound parents, unpredictable private staging names, and immediate
+identity checks harden ordinary races, but a hostile same-user process that can
+write the staging parent remains outside that POSIX claim.
+
+Catalog databases are local. A network share may contain scanned files only
+when the host platform can provide the required identity and generation
+evidence, and it must not host the live SQLite catalog.
 
 ## Payload versus filesystem-object equality
 
@@ -240,15 +322,15 @@ proof. The application reports degraded capabilities instead of presenting
 such environments as fully verified.
 
 An actively malicious process running as the same OS user and racing namespace
-operations is also outside the absolute guarantee. Random tombstone names,
-private state directories, open-handle checks, and an identity check
-immediately before unlink make ordinary collision/replacement races detectable.
-However, the portable POSIX/Windows abstraction still performs the final
-unlink by tombstone path; it is not an inode-conditional delete primitive. A
-same-user adversary that learns the random name and swaps it in the final
-name-lookup interval may exceed this model. dupeGuru therefore describes this
-as race hardening and fail-closed recovery, not as protection from a hostile
-peer with equal account privileges.
+operations remains outside the absolute cross-platform guarantee. On Windows,
+regular-file publication and purge are bound to identity-checked handles, so a
+same-name replacement cannot redirect either operation and there is no
+path-unlink fallback. POSIX has no portable identity-conditional unlink
+primitive: descriptor-bound parents, random private tombstone names, and an
+immediate identity check harden ordinary races, but a same-user adversary that
+can replace the entry during the final name operation may exceed the POSIX
+model. The application therefore claims the stronger handle-bound guarantee
+only where the platform provides it.
 
 User-configured custom commands are external programs and are not file actions
 performed by either the quarantine or organizer executor. They may change or

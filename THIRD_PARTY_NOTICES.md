@@ -87,9 +87,11 @@ bootloader/loader files that are not runtime requirements in
 `requirements-release.txt`. Each bundle therefore includes a separately
 verified `FROZEN-RUNTIME-LICENSES/` directory:
 
-- the CPython `LICENSE.txt` copied from the exact frozen CPython 3.12.13
-  installation, including the Python Software Foundation License Version 2
-  and the historical license terms collected in that file; and
+- the CPython license (`LICENSE.txt` or `LICENSE` from the exact frozen
+  CPython 3.13.14 installation when supplied there, or `LICENSE` from the
+  exact size- and SHA-256-pinned official CPython 3.13.14 source archive
+  otherwise), including the Python Software Foundation License Version 2 and
+  the historical license terms collected in that file; and
 - PyInstaller 6.21.0 `COPYING.txt`, including its GPL-2.0-or-later terms, the
   PyInstaller Bootloader Exception, and the component-specific terms described
   by that upstream notice.

@@ -193,7 +193,13 @@ def test_legacy_unversioned_change_token_is_rehashed_once(tmp_path):
     assert migrated.changed_content == 1
     assert migrated.work_enqueued == 1
     migrated_row = catalog.page_paths(root_id=migrated.root_id)[0]
-    assert bytes(migrated_row["change_token"]).startswith(b"dupeguru-content-generation\0v1\0")
+    migrated_token = FileGenerationToken.from_encoded(bytes(migrated_row["change_token"]))
+    if os.name == "nt":
+        assert migrated_token.namespace == "windows-usn-journal-file"
+        assert migrated_token.version == 2
+    else:
+        assert migrated_token.namespace == "posix-ctime-ns"
+        assert migrated_token.version == 1
     catalog.close()
 
 

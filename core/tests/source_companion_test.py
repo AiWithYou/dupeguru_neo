@@ -157,7 +157,7 @@ def test_repository_source_lock_covers_every_release_runtime_and_frozen_componen
         ROOT / "requirements-release.txt",
     )
 
-    assert document["portable_python_version"] == "3.12.13"
+    assert document["portable_python_version"] == "3.13.14"
     assert document["portable_builder"] == {
         "name": "PyInstaller",
         "version": "6.21.0",

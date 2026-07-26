@@ -33,10 +33,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Set up Python 3.12
+      - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.14"
       - name: Install release-gate dependency
         run: >-
           python -m pip install
@@ -79,6 +79,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - name: Install the minimal Linux Qt runtime dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
       - name: Install test dependencies
         run: >-
           python -m pip install
@@ -113,7 +118,7 @@ jobs:
       - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12.13"
+          python-version: "3.13.14"
           cache: pip
       - name: Install pinned packaging tools
         run: >-
@@ -137,7 +142,7 @@ jobs:
           compression-level: 0
 
   package:
-    name: Python package / ${{ matrix.target }} / CPython 3.12
+    name: Python package / ${{ matrix.target }} / CPython 3.13
     needs: [validate, build]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -164,8 +169,13 @@ jobs:
       - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12.13"
+          python-version: "3.13.14"
           cache: pip
+      - name: Install the minimal Linux Qt runtime dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
       - name: Install pinned package-verification tools
         run: >-
           python -m pip install
@@ -179,7 +189,7 @@ jobs:
         with:
           name: release-sdist
           path: dist
-      - name: Build this target's CPython 3.12 wheel from the canonical sdist
+      - name: Build this target's CPython 3.13 wheel from the canonical sdist
         run: >-
           python -m pip wheel
           --no-deps
@@ -209,7 +219,7 @@ jobs:
           --distribution dupeguru-neo
           --target "${{ matrix.target }}"
           --output "dependency-snapshots/dependency-snapshot-${{ matrix.target }}.json"
-      - name: Upload this target's checked CPython 3.12 wheel
+      - name: Upload this target's checked CPython 3.13 wheel
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release-wheel-${{ matrix.target }}
@@ -250,11 +260,16 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
-      - name: Set up Python 3.12
+      - name: Set up Python 3.13.14
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12.13"
+          python-version: "3.13.14"
           cache: pip
+      - name: Install the minimal Linux Qt runtime dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1
       - name: Install pinned portable-build tools
         run: >-
           python -m pip install
@@ -291,10 +306,10 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
-      - name: Set up Python 3.12
+      - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.14"
           cache: pip
       - name: Install pinned release metadata tools
         run: >-
@@ -395,10 +410,10 @@ jobs:
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           persist-credentials: false
-      - name: Set up Python 3.12
+      - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.14"
       - name: Install the pinned metadata verifier
         run: >-
           python -m pip install
@@ -478,7 +493,7 @@ jobs:
       - name: Set up the exact frozen CPython runtime
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
-          python-version: "3.12.13"
+          python-version: "3.13.14"
       - name: Install the pinned source and Sigstore verifiers
         run: >-
           python -m pip install

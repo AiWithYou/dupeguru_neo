@@ -1,3 +1,4 @@
+import errno
 import os
 import stat
 
@@ -153,6 +154,178 @@ def test_cache_entry_read_rechecks_same_handle_generation(
         cache.load(key, QSize(40, 30))
 
     assert calls == 2
+
+
+def test_store_closes_writer_before_no_write_reopen(tmp_path, monkeypatch):
+    cache = ThumbnailDiskCache(tmp_path / "cache")
+    key = _key(tmp_path)
+    real_open = thumbnail_cache_module.os.open
+    real_reopen = thumbnail_cache_module._open_output_readonly
+    observed = {}
+
+    def capture_writer(path, flags, *args, **kwargs):
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if flags & os.O_EXCL and flags & os.O_WRONLY:
+            observed["writer"] = descriptor
+        return descriptor
+
+    def require_closed_writer(path):
+        with pytest.raises(OSError) as caught:
+            os.fstat(observed["writer"])
+        assert caught.value.errno == errno.EBADF
+        observed["reopened"] = True
+        return real_reopen(path)
+
+    monkeypatch.setattr(thumbnail_cache_module.os, "open", capture_writer)
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "_open_output_readonly",
+        require_closed_writer,
+    )
+
+    assert cache.store(key, _solid_image())
+    assert observed["reopened"]
+
+
+def test_store_rejects_name_replacement_before_no_write_reopen(tmp_path, monkeypatch):
+    cache = ThumbnailDiskCache(tmp_path / "cache")
+    key = _key(tmp_path)
+    target = cache.path_for_key(key)
+    replacement = tmp_path / "replacement.bin"
+    stolen = tmp_path / "stolen-owned-output.png"
+    external = b"external replacement must survive"
+    replacement.write_bytes(external)
+    real_reopen = thumbnail_cache_module._open_output_readonly
+    replaced = False
+
+    def replace_before_reopen(path):
+        nonlocal replaced
+        if not replaced:
+            os.replace(path, stolen)
+            os.replace(replacement, path)
+            replaced = True
+        return real_reopen(path)
+
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "_open_output_readonly",
+        replace_before_reopen,
+    )
+
+    with pytest.raises(ThumbnailCacheSafetyError, match="does not identify"):
+        cache.store(key, _solid_image())
+
+    assert replaced
+    assert target.read_bytes() == external
+    assert stolen.is_file()
+
+
+def test_store_rechecks_generation_around_byte_verification(tmp_path, monkeypatch):
+    cache = ThumbnailDiskCache(tmp_path / "cache")
+    key = _key(tmp_path)
+    real_generation = thumbnail_cache_module.get_file_generation_token_from_fd
+    calls = 0
+
+    def changing_generation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        observed = real_generation(*args, **kwargs)
+        if calls == 2:
+            return FileGenerationToken(
+                "test-thumbnail-store-race",
+                2,
+            )
+        return observed
+
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "get_file_generation_token_from_fd",
+        changing_generation,
+    )
+
+    with pytest.raises(ThumbnailCacheSafetyError, match="changed while"):
+        cache.store(key, _solid_image())
+
+    assert calls == 2
+    assert cache.path_for_key(key).is_file()
+
+
+def test_store_closes_readonly_descriptor_when_verification_raises(
+    tmp_path,
+    monkeypatch,
+):
+    cache = ThumbnailDiskCache(tmp_path / "cache")
+    key = _key(tmp_path)
+    real_reopen = thumbnail_cache_module._open_output_readonly
+    observed = {}
+
+    def capture_reopen(path):
+        descriptor = real_reopen(path)
+        observed["descriptor"] = descriptor
+        return descriptor
+
+    def fail_verification(descriptor, maximum_bytes):
+        assert descriptor == observed["descriptor"]
+        assert maximum_bytes > 0
+        raise ThumbnailCacheSafetyError("injected verification failure")
+
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "_open_output_readonly",
+        capture_reopen,
+    )
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "_read_open_output",
+        fail_verification,
+    )
+
+    with pytest.raises(ThumbnailCacheSafetyError, match="injected verification failure"):
+        cache.store(key, _solid_image())
+
+    with pytest.raises(OSError) as caught:
+        os.fstat(observed["descriptor"])
+    assert caught.value.errno == errno.EBADF
+
+    # On Windows this also proves that closing the CRT descriptor released the
+    # no-write-sharing kernel handle.  A leaked handle would reject O_RDWR.
+    if os.name == "nt":
+        writer = os.open(
+            cache.path_for_key(key),
+            os.O_RDWR | getattr(os, "O_BINARY", 0),
+        )
+        os.close(writer)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows no-write sharing contract")
+def test_windows_store_holds_no_write_lease_during_byte_verification(tmp_path, monkeypatch):
+    cache = ThumbnailDiskCache(tmp_path / "cache")
+    key = _key(tmp_path)
+    real_read = thumbnail_cache_module._read_open_output
+    write_blocked = False
+
+    def attempt_write(descriptor, maximum_bytes):
+        nonlocal write_blocked
+        target = cache.path_for_key(key)
+        try:
+            writer = os.open(
+                target,
+                os.O_RDWR | getattr(os, "O_BINARY", 0),
+            )
+        except OSError:
+            write_blocked = True
+        else:
+            os.close(writer)
+        return real_read(descriptor, maximum_bytes)
+
+    monkeypatch.setattr(
+        thumbnail_cache_module,
+        "_read_open_output",
+        attempt_write,
+    )
+
+    assert cache.store(key, _solid_image())
+    assert write_blocked
 
 
 def test_cleanup_refuses_reparse_marked_shard_without_deleting_it(

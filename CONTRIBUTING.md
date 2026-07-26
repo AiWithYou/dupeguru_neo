@@ -110,7 +110,8 @@ compatibility changes before acceptance.
   **Compare Only**, **Excluded**, **Verified Exact**, **Copy/Move**, and
   **quarantine** consistently.
 - Do not call a hash, percentage, visual relation, folder aggregate, scan
-  snapshot, or persisted verification ID deletion authority.
+  snapshot, or persisted verification ID deletion authority. Folder aggregates
+  also cannot authorize program-managed organizer Copy/Move.
 - Keep examples non-destructive and avoid private paths or real personal data.
 - Use HTTPS links to current, authoritative sources and run the English Sphinx
   build before submitting.

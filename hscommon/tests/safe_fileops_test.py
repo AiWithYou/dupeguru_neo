@@ -4,6 +4,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import contextlib
 import errno
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +57,7 @@ def test_copy_destination_appearing_during_publish_is_not_overwritten(tmp_path, 
     sentinel = b"concurrent destination"
     inserted = False
 
-    def publish(source_directory, source_name, candidate_directory, candidate_name):
+    def publish(source_directory, source_name, candidate_directory, candidate_name, **rename_options):
         nonlocal inserted
         candidate = candidate_directory.path.joinpath(candidate_name)
         if not inserted and candidate == destination:
@@ -67,6 +68,7 @@ def test_copy_destination_appearing_during_publish_is_not_overwritten(tmp_path, 
             source_name,
             candidate_directory,
             candidate_name,
+            **rename_options,
         )
 
     smart_copy(source, destination, rename_no_replace=publish)
@@ -84,7 +86,7 @@ def test_move_destination_appearing_during_publish_is_not_overwritten(tmp_path, 
     sentinel = b"concurrent destination"
     inserted = False
 
-    def publish(source_directory, source_name, candidate_directory, candidate_name):
+    def publish(source_directory, source_name, candidate_directory, candidate_name, **rename_options):
         nonlocal inserted
         candidate = candidate_directory.path.joinpath(candidate_name)
         if not inserted and candidate == destination:
@@ -95,6 +97,7 @@ def test_move_destination_appearing_during_publish_is_not_overwritten(tmp_path, 
             source_name,
             candidate_directory,
             candidate_name,
+            **rename_options,
         )
 
     smart_move(source, destination, rename_no_replace=publish)
@@ -161,7 +164,7 @@ def test_parent_swap_cannot_redirect_bound_publish(
     attempted = False
     swapped = False
 
-    def publish(source_directory, source_name, candidate_directory, candidate_name):
+    def publish(source_directory, source_name, candidate_directory, candidate_name, **rename_options):
         nonlocal attempted, swapped
         if not attempted:
             attempted = True
@@ -181,6 +184,7 @@ def test_parent_swap_cannot_redirect_bound_publish(
             source_name,
             candidate_directory,
             candidate_name,
+            **rename_options,
         )
 
     operation(source, destination, rename_no_replace=publish)
@@ -247,11 +251,10 @@ def test_directory_copy_stays_bound_when_parent_is_swapped_during_staging(
         (smart_move, False),
     ],
 )
-def test_successful_native_rename_is_not_misreported_when_postcheck_fails(
+def test_committed_rename_with_failed_postcheck_is_reported_as_unverified(
     tmp_path,
     rename_no_replace,
     monkeypatch,
-    caplog,
     operation,
     source_remains,
 ):
@@ -264,11 +267,14 @@ def test_successful_native_rename_is_not_misreported_when_postcheck_fails(
 
     monkeypatch.setattr(atomic_rename, "_verify_commit", fail_after_commit)
 
-    operation(source, destination, rename_no_replace=rename_no_replace)
+    with pytest.raises(safe_fileops.UnverifiedRenameCommitError) as caught:
+        operation(source, destination, rename_no_replace=rename_no_replace)
 
+    assert caught.value.destination == destination
+    assert not caught.value.commit.postcondition_verified
+    assert "simulated post-commit inspection failure" in caught.value.reason
     assert destination.read_bytes() == b"committed payload"
     assert source.exists() is source_remains
-    assert "post-commit inspection failed" in caplog.text
     assert not _staging_entries(tmp_path)
 
 
@@ -393,6 +399,7 @@ def test_cross_volume_or_unsupported_publish_fails_closed(tmp_path, operation):
         _source_name,
         _destination_directory,
         _destination_name,
+        **_rename_options,
     ):
         raise OSError(errno.EXDEV, "simulated cross-volume operation")
 
@@ -580,6 +587,453 @@ def test_silent_staging_write_corruption_is_detected_before_publish(tmp_path, re
     assert source.read_bytes() == payload
     assert not destination.exists()
     assert not _staging_entries(tmp_path)
+
+
+def test_copy_closes_staging_writer_before_verified_readonly_reopen(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"writer lifecycle")
+    real_new_file = safe_fileops._new_file
+    real_open_readonly = safe_fileops._open_staging_readonly
+    observed = {}
+
+    def capture_writer(*args, **kwargs):
+        handle, identity = real_new_file(*args, **kwargs)
+        observed["writer"] = handle
+        return handle, identity
+
+    def require_closed_writer(*args, **kwargs):
+        with pytest.raises(OSError) as caught:
+            os.fstat(observed["writer"])
+        assert caught.value.errno == errno.EBADF
+        observed["verified"] = True
+        return real_open_readonly(*args, **kwargs)
+
+    monkeypatch.setattr(safe_fileops, "_new_file", capture_writer)
+    monkeypatch.setattr(safe_fileops, "_open_staging_readonly", require_closed_writer)
+
+    smart_copy(source, destination, rename_no_replace=rename_no_replace)
+
+    assert observed["verified"]
+    assert destination.read_bytes() == b"writer lifecycle"
+    assert not _staging_entries(tmp_path)
+
+
+def test_staging_replacement_before_readonly_reopen_fails_closed(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    replacement = tmp_path / "replacement.bin"
+    source.write_bytes(b"reviewed payload")
+    replacement.write_bytes(b"unrecognized replacement")
+    real_open_readonly = safe_fileops._open_staging_readonly
+    replaced = {}
+
+    def replace_before_reopen(path, **kwargs):
+        if not replaced:
+            os.replace(replacement, path)
+            replaced["path"] = path
+        return real_open_readonly(path, **kwargs)
+
+    monkeypatch.setattr(safe_fileops, "_open_staging_readonly", replace_before_reopen)
+
+    with pytest.raises(OSError) as caught:
+        smart_copy(source, destination, rename_no_replace=rename_no_replace)
+
+    assert caught.value.errno == errno.ESTALE
+    assert source.read_bytes() == b"reviewed payload"
+    assert not destination.exists()
+    assert replaced["path"].read_bytes() == b"unrecognized replacement"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing contract")
+def test_windows_competing_staging_writer_blocks_verified_reopen(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"writer exclusion")
+    real_open_readonly = safe_fileops._open_staging_readonly
+    attempted = False
+
+    def open_while_writer_is_active(path, **kwargs):
+        nonlocal attempted
+        attempted = True
+        writer = os.open(
+            path,
+            os.O_RDWR | getattr(os, "O_BINARY", 0),
+        )
+        try:
+            return real_open_readonly(path, **kwargs)
+        finally:
+            os.close(writer)
+
+    monkeypatch.setattr(safe_fileops, "_open_staging_readonly", open_while_writer_is_active)
+
+    with pytest.raises(OSError):
+        smart_copy(source, destination, rename_no_replace=rename_no_replace)
+
+    assert attempted
+    assert source.read_bytes() == b"writer exclusion"
+    assert not destination.exists()
+    assert not _staging_entries(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing contract")
+def test_windows_publish_holds_staging_no_write_lease(
+    tmp_path,
+    rename_no_replace,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"publish lease")
+    write_blocked = False
+
+    def publish(source_directory, source_name, destination_directory, destination_name, **rename_options):
+        nonlocal write_blocked
+        staged_path = source_directory.path / source_name
+        try:
+            writer = os.open(
+                staged_path,
+                os.O_RDWR | getattr(os, "O_BINARY", 0),
+            )
+        except OSError:
+            write_blocked = True
+        else:
+            os.close(writer)
+        return rename_no_replace(
+            source_directory,
+            source_name,
+            destination_directory,
+            destination_name,
+            **rename_options,
+        )
+
+    smart_copy(source, destination, rename_no_replace=publish)
+
+    assert write_blocked
+    assert destination.read_bytes() == b"publish lease"
+    assert not _staging_entries(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows same-handle publish contract")
+def test_windows_publish_renames_the_verified_handle_not_a_name_replacement(
+    tmp_path,
+    rename_no_replace,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    replacement = tmp_path / "replacement.bin"
+    stolen = tmp_path / "stolen-reviewed.bin"
+    source.write_bytes(b"reviewed payload")
+    replacement.write_bytes(b"unrecognized replacement")
+    replacement_blocked = False
+    observed_commit = None
+
+    def publish(
+        source_directory,
+        source_name,
+        destination_directory,
+        destination_name,
+        *,
+        preopened_source,
+    ):
+        nonlocal replacement_blocked, observed_commit
+        staged_path = source_directory.path / source_name
+        try:
+            os.replace(staged_path, stolen)
+        except OSError:
+            replacement_blocked = True
+        else:
+            os.replace(replacement, staged_path)
+        observed_commit = rename_no_replace(
+            source_directory,
+            source_name,
+            destination_directory,
+            destination_name,
+            preopened_source=preopened_source,
+        )
+        return observed_commit
+
+    smart_copy(source, destination, rename_no_replace=publish)
+
+    assert replacement_blocked
+    assert observed_commit is not None
+    assert observed_commit.preopened_source_used
+    assert destination.read_bytes() == b"reviewed payload"
+    assert replacement.read_bytes() == b"unrecognized replacement"
+    assert not stolen.exists()
+    assert not _staging_entries(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows same-handle publish contract")
+def test_windows_publish_callback_cannot_drop_the_preopened_capability(
+    tmp_path,
+    rename_no_replace,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"reviewed payload")
+    capability_received = False
+
+    def publish(
+        source_directory,
+        source_name,
+        destination_directory,
+        destination_name,
+        *,
+        preopened_source,
+    ):
+        nonlocal capability_received
+        capability_received = preopened_source is not None
+        # Deliberately violate the callback contract.  The path reopen must
+        # fail against the existing no-delete-share lease; no fallback may
+        # commit under a second source handle.
+        return rename_no_replace(
+            source_directory,
+            source_name,
+            destination_directory,
+            destination_name,
+        )
+
+    with pytest.raises(OSError):
+        smart_copy(source, destination, rename_no_replace=publish)
+
+    assert capability_received
+    assert source.read_bytes() == b"reviewed payload"
+    assert not destination.exists()
+    assert not _staging_entries(tmp_path)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows same-handle move contract")
+def test_windows_move_renames_the_verified_handle_not_a_name_replacement(
+    tmp_path,
+    rename_no_replace,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    replacement = tmp_path / "replacement.bin"
+    stolen = tmp_path / "stolen-reviewed.bin"
+    source.write_bytes(b"reviewed move payload")
+    replacement.write_bytes(b"unrecognized replacement")
+    replacement_blocked = False
+    observed_commit = None
+
+    def publish(
+        source_directory,
+        source_name,
+        destination_directory,
+        destination_name,
+        *,
+        preopened_source,
+    ):
+        nonlocal replacement_blocked, observed_commit
+        try:
+            os.replace(source, stolen)
+        except OSError:
+            replacement_blocked = True
+        else:
+            os.replace(replacement, source)
+        observed_commit = rename_no_replace(
+            source_directory,
+            source_name,
+            destination_directory,
+            destination_name,
+            preopened_source=preopened_source,
+        )
+        return observed_commit
+
+    smart_move(source, destination, rename_no_replace=publish)
+
+    assert replacement_blocked
+    assert observed_commit is not None
+    assert observed_commit.preopened_source_used
+    assert destination.read_bytes() == b"reviewed move payload"
+    assert replacement.read_bytes() == b"unrecognized replacement"
+    assert not source.exists()
+    assert not stolen.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows same-handle move contract")
+def test_windows_move_callback_cannot_drop_the_preopened_capability(
+    tmp_path,
+    rename_no_replace,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"reviewed move payload")
+    capability_received = False
+
+    def publish(
+        source_directory,
+        source_name,
+        destination_directory,
+        destination_name,
+        *,
+        preopened_source,
+    ):
+        nonlocal capability_received
+        capability_received = preopened_source is not None
+        return rename_no_replace(
+            source_directory,
+            source_name,
+            destination_directory,
+            destination_name,
+        )
+
+    with pytest.raises(OSError):
+        smart_move(source, destination, rename_no_replace=publish)
+
+    assert capability_received
+    assert source.read_bytes() == b"reviewed move payload"
+    assert not destination.exists()
+
+
+def test_move_rejects_generation_drift_after_preflight_before_rename(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source = tmp_path / "source.bin"
+    destination = tmp_path / "destination.bin"
+    source.write_bytes(b"reviewed")
+    rename_called = False
+    real_verified_source = safe_fileops._verified_publish_source
+
+    @contextlib.contextmanager
+    def mutate_before_capability(staged_path, staged_snapshot, parent_directory):
+        before = os.stat(staged_path, follow_symlinks=False)
+        staged_path.write_bytes(b"modified")
+        os.utime(
+            staged_path,
+            ns=(before.st_atime_ns, staged_snapshot.mtime_ns),
+        )
+        with real_verified_source(
+            staged_path,
+            staged_snapshot,
+            parent_directory,
+        ) as capability:
+            yield capability
+
+    def publish(*args, **kwargs):
+        nonlocal rename_called
+        rename_called = True
+        return rename_no_replace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_fileops,
+        "_verified_publish_source",
+        mutate_before_capability,
+    )
+
+    with pytest.raises(OSError) as caught:
+        smart_move(source, destination, rename_no_replace=publish)
+
+    assert caught.value.errno == errno.ESTALE
+    assert not rename_called
+    assert source.read_bytes() == b"modified"
+    assert not destination.exists()
+
+
+def test_directory_move_rechecks_recursive_tree_immediately_before_rename(
+    tmp_path,
+    rename_no_replace,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    nested = source / "nested"
+    nested.mkdir(parents=True)
+    payload = nested / "payload.bin"
+    payload.write_bytes(b"AAAA")
+    payload_stat = os.stat(payload, follow_symlinks=False)
+    real_bound_assert = safe_fileops._assert_bound_snapshot
+    source_assertions = 0
+    rename_called = False
+
+    def mutate_before_terminal_tree_assert(directory, name, expected, label):
+        nonlocal source_assertions
+        real_bound_assert(directory, name, expected, label)
+        if label == source:
+            source_assertions += 1
+            if source_assertions == 3:
+                payload.write_bytes(b"BBBB")
+                os.utime(
+                    payload,
+                    ns=(payload_stat.st_atime_ns, payload_stat.st_mtime_ns),
+                )
+
+    def publish(*args, **kwargs):
+        nonlocal rename_called
+        rename_called = True
+        return rename_no_replace(*args, **kwargs)
+
+    monkeypatch.setattr(
+        safe_fileops,
+        "_assert_bound_snapshot",
+        mutate_before_terminal_tree_assert,
+    )
+
+    with pytest.raises(OSError) as caught:
+        smart_move(source, destination, rename_no_replace=publish)
+
+    assert caught.value.errno == errno.ESTALE
+    assert source_assertions == 3
+    assert not rename_called
+    assert payload.read_bytes() == b"BBBB"
+    assert os.stat(payload, follow_symlinks=False).st_mtime_ns == payload_stat.st_mtime_ns
+    assert not destination.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound cleanup contract")
+def test_windows_cleanup_deletes_its_verified_handle_not_a_name_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    staging = tmp_path / "{}owned{}".format(
+        safe_fileops.STAGING_PREFIX,
+        safe_fileops.STAGING_SUFFIX,
+    )
+    replacement = tmp_path / "replacement.bin"
+    stolen = tmp_path / "stolen-owned.bin"
+    staging.write_bytes(b"owned staging payload")
+    replacement.write_bytes(b"unrecognized replacement")
+    replacement_blocked = False
+    real_disposition = atomic_rename._set_windows_delete_disposition
+
+    def race_before_disposition(descriptor, path):
+        nonlocal replacement_blocked
+        try:
+            os.replace(staging, stolen)
+        except OSError:
+            replacement_blocked = True
+        else:
+            os.replace(replacement, staging)
+        return real_disposition(descriptor, path)
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_set_windows_delete_disposition",
+        race_before_disposition,
+    )
+    with atomic_rename.open_bound_directory(tmp_path) as directory:
+        created = safe_fileops._CreatedEntries(directory)
+        created.add_stat(staging, os.lstat(staging))
+        created.cleanup()
+
+    assert replacement_blocked
+    assert not staging.exists()
+    assert replacement.read_bytes() == b"unrecognized replacement"
+    assert not stolen.exists()
 
 
 @pytest.mark.parametrize("operation", [smart_copy, smart_move])

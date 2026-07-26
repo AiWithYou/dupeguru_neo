@@ -1,8 +1,10 @@
 import errno
+import inspect
 import json
 import os
 import threading
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,73 @@ from core.safe_action import (
 )
 
 PAYLOAD = (b"verified duplicate payload\n" * 4096) + b"end"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound cleanup contract")
+def test_created_file_cleanup_never_unlinks_a_racing_name_replacement(tmp_path, monkeypatch):
+    created = tmp_path / "created.tmp"
+    replacement = tmp_path / "replacement.tmp"
+    stolen = tmp_path / "stolen-created.tmp"
+    created.write_bytes(b"owned temporary")
+    replacement.write_bytes(b"external replacement")
+    created_stat = os.lstat(created)
+    created_identity = (int(created_stat.st_dev), int(created_stat.st_ino))
+    replacement_blocked = False
+    real_disposition = atomic_rename._set_windows_delete_disposition
+
+    def race_before_disposition(descriptor, path):
+        nonlocal replacement_blocked
+        try:
+            os.replace(created, stolen)
+        except OSError:
+            replacement_blocked = True
+        else:
+            os.replace(replacement, created)
+        return real_disposition(descriptor, path)
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_set_windows_delete_disposition",
+        race_before_disposition,
+    )
+
+    removed = safe_action.cleanup_created_regular_file(
+        created,
+        created_identity,
+        platform_file_system(),
+    )
+
+    assert removed
+    assert replacement_blocked
+    assert not created.exists()
+    assert replacement.read_bytes() == b"external replacement"
+    assert not stolen.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound cleanup contract")
+def test_created_file_cleanup_has_no_path_unlink_fallback(tmp_path, monkeypatch):
+    created = tmp_path / "created.tmp"
+    created.write_bytes(b"owned temporary")
+    created_stat = os.lstat(created)
+    created_identity = (int(created_stat.st_dev), int(created_stat.st_ino))
+
+    def unsupported(_descriptor, _path):
+        raise OSError(errno.ENOTSUP, "simulated unsupported disposition API")
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_set_windows_delete_disposition",
+        unsupported,
+    )
+
+    removed = safe_action.cleanup_created_regular_file(
+        created,
+        created_identity,
+        platform_file_system(),
+    )
+
+    assert not removed
+    assert created.read_bytes() == b"owned temporary"
 
 
 def test_opened_proof_rejects_generation_change_with_stable_stat(tmpdir, monkeypatch):
@@ -192,6 +261,183 @@ def test_posix_no_replace_dispatch_has_no_link_unlink_emulation(
 
     assert not source.exists()
     assert destination.read_bytes() == b"source"
+
+
+def test_verified_rename_requires_a_live_proof_handle(tmp_path):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"verified source")
+    file_system = platform_file_system()
+    with file_system.open_readonly(source) as verified_handle:
+        pass
+
+    with pytest.raises(ValueError, match="closed file"):
+        file_system.rename_no_replace_verified(
+            source,
+            destination,
+            verified_handle,
+        )
+
+    assert source.read_bytes() == b"verified source"
+    assert not destination.exists()
+
+
+def test_unverified_rename_error_preserves_the_committed_result(tmp_path):
+    adapter_base = type(platform_file_system())
+
+    class UnverifiedCommitFileSystem(adapter_base):
+        def rename_no_replace_bound(self, *args, **kwargs):
+            commit = super().rename_no_replace_bound(*args, **kwargs)
+            return replace(
+                commit,
+                postcondition_verified=False,
+                verification_error="injected postcondition failure",
+            )
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"verified source")
+    file_system = UnverifiedCommitFileSystem()
+
+    with file_system.open_readonly(source) as verified_handle:
+        with pytest.raises(safe_action.UnverifiedRenameCommitError) as caught:
+            file_system.rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
+
+    assert caught.value.commit.postcondition_verified is False
+    assert caught.value.destination == destination
+    assert not source.exists()
+    assert destination.read_bytes() == b"verified source"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows preopened rename capability")
+def test_windows_verified_rename_rejects_a_dropped_preopened_capability(tmp_path):
+    adapter_base = type(platform_file_system())
+
+    class DroppedCapabilityFileSystem(adapter_base):
+        def rename_no_replace_bound(self, *args, **kwargs):
+            commit = super().rename_no_replace_bound(*args, **kwargs)
+            return replace(commit, preopened_source_used=False)
+
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"verified source")
+    file_system = DroppedCapabilityFileSystem()
+
+    with file_system.open_readonly(source) as verified_handle:
+        with pytest.raises(safe_action.UnverifiedRenameCommitError) as caught:
+            file_system.rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
+
+    assert "preopened source capability" in caught.value.reason
+    assert not source.exists()
+    assert destination.read_bytes() == b"verified source"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows preopened rename lease")
+def test_windows_rename_commit_survives_preopened_lease_close_failure(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"verified source")
+    file_system = platform_file_system()
+    tracked = {"descriptor": None}
+    real_open = atomic_rename._open_windows_preverified_source
+    real_close = atomic_rename.os.close
+
+    def tracking_open(path):
+        descriptor = real_open(path)
+        tracked["descriptor"] = descriptor
+        return descriptor
+
+    def close_then_report_failure(descriptor):
+        result = real_close(descriptor)
+        if descriptor == tracked["descriptor"]:
+            raise OSError(errno.EIO, "injected rename lease close failure")
+        return result
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_open_windows_preverified_source",
+        tracking_open,
+    )
+    monkeypatch.setattr(atomic_rename.os, "close", close_then_report_failure)
+    caplog.set_level("WARNING")
+
+    with file_system.open_readonly(source) as verified_handle:
+        commit = file_system.rename_no_replace_verified(
+            source,
+            destination,
+            verified_handle,
+        )
+
+    assert commit.postcondition_verified
+    assert commit.preopened_source_used
+    assert not source.exists()
+    assert destination.read_bytes() == b"verified source"
+    assert "preverified rename-source lease" in caplog.text
+    assert "preserving the already-determined operation outcome" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound delete lease")
+def test_windows_delete_commit_survives_disposition_lease_close_failure(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    target = tmp_path / "target"
+    target.write_bytes(b"verified target")
+    target_stat = os.lstat(target)
+    tracked = {"descriptor": None}
+    real_disposition = atomic_rename._set_windows_delete_disposition
+    real_close = atomic_rename.os.close
+
+    def tracking_disposition(descriptor, path):
+        tracked["descriptor"] = descriptor
+        return real_disposition(descriptor, path)
+
+    def close_then_report_failure(descriptor):
+        result = real_close(descriptor)
+        if descriptor == tracked["descriptor"]:
+            raise OSError(errno.EIO, "injected disposition lease close failure")
+        return result
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_set_windows_delete_disposition",
+        tracking_disposition,
+    )
+    monkeypatch.setattr(atomic_rename.os, "close", close_then_report_failure)
+    caplog.set_level("WARNING")
+
+    removed = atomic_rename.delete_tracked_windows_entry(
+        target,
+        (int(target_stat.st_dev), int(target_stat.st_ino)),
+        int(target_stat.st_mode),
+    )
+
+    assert removed
+    assert not target.exists()
+    assert "verified delete-disposition lease" in caplog.text
+    assert "preserving the already-determined operation outcome" in caplog.text
+
+
+def test_safety_critical_executors_do_not_call_weak_namespace_mutators():
+    from core.dataset_executor import DatasetBundleExecutor
+
+    for executor_class in (SafeActionExecutor, DatasetBundleExecutor):
+        source = inspect.getsource(executor_class)
+        assert ".rename_no_replace(" not in source
+        assert ".unlink(" not in source
 
 
 def test_oversized_journal_fails_closed_before_target_moves(
@@ -821,17 +1067,55 @@ def test_finalize_never_unlinks_replacement_moved_into_tombstone(tmpdir):
             self.raced = False
             self.preserved = None
 
-        def rename_no_replace(self, source, destination):
+        def rename_no_replace_verified(self, source, destination, verified_handle):
             if source.name == "payload" and destination.name == "finalizing":
                 self.raced = True
                 self.preserved = source.with_name("verified-payload-preserved")
                 os.rename(str(source), str(self.preserved))
                 source.write_bytes(b"unrelated replacement")
-            return super().rename_no_replace(source, destination)
+            return super().rename_no_replace_verified(
+                source,
+                destination,
+                verified_handle,
+            )
 
     base, _, _, target, keeper, result = make_environment(tmpdir)
     plan = assert_plan(result)
     file_system = ReplaceDuringFinalizeFileSystem()
+    journal = AppendOnlyJournal(base.joinpath("actions.jsonl"), fs=file_system)
+    executor = SafeActionExecutor(journal, fs=file_system)
+    assert executor.stage(plan).ok
+
+    action = executor.finalize(plan)
+
+    assert file_system.raced
+    assert not action.ok
+    assert action.code is FailureCode.IO_ERROR
+    assert file_system.preserved.read_bytes() == PAYLOAD
+    assert plan.quarantine_path.read_bytes() == b"unrelated replacement"
+    assert not plan.finalize_path.exists()
+    assert keeper.read_bytes() == PAYLOAD
+    assert not target.exists()
+
+
+def test_finalize_delete_never_unlinks_a_racing_name_replacement(tmpdir):
+    adapter_base = type(platform_file_system())
+
+    class ReplaceBeforeVerifiedDeleteFileSystem(adapter_base):
+        def __init__(self):
+            self.raced = False
+            self.preserved = None
+
+        def delete_verified_regular_file(self, path, verified_handle):
+            self.raced = True
+            self.preserved = path.with_name("verified-tombstone-preserved")
+            os.rename(str(path), str(self.preserved))
+            path.write_bytes(b"unrelated replacement")
+            return super().delete_verified_regular_file(path, verified_handle)
+
+    base, _, _, target, keeper, result = make_environment(tmpdir)
+    plan = assert_plan(result)
+    file_system = ReplaceBeforeVerifiedDeleteFileSystem()
     journal = AppendOnlyJournal(base.joinpath("actions.jsonl"), fs=file_system)
     executor = SafeActionExecutor(journal, fs=file_system)
     assert executor.stage(plan).ok
@@ -845,6 +1129,34 @@ def test_finalize_never_unlinks_replacement_moved_into_tombstone(tmpdir):
     assert plan.finalize_path.read_bytes() == b"unrelated replacement"
     assert keeper.read_bytes() == PAYLOAD
     assert not target.exists()
+    assert JournalEventType.FINALIZED not in [event.event for event in journal.events_for(plan.plan_id)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-bound finalize contract")
+def test_finalize_has_no_path_unlink_fallback(tmpdir, monkeypatch):
+    base, _, _, target, keeper, result = make_environment(tmpdir)
+    plan = assert_plan(result)
+    journal, executor = make_executor(base)
+    assert executor.stage(plan).ok
+
+    def unsupported(_descriptor, _path):
+        raise OSError(errno.ENOTSUP, "simulated unsupported disposition API")
+
+    monkeypatch.setattr(
+        atomic_rename,
+        "_set_windows_delete_disposition",
+        unsupported,
+    )
+
+    action = executor.finalize(plan)
+
+    assert not action.ok
+    assert action.code is FailureCode.IO_ERROR
+    assert action.changed
+    assert plan.finalize_path.read_bytes() == PAYLOAD
+    assert keeper.read_bytes() == PAYLOAD
+    assert not target.exists()
+    assert JournalEventType.FINALIZED not in [event.event for event in journal.events_for(plan.plan_id)]
 
 
 @pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are unavailable")

@@ -318,7 +318,7 @@ def verify_release_payload_contract(
         if len(wheels) != len(_RUNTIME_TARGETS) or len(sdists) != 1:
             raise RuntimeError(
                 f"release payload must contain the canonical sdist "
-                f"{canonical_sdist_name!r} and exactly one CPython 3.12 wheel "
+                f"{canonical_sdist_name!r} and exactly one CPython 3.13 wheel "
                 "for every release runtime target"
             )
         try:
@@ -343,8 +343,8 @@ def verify_release_payload_contract(
             ):
                 raise RuntimeError(f"release wheel identity mismatch: {wheel.name}")
             tag = next(iter(tags))
-            if tag.interpreter != "cp312" or tag.abi != "cp312":
-                raise RuntimeError(f"release wheel must target the frozen CPython 3.12 ABI: {wheel.name}")
+            if tag.interpreter != "cp313" or tag.abi != "cp313":
+                raise RuntimeError(f"release wheel must target the frozen CPython 3.13 ABI: {wheel.name}")
             if tag.platform == "linux_x86_64":
                 target = "linux-x86_64"
             elif tag.platform == "win_amd64":
@@ -358,7 +358,7 @@ def verify_release_payload_contract(
             wheel_targets.add(target)
             wheel_names.add(wheel.name)
         if wheel_targets != _RUNTIME_TARGETS:
-            raise RuntimeError("release payload must contain one CPython 3.12 wheel for every runtime target")
+            raise RuntimeError("release payload must contain one CPython 3.13 wheel for every runtime target")
 
         expected_names = {
             "BUILD-METADATA.json",
@@ -946,6 +946,10 @@ def generate_build_manifest(
         "version": version,
         "source_date_epoch": _source_date_epoch(),
         "timestamp": _timestamp(),
+        "builder_runtime": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+        },
         "artifacts": artifacts,
     }
     if lock_path is not None:

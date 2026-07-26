@@ -16,6 +16,7 @@ import ntpath
 import os
 import posixpath
 import stat
+import sys
 
 from dataclasses import dataclass
 from math import floor
@@ -78,11 +79,9 @@ class FileSnapshot:
     ctime_ns: bytes
 
     @classmethod
-    def from_stat(cls, stat_result, generation_token=None):
-        if generation_token is None:
-            if os.name == "nt":
-                raise ValueError("Windows FileSnapshot requires an explicit ChangeTime token")
-            generation_token = FileGenerationToken("posix-ctime-ns", int(stat_result.st_ctime_ns))
+    def from_stat(cls, stat_result, generation_token):
+        """Create a snapshot only from an explicitly observed generation token."""
+
         if isinstance(generation_token, FileGenerationToken):
             generation_token = generation_token.encoded
         if not isinstance(generation_token, bytes) or not generation_token:
@@ -304,6 +303,11 @@ _HASH_CACHE_SCHEMA_OBJECTS = frozenset(
 _HASH_CACHE_MAX_SCHEMA_NAME_BYTES = 128
 _HASH_CACHE_MAX_DESCRIPTION_BYTES = 256
 _HASH_CACHE_MAX_SCHEMA_SQL_BYTES = 4096
+_DARWIN_STANDARD_ROOT_ALIASES = {
+    "etc": Path("/private/etc"),
+    "tmp": Path("/private/tmp"),
+    "var": Path("/private/var"),
+}
 
 
 @dataclass(frozen=True)
@@ -329,8 +333,59 @@ def _same_file_identity(first, second) -> bool:
     )
 
 
-def _require_plain_hash_cache_parent(parent: Path) -> None:
+def _authenticated_darwin_root_alias(alias: Path, alias_stat) -> Union[Path, None]:
+    """Return the fixed physical target for one immutable macOS root alias."""
+
+    if sys.platform != "darwin" or alias.parent != Path(alias.anchor):
+        return None
+    expected = _DARWIN_STANDARD_ROOT_ALIASES.get(alias.name)
+    if expected is None or not stat.S_ISLNK(alias_stat.st_mode):
+        return None
+    try:
+        root_stat = os.lstat(alias.parent)
+        target_text = os.readlink(alias)
+        target = Path(os.path.abspath(os.path.join(os.fspath(alias.parent), target_text)))
+        target_stat = os.lstat(expected)
+        followed_stat = os.stat(alias)
+    except OSError:
+        return None
+    if (
+        target != expected
+        or int(getattr(root_stat, "st_uid", -1)) != 0
+        or stat.S_IMODE(root_stat.st_mode) & 0o022
+        or not stat.S_ISDIR(root_stat.st_mode)
+        or int(getattr(alias_stat, "st_uid", -1)) != 0
+        or int(getattr(target_stat, "st_uid", -1)) != 0
+        or not stat.S_ISDIR(target_stat.st_mode)
+        or stat.S_ISLNK(target_stat.st_mode)
+        or _is_reparse_point(target_stat)
+        or not _same_file_identity(target_stat, followed_stat)
+    ):
+        return None
+    try:
+        if Path(os.path.realpath(os.fspath(alias))) != expected:
+            return None
+    except OSError:
+        return None
+    return expected
+
+
+def _require_plain_hash_cache_parent(parent: Path) -> Path:
     parent = Path(os.path.abspath(os.fspath(parent)))
+    parts = parent.parts[1:] if parent.anchor else parent.parts
+    authenticated_alias = None
+    lexical_alias = None
+    if parts:
+        first = Path(parent.anchor) / parts[0]
+        try:
+            first_stat = os.lstat(first)
+        except OSError as error:
+            raise HashCacheSafetyError("Hash cache parent component is unavailable: '{}'".format(first)) from error
+        authenticated_alias = _authenticated_darwin_root_alias(first, first_stat)
+        if authenticated_alias is not None:
+            lexical_alias = first
+            parent = authenticated_alias.joinpath(*parts[1:])
+
     current = Path(parent.anchor)
     parts = parent.parts[1:] if parent.anchor else parent.parts
     for part in parts:
@@ -345,6 +400,21 @@ def _require_plain_hash_cache_parent(parent: Path) -> None:
             or not stat.S_ISDIR(current_stat.st_mode)
         ):
             raise HashCacheSafetyError("Hash cache parent components must be plain directories: '{}'".format(current))
+    if authenticated_alias is not None:
+        assert lexical_alias is not None
+        # Re-authenticate after validating the physical chain. The caller will
+        # use only ``parent`` from this point onward.
+        try:
+            lexical_stat = os.lstat(lexical_alias)
+        except OSError as error:
+            raise HashCacheSafetyError(
+                "Hash cache platform alias changed while it was being authenticated: '{}'".format(lexical_alias)
+            ) from error
+        if _authenticated_darwin_root_alias(lexical_alias, lexical_stat) != authenticated_alias:
+            raise HashCacheSafetyError(
+                "Hash cache platform alias changed while it was being authenticated: '{}'".format(lexical_alias)
+            )
+    return parent
 
 
 def _require_no_hash_cache_sidecars(path: Path) -> None:
@@ -392,23 +462,34 @@ def _validate_owned_hash_cache_header(descriptor: int, opened_stat, path: Path) 
 
 def _open_hash_cache_guard(path: Path):
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    opened_stat = os.fstat(descriptor)
-    path_stat = os.lstat(path)
-    if (
-        stat.S_ISLNK(path_stat.st_mode)
-        or _is_reparse_point(path_stat)
-        or not stat.S_ISREG(path_stat.st_mode)
-        or not stat.S_ISREG(opened_stat.st_mode)
-        or not _same_file_identity(path_stat, opened_stat)
-    ):
-        os.close(descriptor)
-        raise HashCacheSafetyError("Hash cache must be one stable plain regular file: '{}'".format(path))
-    if int(getattr(path_stat, "st_nlink", 0)) != 1:
-        os.close(descriptor)
-        raise HashCacheSafetyError("Hash cache must have exactly one filesystem link: '{}'".format(path))
     try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise HashCacheSafetyError(
+            "Hash cache could not be opened without following links: '{}'".format(path)
+        ) from error
+    try:
+        opened_stat = os.fstat(descriptor)
+        path_stat = os.lstat(path)
+        if (
+            stat.S_ISLNK(path_stat.st_mode)
+            or _is_reparse_point(path_stat)
+            or not stat.S_ISREG(path_stat.st_mode)
+            or not stat.S_ISREG(opened_stat.st_mode)
+            or not _same_file_identity(path_stat, opened_stat)
+        ):
+            raise HashCacheSafetyError("Hash cache must be one stable plain regular file: '{}'".format(path))
+        if int(getattr(path_stat, "st_nlink", 0)) != 1:
+            raise HashCacheSafetyError("Hash cache must have exactly one filesystem link: '{}'".format(path))
         _validate_owned_hash_cache_header(descriptor, opened_stat, path)
+    except HashCacheSafetyError:
+        os.close(descriptor)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        raise HashCacheSafetyError(
+            "Hash cache changed while its guarded handle was opened: '{}'".format(path)
+        ) from error
     except BaseException:
         os.close(descriptor)
         raise
@@ -761,7 +842,7 @@ class FilesDB:
         # generation upsert and its digest update must commit or roll back as a
         # unit so no caller can observe mixed-generation cache columns.
         path = Path(os.path.abspath(os.fspath(path)))
-        _require_plain_hash_cache_parent(path.parent)
+        path = _require_plain_hash_cache_parent(path.parent).joinpath(path.name)
         _require_no_hash_cache_sidecars(path)
         guard = None
         guard_stat = None

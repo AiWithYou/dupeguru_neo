@@ -75,9 +75,12 @@ class BaseTestCaseCache:
         DBNAME = tmpdir.join("hstest.db")
         c = self.get_cache(str(DBNAME))
         c["foo"] = [[(1, 2, 3)]] * 8
-        del c
-        c = self.get_cache(str(DBNAME))
-        eq_([[(1, 2, 3)]] * 8, c["foo"])
+        c.close()
+        reopened = self.get_cache(str(DBNAME))
+        try:
+            eq_([[(1, 2, 3)]] * 8, reopened["foo"])
+        finally:
+            reopened.close()
 
     def test_filter(self):
         c = self.get_cache()
@@ -116,6 +119,29 @@ class TestCaseSqliteCache(BaseTestCaseCache):
             return SqliteCache(dbname)
         else:
             return SqliteCache()
+
+    def test_close_is_idempotent_and_reopen_preserves_persisted_rows(self, tmpdir):
+        dbname = str(tmpdir.join("close-lifecycle.db"))
+        expected_blocks = [[(1, 2, 3)]] * 8
+        cache = self.get_cache(dbname)
+        cache["persisted"] = expected_blocks
+        closed_connection = cache.con
+
+        cache.close()
+        assert cache.con is None
+        with raises(sqlite3.ProgrammingError):
+            closed_connection.execute("SELECT 1")
+
+        # Explicit lifecycle management must make repeated shutdown harmless.
+        cache.close()
+        assert cache.con is None
+
+        reopened = self.get_cache(dbname)
+        try:
+            eq_(expected_blocks, reopened["persisted"])
+        finally:
+            reopened.close()
+            reopened.close()
 
     def test_corrupted_db_is_rejected_without_replacing_it(self, tmpdir):
         dbname = str(tmpdir.join("foo.db"))

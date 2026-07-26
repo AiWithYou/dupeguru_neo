@@ -19,6 +19,7 @@ from pathlib import PurePosixPath
 import stat
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import venv
@@ -52,7 +53,10 @@ def _environment_python(environment: Path) -> Path:
 
 def _console_script(name: str) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
-    candidate = Path(sys.executable).parent.joinpath(name + suffix)
+    scripts_directory = sysconfig.get_path("scripts")
+    if not scripts_directory:
+        raise RuntimeError("Python did not report an installed console-script directory")
+    candidate = Path(scripts_directory).joinpath(name + suffix)
     if not candidate.is_file():
         raise RuntimeError(f"installed console script is missing: {candidate}")
     return candidate

@@ -116,5 +116,9 @@ class TestCaseMoveCopy:
         path = Path(str(tmpdir))
         path.joinpath("foo").mkdir()
         path.joinpath("bar").mkdir()
-        smart_copy(path.joinpath("foo"), path.joinpath("bar"), rename_no_replace=rename_no_replace)  # no crash
+        smart_copy(
+            path.joinpath("foo"),
+            path.joinpath("bar"),
+            rename_no_replace=rename_no_replace,
+        )  # no crash
         assert path.joinpath("[000] bar").exists()

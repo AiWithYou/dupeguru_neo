@@ -8,6 +8,7 @@
 
 import os
 import sqlite3
+import sys
 from os import urandom
 
 from pathlib import Path
@@ -18,6 +19,16 @@ from core.tests.directories_test import create_fake_fs
 from core import fs
 
 hasher = fs.hasher
+
+
+def test_file_snapshot_requires_an_explicit_generation_token(tmp_path):
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"payload")
+
+    with pytest.raises(TypeError):
+        fs.FileSnapshot.from_stat(path.stat())
+    with pytest.raises(ValueError, match="generation token"):
+        fs.FileSnapshot.from_stat(path.stat(), None)
 
 
 def test_hash_algorithm_is_the_required_xxhash_implementation():
@@ -52,7 +63,7 @@ def test_hash_cache_invalidates_other_digests_on_generation_change(tmp_path):
         database.close()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows ChangeTime integration")
+@pytest.mark.skipif(os.name != "nt", reason="Windows USN generation integration")
 def test_hash_cache_misses_same_size_edit_with_restored_mtime(tmp_path):
     path = tmp_path / "data.bin"
     path.write_bytes(b"first")
@@ -152,6 +163,76 @@ def test_hash_cache_rejects_symlink_alias_without_changing_source(tmp_path):
         fs.FilesDB().connect(alias)
 
     assert source.read_bytes() == b"important source bytes"
+
+
+def test_hash_cache_guard_closes_its_descriptor_when_post_open_inspection_fails(
+    tmp_path,
+    monkeypatch,
+):
+    candidate = tmp_path / "hashes.db"
+    candidate.write_bytes(b"not a database")
+    real_open = fs.os.open
+    real_close = fs.os.close
+    opened = []
+    closed = []
+
+    def tracked_open(*args, **kwargs):
+        descriptor = real_open(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor
+
+    def tracked_close(descriptor):
+        closed.append(descriptor)
+        return real_close(descriptor)
+
+    def failing_fstat(_descriptor):
+        raise OSError("injected fstat race")
+
+    monkeypatch.setattr(fs.os, "open", tracked_open)
+    monkeypatch.setattr(fs.os, "close", tracked_close)
+    monkeypatch.setattr(fs.os, "fstat", failing_fstat)
+
+    with pytest.raises(fs.HashCacheSafetyError, match="changed while"):
+        fs.FilesDB().connect(candidate)
+
+    assert len(opened) == 1
+    assert closed == opened
+
+
+def test_hash_cache_switches_to_the_authenticated_canonical_parent(tmp_path, monkeypatch):
+    lexical_parent = tmp_path / "lexical"
+    canonical_parent = tmp_path / "canonical"
+    canonical_parent.mkdir()
+    monkeypatch.setattr(
+        fs,
+        "_require_plain_hash_cache_parent",
+        lambda parent: canonical_parent if parent == lexical_parent else parent,
+    )
+
+    database = fs.FilesDB()
+    database.connect(lexical_parent / "hashes.db")
+    database.close()
+
+    assert (canonical_parent / "hashes.db").is_file()
+    assert not lexical_parent.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS standard root aliases")
+def test_hash_cache_accepts_authenticated_darwin_var_alias(tmp_path):
+    canonical_parent = tmp_path.resolve(strict=True)
+    private_var = Path("/private/var")
+    try:
+        relative = canonical_parent.relative_to(private_var)
+    except ValueError:
+        pytest.skip("temporary directory is not below /private/var")
+    lexical_parent = Path("/var").joinpath(relative)
+    assert lexical_parent.resolve(strict=True) == canonical_parent
+
+    database = fs.FilesDB()
+    database.connect(lexical_parent / "darwin-hashes.db")
+    database.close()
+
+    assert (canonical_parent / "darwin-hashes.db").is_file()
 
 
 @pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are unavailable")

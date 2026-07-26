@@ -45,6 +45,7 @@ from core.dataset_service import (
     FilesystemInspector,
     PlanValidation,
 )
+from core.file_generation import FileGenerationToken
 from core.file_identity import FileIdentityError, get_file_identity
 from core.reserved_paths import (
     is_reserved_internal_directory,
@@ -54,6 +55,8 @@ from core.reserved_paths import (
 )
 from core.safe_action import (
     FileSystemAdapter,
+    RenameCommit,
+    UnverifiedRenameCommitError,
     cleanup_created_regular_file,
     platform_file_system,
 )
@@ -1345,6 +1348,101 @@ def _stable_digest(
         raise DatasetExecutionError(ExecutionCode.CONTENT_MISMATCH, "payload SHA-256 does not match plan", candidate)
 
 
+@contextlib.contextmanager
+def _open_verified_payload(
+    path: Path,
+    fs: FileSystemAdapter,
+    *,
+    expected: DatasetFileProof,
+    require_original_identity: bool,
+    created_identity: Optional[Tuple[int, int]] = None,
+) -> Iterator[Tuple[BinaryIO, os.stat_result]]:
+    """Keep one fully verified payload handle live across a namespace mutation."""
+
+    candidate = _absolute(path)
+    _validate_existing_path_chain(candidate)
+    try:
+        path_before = os.stat(candidate, follow_symlinks=False)
+        if not _is_plain_file(path_before):
+            raise DatasetExecutionError(
+                ExecutionCode.UNSAFE_PATH,
+                "payload is not a plain regular file",
+                candidate,
+            )
+        if path_before.st_size != expected.size:
+            raise DatasetExecutionError(
+                ExecutionCode.SOURCE_CHANGED,
+                "payload size changed",
+                candidate,
+            )
+        if require_original_identity and not _identity_matches(path_before, candidate, expected):
+            raise DatasetExecutionError(
+                ExecutionCode.SOURCE_CHANGED,
+                "payload identity changed",
+                candidate,
+            )
+        if created_identity is not None and (
+            int(path_before.st_dev),
+            int(path_before.st_ino),
+        ) != tuple(map(int, created_identity)):
+            raise DatasetExecutionError(
+                ExecutionCode.SOURCE_CHANGED,
+                "transaction-created payload identity changed",
+                candidate,
+            )
+        path_snapshot = core_fs.FileSnapshot.from_path(candidate, path_before)
+        with fs.open_readonly(candidate) as handle:
+            opened = os.fstat(handle.fileno())
+            opened_snapshot = core_fs.FileSnapshot.from_file(
+                handle,
+                path=candidate,
+                stat_result=opened,
+            )
+            if not path_snapshot.same_content_generation(opened_snapshot):
+                raise DatasetExecutionError(
+                    ExecutionCode.SOURCE_CHANGED,
+                    "payload changed while it was opened",
+                    candidate,
+                )
+            digest = hashlib.sha256()
+            while True:
+                chunk = handle.read(COPY_CHUNK_SIZE)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            finished = os.fstat(handle.fileno())
+            finished_snapshot = core_fs.FileSnapshot.from_file(
+                handle,
+                path=candidate,
+                stat_result=finished,
+            )
+            if not opened_snapshot.same_content_generation(finished_snapshot):
+                raise DatasetExecutionError(
+                    ExecutionCode.SOURCE_CHANGED,
+                    "payload changed while it was read",
+                    candidate,
+                )
+            if digest.hexdigest() != expected.digest_hex:
+                raise DatasetExecutionError(
+                    ExecutionCode.CONTENT_MISMATCH,
+                    "payload SHA-256 does not match plan",
+                    candidate,
+                )
+            current_path = _require_path_matches_stat(candidate, finished)
+            current_snapshot = core_fs.FileSnapshot.from_path(candidate, current_path)
+            if not finished_snapshot.same_content_generation(current_snapshot):
+                raise DatasetExecutionError(
+                    ExecutionCode.SOURCE_CHANGED,
+                    "payload changed after it was read",
+                    candidate,
+                )
+            yield handle, finished
+    except DatasetExecutionError:
+        raise
+    except OSError as error:
+        raise DatasetExecutionError(ExecutionCode.IO_ERROR, str(error), candidate) from error
+
+
 def _stable_byte_equal(
     first: Path,
     second: Path,
@@ -1466,6 +1564,55 @@ def _require_open_version(first: os.stat_result, second: os.stat_result, path: P
             "open payload changed during verification",
             path,
         )
+
+
+def _rebind_open_version_after_atomic_rename(
+    handle: BinaryIO,
+    before: os.stat_result,
+    path: Path,
+    commit: RenameCommit,
+) -> os.stat_result:
+    """Bind an open payload to the generation created by our own atomic rename."""
+
+    source_identity = (int(before.st_dev), int(before.st_ino))
+    if (
+        not commit.postcondition_verified
+        or tuple(map(int, commit.source_identity)) != source_identity
+        or commit.destination_name != path.name
+    ):
+        raise DatasetExecutionError(
+            ExecutionCode.SOURCE_CHANGED,
+            "atomic rename did not verify the expected payload and destination",
+            path,
+        )
+    current_path = _require_path_matches_stat(path, before)
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_size",
+        "st_mtime_ns",
+        "st_nlink",
+        "st_uid",
+        "st_gid",
+        "st_flags",
+    )
+    if any(getattr(before, field, None) != getattr(current_path, field, None) for field in stable_fields):
+        raise DatasetExecutionError(
+            ExecutionCode.SOURCE_CHANGED,
+            "payload changed during atomic rename",
+            path,
+        )
+    try:
+        current_open = os.fstat(handle.fileno())
+    except OSError as error:
+        raise DatasetExecutionError(ExecutionCode.IO_ERROR, str(error), path) from error
+    # The path and held handle must agree on the complete post-rename stat
+    # version, including the new POSIX ctime. Only the comparison with
+    # ``before`` intentionally excludes that rename-generated field. Windows
+    # keeps the opened object under a no-write lease and rechecks its bytes.
+    _require_open_version(current_path, current_open, path)
+    return current_open
 
 
 def _reverify_open_equal_pair(
@@ -3453,7 +3600,56 @@ class DatasetBundleExecutor:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            self.fs.rename_no_replace(temporary, path)
+            with self.fs.open_readonly(temporary) as temporary_handle:
+                opened = os.fstat(temporary_handle.fileno())
+                if (
+                    not _is_plain_file(opened)
+                    or int(getattr(opened, "st_nlink", 0)) != 1
+                    or (int(opened.st_dev), int(opened.st_ino)) != created_identity
+                    or temporary_handle.read(len(payload) + 1) != payload
+                ):
+                    raise DatasetExecutionError(
+                        ExecutionCode.SOURCE_CHANGED,
+                        "execution document temporary changed before publication",
+                        temporary,
+                    )
+                _require_open_version(
+                    opened,
+                    os.fstat(temporary_handle.fileno()),
+                    temporary,
+                )
+                _require_path_matches_stat(temporary, opened)
+                try:
+                    rename_commit = self.fs.rename_no_replace_verified(
+                        temporary,
+                        path,
+                        temporary_handle,
+                    )
+                except UnverifiedRenameCommitError as error:
+                    raise DatasetExecutionError(
+                        ExecutionCode.IO_ERROR,
+                        str(error),
+                        error.destination,
+                    ) from error
+                published_opened = _rebind_open_version_after_atomic_rename(
+                    temporary_handle,
+                    opened,
+                    path,
+                    rename_commit,
+                )
+                temporary_handle.seek(0)
+                if temporary_handle.read(len(payload) + 1) != payload:
+                    raise DatasetExecutionError(
+                        ExecutionCode.SOURCE_CHANGED,
+                        "execution document changed during publication",
+                        path,
+                    )
+                _require_open_version(
+                    published_opened,
+                    os.fstat(temporary_handle.fileno()),
+                    path,
+                )
+                _require_path_matches_stat(path, published_opened)
             self.fs.fsync_directory(path.parent)
         except FileExistsError:
             if self.fs.lexists(path):
@@ -3728,9 +3924,9 @@ class DatasetBundleExecutor:
                 "destination appeared before same-volume publication",
                 destination,
             )
-        moved = False
-        try:
-            with self.fs.open_readonly(source) as source_handle:
+        with self.fs.open_readonly(source) as source_handle:
+            moved = False
+            try:
                 opened = os.fstat(source_handle.fileno())
                 self._require_open_source(source_handle, opened, record.source, source)
                 self._call_fault("before_same_volume_publish", record)
@@ -3748,7 +3944,19 @@ class DatasetBundleExecutor:
                     )
                 self._validate_record_user_paths(record)
                 try:
-                    self.fs.rename_no_replace(source, destination)
+                    try:
+                        rename_commit = self.fs.rename_no_replace_verified(
+                            source,
+                            destination,
+                            source_handle,
+                        )
+                    except UnverifiedRenameCommitError as error:
+                        moved = True
+                        raise DatasetExecutionError(
+                            ExecutionCode.SOURCE_CHANGED,
+                            str(error),
+                            error.destination,
+                        ) from error
                 except FileExistsError as error:
                     raise DatasetExecutionError(
                         ExecutionCode.DESTINATION_CONFLICT,
@@ -3758,33 +3966,32 @@ class DatasetBundleExecutor:
                 moved = True
                 self.fs.fsync_directory(source.parent)
                 self.fs.fsync_directory(destination.parent)
-                destination_stat = os.stat(destination, follow_symlinks=False)
-                if (
-                    not _is_plain_file(destination_stat)
-                    or destination_stat.st_dev != opened.st_dev
-                    or destination_stat.st_ino != opened.st_ino
-                ):
-                    raise DatasetExecutionError(
-                        ExecutionCode.SOURCE_CHANGED,
-                        "same-volume move did not preserve the verified file identity",
-                        destination,
-                    )
+                opened = _rebind_open_version_after_atomic_rename(
+                    source_handle,
+                    opened,
+                    destination,
+                    rename_commit,
+                )
                 self._call_fault("after_same_volume_publish", record)
-            _stable_digest(
-                destination,
-                self.fs,
-                expected=record.source,
-                require_original_identity=True,
-            )
-        except BaseException:
-            if moved and self.fs.lexists(destination) and not self.fs.lexists(source):
-                try:
-                    self.fs.rename_no_replace(destination, source)
-                    self.fs.fsync_directory(destination.parent)
-                    self.fs.fsync_directory(source.parent)
-                except BaseException:
-                    pass
-            raise
+                _stable_digest(
+                    destination,
+                    self.fs,
+                    expected=record.source,
+                    require_original_identity=True,
+                )
+            except BaseException:
+                if moved and self.fs.lexists(destination) and not self.fs.lexists(source):
+                    try:
+                        self.fs.rename_no_replace_verified(
+                            destination,
+                            source,
+                            source_handle,
+                        )
+                        self.fs.fsync_directory(destination.parent)
+                        self.fs.fsync_directory(source.parent)
+                    except BaseException:
+                        pass
+                raise
 
     def _stage_cross_volume_destination(
         self,
@@ -3912,40 +4119,54 @@ class DatasetBundleExecutor:
                 before_publish(temporary_stat)
             self._call_fault("before_cross_volume_publish", record)
             _validate_plain_directory(destination.parent)
-            current_temporary = os.stat(temporary, follow_symlinks=False)
-            if (
-                not _is_plain_file(current_temporary)
-                or current_temporary.st_dev != temporary_stat.st_dev
-                or current_temporary.st_ino != temporary_stat.st_ino
-            ):
-                raise DatasetExecutionError(
-                    ExecutionCode.SOURCE_CHANGED,
-                    "copy temporary path changed immediately before publication",
-                    temporary,
-                )
-            self._validate_record_user_paths(record)
-            try:
-                self.fs.rename_no_replace(temporary, destination)
-            except FileExistsError as error:
-                raise DatasetExecutionError(
-                    ExecutionCode.DESTINATION_CONFLICT,
-                    "destination appeared during cross-volume publication",
-                    destination,
-                ) from error
-            self.fs.fsync_directory(destination.parent)
-            _stable_byte_equal(
-                source,
-                destination,
+            assert temporary_created_identity is not None
+            with _open_verified_payload(
+                temporary,
                 self.fs,
-                record.source,
-                first_original_identity=True,
-                second_original_identity=False,
-            )
-            try:
-                self._validate_runtime_proof(record.source, (Path(record.source_root),))
-            except DatasetSafetyError as error:
-                raise DatasetExecutionError(ExecutionCode.SOURCE_CHANGED, str(error), error.path) from error
-            self._call_fault("after_cross_volume_publish", record)
+                expected=record.source,
+                require_original_identity=False,
+                created_identity=temporary_created_identity,
+            ) as (temporary_handle, temporary_opened):
+                self._validate_record_user_paths(record)
+                try:
+                    try:
+                        rename_commit = self.fs.rename_no_replace_verified(
+                            temporary,
+                            destination,
+                            temporary_handle,
+                        )
+                    except UnverifiedRenameCommitError as error:
+                        raise DatasetExecutionError(
+                            ExecutionCode.SOURCE_CHANGED,
+                            str(error),
+                            error.destination,
+                        ) from error
+                except FileExistsError as error:
+                    raise DatasetExecutionError(
+                        ExecutionCode.DESTINATION_CONFLICT,
+                        "destination appeared during cross-volume publication",
+                        destination,
+                    ) from error
+                self.fs.fsync_directory(destination.parent)
+                _rebind_open_version_after_atomic_rename(
+                    temporary_handle,
+                    temporary_opened,
+                    destination,
+                    rename_commit,
+                )
+                _stable_byte_equal(
+                    source,
+                    destination,
+                    self.fs,
+                    record.source,
+                    first_original_identity=True,
+                    second_original_identity=False,
+                )
+                try:
+                    self._validate_runtime_proof(record.source, (Path(record.source_root),))
+                except DatasetSafetyError as error:
+                    raise DatasetExecutionError(ExecutionCode.SOURCE_CHANGED, str(error), error.path) from error
+                self._call_fault("after_cross_volume_publish", record)
         except BaseException:
             if temporary_created_identity is not None and not temporary_bound_durably:
                 cleanup_created_regular_file(
@@ -3993,9 +4214,9 @@ class DatasetBundleExecutor:
         )
         self._call_fault("before_source_quarantine", record)
         _validate_plain_directory(quarantine.parent)
-        moved = False
-        try:
-            with self.fs.open_readonly(source) as source_handle, self.fs.open_readonly(comparison) as comparison_handle:
+        with self.fs.open_readonly(source) as source_handle, self.fs.open_readonly(comparison) as comparison_handle:
+            moved = False
+            try:
                 source_before = os.fstat(source_handle.fileno())
                 comparison_before = os.fstat(comparison_handle.fileno())
                 self._require_open_source(source_handle, source_before, record.source, source)
@@ -4039,7 +4260,19 @@ class DatasetBundleExecutor:
                     )
                 self._validate_record_user_paths(record)
                 try:
-                    self.fs.rename_no_replace(source, quarantine)
+                    try:
+                        rename_commit = self.fs.rename_no_replace_verified(
+                            source,
+                            quarantine,
+                            source_handle,
+                        )
+                    except UnverifiedRenameCommitError as error:
+                        moved = True
+                        raise DatasetExecutionError(
+                            ExecutionCode.SOURCE_CHANGED,
+                            str(error),
+                            error.destination,
+                        ) from error
                 except FileExistsError as error:
                     raise DatasetExecutionError(
                         ExecutionCode.DESTINATION_CONFLICT,
@@ -4049,36 +4282,37 @@ class DatasetBundleExecutor:
                 moved = True
                 self.fs.fsync_directory(source.parent)
                 self.fs.fsync_directory(quarantine.parent)
-                quarantine_stat = os.stat(quarantine, follow_symlinks=False)
-                if (
-                    not _is_plain_file(quarantine_stat)
-                    or quarantine_stat.st_dev != source_before.st_dev
-                    or quarantine_stat.st_ino != source_before.st_ino
-                ):
-                    raise DatasetExecutionError(
-                        ExecutionCode.SOURCE_CHANGED,
-                        "quarantine move did not preserve the source identity",
-                        quarantine,
-                    )
-            _stable_byte_equal(
-                quarantine,
-                comparison,
-                self.fs,
-                record.source,
-                first_original_identity=True,
-                second_original_identity=comparison_original,
-                second_expected=record.reference,
-            )
-            self._call_fault("after_source_quarantine", record)
-        except BaseException:
-            if moved and self.fs.lexists(quarantine) and not self.fs.lexists(source):
-                try:
-                    self.fs.rename_no_replace(quarantine, source)
-                    self.fs.fsync_directory(quarantine.parent)
-                    self.fs.fsync_directory(source.parent)
-                except BaseException:
-                    pass
-            raise
+                source_before = _rebind_open_version_after_atomic_rename(
+                    source_handle,
+                    source_before,
+                    quarantine,
+                    rename_commit,
+                )
+                _require_path_matches_stat(comparison, comparison_before)
+                _reverify_open_equal_pair(
+                    source_handle,
+                    comparison_handle,
+                    source_before,
+                    comparison_before,
+                    first_expected=record.source,
+                    second_expected=record.reference or record.source,
+                    first_path=quarantine,
+                    second_path=comparison,
+                )
+                self._call_fault("after_source_quarantine", record)
+            except BaseException:
+                if moved and self.fs.lexists(quarantine) and not self.fs.lexists(source):
+                    try:
+                        self.fs.rename_no_replace_verified(
+                            quarantine,
+                            source,
+                            source_handle,
+                        )
+                        self.fs.fsync_directory(quarantine.parent)
+                        self.fs.fsync_directory(source.parent)
+                    except BaseException:
+                        pass
+                raise
 
     @staticmethod
     def _comparison_preserves_identity(
@@ -4112,16 +4346,43 @@ class DatasetBundleExecutor:
         proof: DatasetFileProof,
         path: Path,
     ) -> None:
+        accepted_generation = self._accepted_generation_tokens.get(_path_key(proof.path))
+        try:
+            proof_token = FileGenerationToken.from_encoded(bytes.fromhex(proof.generation_token))
+        except (TypeError, ValueError) as error:
+            raise DatasetExecutionError(
+                ExecutionCode.PLAN_INVALID,
+                "source proof has an invalid generation token",
+                path,
+            ) from error
+        if os.name != "nt" and (proof_token.namespace != "posix-ctime-ns" or proof_token.value != proof.ctime_ns):
+            raise DatasetExecutionError(
+                ExecutionCode.PLAN_INVALID,
+                "source proof ctime disagrees with its generation token",
+                path,
+            )
+        expected_generation = accepted_generation if accepted_generation is not None else proof.generation_token
+        if accepted_generation is None:
+            expected_token = proof_token
+        else:
+            try:
+                expected_token = FileGenerationToken.from_encoded(bytes.fromhex(accepted_generation))
+            except (TypeError, ValueError) as error:
+                raise DatasetExecutionError(
+                    ExecutionCode.PLAN_INVALID,
+                    "recovered source has an invalid accepted generation token",
+                    path,
+                ) from error
         if (
             not _is_plain_file(file_stat)
             or file_stat.st_dev != proof.stat_device
             or file_stat.st_ino != proof.stat_inode
             or file_stat.st_size != proof.size
             or file_stat.st_mtime_ns != proof.mtime_ns
-            # Windows can lazily materialize creation/change timestamps when a handle is opened.
-            # FilesystemInspector already bound the no-follow path ctime immediately before this
-            # open; requiring it again on the handle would reject an unchanged file.
-            or (os.name != "nt" and file_stat.st_ctime_ns != proof.ctime_ns)
+            or (
+                os.name != "nt"
+                and (expected_token.namespace != "posix-ctime-ns" or file_stat.st_ctime_ns != expected_token.value)
+            )
         ):
             raise DatasetExecutionError(
                 ExecutionCode.SOURCE_CHANGED,
@@ -4132,10 +4393,6 @@ class DatasetBundleExecutor:
             handle,
             path=path,
             stat_result=file_stat,
-        )
-        expected_generation = self._accepted_generation_tokens.get(
-            _path_key(proof.path),
-            proof.generation_token,
         )
         if snapshot.ctime_ns.hex() != expected_generation:
             raise DatasetExecutionError(
@@ -4647,7 +4904,18 @@ class DatasetBundleExecutor:
                 _require_path_matches_stat(original_path, target_opened)
                 _require_path_matches_stat(keeper_path, keeper_opened)
                 try:
-                    self.fs.rename_no_replace(original_path, tombstone)
+                    try:
+                        rename_commit = self.fs.rename_no_replace_verified(
+                            original_path,
+                            tombstone,
+                            target_handle,
+                        )
+                    except UnverifiedRenameCommitError as error:
+                        raise DatasetExecutionError(
+                            ExecutionCode.ROLLBACK_FAILED,
+                            str(error),
+                            error.destination,
+                        ) from error
                 except FileExistsError as error:
                     raise DatasetExecutionError(
                         ExecutionCode.DESTINATION_CONFLICT,
@@ -4662,7 +4930,12 @@ class DatasetBundleExecutor:
                         "transaction-created path reappeared after tombstoning",
                         original_path,
                     )
-                _require_path_matches_stat(tombstone, target_opened)
+                target_opened = _rebind_open_version_after_atomic_rename(
+                    target_handle,
+                    target_opened,
+                    tombstone,
+                    rename_commit,
+                )
                 _require_path_matches_stat(keeper_path, keeper_opened)
                 journal.append(
                     document,
@@ -4722,8 +4995,15 @@ class DatasetBundleExecutor:
                 second_path=keeper_path,
                 require_byte_equal=kind == "destination",
             )
-            self.fs.unlink(tombstone)
-            self.fs.fsync_directory(tombstone.parent)
+            if not self.fs.delete_verified_regular_file(
+                tombstone,
+                target_handle,
+            ):
+                raise DatasetExecutionError(
+                    ExecutionCode.ROLLBACK_FAILED,
+                    "cleanup tombstone no longer identifies the verified transaction payload",
+                    tombstone,
+                )
             _require_open_version(keeper_opened, os.fstat(keeper_handle.fileno()), keeper_path)
             _require_path_matches_stat(keeper_path, keeper_opened)
         journal.append(
@@ -4874,19 +5154,41 @@ class DatasetBundleExecutor:
                 "neither original source nor quarantine payload exists",
                 source,
             )
-        _stable_digest(quarantine, self.fs, expected=record.source, require_original_identity=True)
         _validate_plain_directory(source.parent)
-        try:
-            self.fs.rename_no_replace(quarantine, source)
-        except FileExistsError as error:
-            raise DatasetExecutionError(
-                ExecutionCode.ROLLBACK_FAILED,
-                "source path appeared during restore",
+        with _open_verified_payload(
+            quarantine,
+            self.fs,
+            expected=record.source,
+            require_original_identity=True,
+        ) as (quarantine_handle, quarantine_opened):
+            try:
+                try:
+                    rename_commit = self.fs.rename_no_replace_verified(
+                        quarantine,
+                        source,
+                        quarantine_handle,
+                    )
+                except UnverifiedRenameCommitError as error:
+                    raise DatasetExecutionError(
+                        ExecutionCode.ROLLBACK_FAILED,
+                        str(error),
+                        error.destination,
+                    ) from error
+            except FileExistsError as error:
+                raise DatasetExecutionError(
+                    ExecutionCode.ROLLBACK_FAILED,
+                    "source path appeared during restore",
+                    source,
+                ) from error
+            self.fs.fsync_directory(quarantine.parent)
+            self.fs.fsync_directory(source.parent)
+            _rebind_open_version_after_atomic_rename(
+                quarantine_handle,
+                quarantine_opened,
                 source,
-            ) from error
-        self.fs.fsync_directory(quarantine.parent)
-        self.fs.fsync_directory(source.parent)
-        _stable_digest(source, self.fs, expected=record.source, require_original_identity=True)
+                rename_commit,
+            )
+            _stable_digest(source, self.fs, expected=record.source, require_original_identity=True)
 
     def _reverse_same_volume_move(
         self,
@@ -4913,19 +5215,41 @@ class DatasetBundleExecutor:
                 "neither original source nor move destination exists",
                 source,
             )
-        self._verify_record_destination(record, original_identity=True)
         _validate_plain_directory(source.parent)
-        try:
-            self.fs.rename_no_replace(destination, source)
-        except FileExistsError as error:
-            raise DatasetExecutionError(
-                ExecutionCode.ROLLBACK_FAILED,
-                "source path appeared during move rollback",
+        with _open_verified_payload(
+            destination,
+            self.fs,
+            expected=record.source,
+            require_original_identity=True,
+        ) as (destination_handle, destination_opened):
+            try:
+                try:
+                    rename_commit = self.fs.rename_no_replace_verified(
+                        destination,
+                        source,
+                        destination_handle,
+                    )
+                except UnverifiedRenameCommitError as error:
+                    raise DatasetExecutionError(
+                        ExecutionCode.ROLLBACK_FAILED,
+                        str(error),
+                        error.destination,
+                    ) from error
+            except FileExistsError as error:
+                raise DatasetExecutionError(
+                    ExecutionCode.ROLLBACK_FAILED,
+                    "source path appeared during move rollback",
+                    source,
+                ) from error
+            self.fs.fsync_directory(destination.parent)
+            self.fs.fsync_directory(source.parent)
+            _rebind_open_version_after_atomic_rename(
+                destination_handle,
+                destination_opened,
                 source,
-            ) from error
-        self.fs.fsync_directory(destination.parent)
-        self.fs.fsync_directory(source.parent)
-        _stable_digest(source, self.fs, expected=record.source, require_original_identity=True)
+                rename_commit,
+            )
+            _stable_digest(source, self.fs, expected=record.source, require_original_identity=True)
 
     def _remove_cross_volume_destination(
         self,
@@ -5367,7 +5691,20 @@ class DatasetBundleExecutor:
                 _require_path_matches_stat(quarantine, target_opened)
                 _require_path_matches_stat(comparison, keeper_opened)
                 try:
-                    self.fs.rename_no_replace(quarantine, tombstone)
+                    try:
+                        rename_commit = self.fs.rename_no_replace_verified(
+                            quarantine,
+                            tombstone,
+                            target_handle,
+                        )
+                    except UnverifiedRenameCommitError as error:
+                        if on_mutation is not None:
+                            on_mutation()
+                        raise DatasetExecutionError(
+                            ExecutionCode.SOURCE_CHANGED,
+                            str(error),
+                            error.destination,
+                        ) from error
                     if on_mutation is not None:
                         on_mutation()
                 except FileExistsError as error:
@@ -5384,7 +5721,12 @@ class DatasetBundleExecutor:
                         "quarantine name reappeared after atomic tombstoning",
                         quarantine,
                     )
-                _require_path_matches_stat(tombstone, target_opened)
+                target_opened = _rebind_open_version_after_atomic_rename(
+                    target_handle,
+                    target_opened,
+                    tombstone,
+                    rename_commit,
+                )
                 _require_path_matches_stat(comparison, keeper_opened)
                 _reverify_open_equal_pair(
                     target_handle,
@@ -5453,13 +5795,17 @@ class DatasetBundleExecutor:
                 first_path=tombstone,
                 second_path=comparison,
             )
-            # The unpredictable, same-directory tombstone drastically narrows the final
-            # name-lookup race.  The post-hook identity check detects deterministic replacement
-            # tests; see SAFETY_MODEL.md for the remaining same-user namespace adversary limit.
-            self.fs.unlink(tombstone)
+            if not self.fs.delete_verified_regular_file(
+                tombstone,
+                target_handle,
+            ):
+                raise DatasetExecutionError(
+                    ExecutionCode.SOURCE_CHANGED,
+                    "finalize tombstone no longer identifies the verified quarantine payload",
+                    tombstone,
+                )
             if on_mutation is not None:
                 on_mutation()
-            self.fs.fsync_directory(tombstone.parent)
             _require_open_version(keeper_opened, os.fstat(keeper_handle.fileno()), comparison)
             _require_path_matches_stat(comparison, keeper_opened)
             self._call_fault("after_finalize_purge", record)

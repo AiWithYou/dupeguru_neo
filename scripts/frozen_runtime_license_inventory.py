@@ -9,13 +9,17 @@ from datetime import datetime, timezone
 import hashlib
 from importlib import metadata
 import json
+import lzma
 import os
 from pathlib import Path, PurePosixPath
 import platform
 import re
 import shutil
+import subprocess
 import sys
+import tarfile
 import tempfile
+from urllib.parse import urlsplit
 
 from packaging.utils import canonicalize_name
 
@@ -26,10 +30,37 @@ _SOURCE_LOCK_SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_LICENSE_FILE_SIZE = 16 * 1024 * 1024
 _MAX_LICENSE_TOTAL_SIZE = 32 * 1024 * 1024
+_MAX_CPYTHON_SOURCE_ARCHIVE_SIZE = 128 * 1024 * 1024
+_MAX_CPYTHON_SOURCE_MEMBER_COUNT = 100_000
+_MAX_CPYTHON_SOURCE_MEMBER_SIZE = 256 * 1024 * 1024
+_MAX_CPYTHON_SOURCE_TOTAL_SIZE = 1024 * 1024 * 1024
+_MAX_CPYTHON_SOURCE_EXPANDED_SIZE = 1024 * 1024 * 1024
+_MAX_CPYTHON_SOURCE_PATH_LENGTH = 4096
 _COMPONENT_MARKERS = {
     "cpython-runtime": b"PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2",
     "pyinstaller-bootloader": b"Bootloader Exception",
 }
+
+
+class _CPythonLicenseAbsent(RuntimeError):
+    """The active runtime contains no CPython license file."""
+
+
+class _BoundedReader:
+    def __init__(self, stream, maximum_size: int):
+        self._stream = stream
+        self._maximum_size = maximum_size
+        self._consumed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        remaining = self._maximum_size - self._consumed
+        if size < 0 or size > remaining + 1:
+            size = remaining + 1
+        content = self._stream.read(size)
+        self._consumed += len(content)
+        if self._consumed > self._maximum_size:
+            raise RuntimeError("CPython source archive exceeds its decompressed-size limit")
+        return content
 
 
 def _source_date_epoch() -> int:
@@ -130,9 +161,13 @@ def _source_components(source_lock_path: Path) -> dict[str, dict]:
                 "url": source.get("url"),
                 "version": source.get("version"),
             }
+            size = source.get("size")
             if (
                 not all(isinstance(value, str) and value for value in required.values())
                 or _SHA256.fullmatch(required["sha256"]) is None
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or not 0 < size <= _MAX_CPYTHON_SOURCE_ARCHIVE_SIZE
             ):
                 raise RuntimeError(f"invalid frozen-runtime source entry: {provider}")
             found[provider] = required
@@ -159,7 +194,206 @@ def _cpython_license() -> tuple[str, bytes]:
             if _COMPONENT_MARKERS["cpython-runtime"] not in content:
                 raise RuntimeError("CPython license does not contain the expected PSF terms")
             return name, content
-    raise RuntimeError(f"CPython license is absent from sys.base_prefix: {base_prefix}")
+    raise _CPythonLicenseAbsent(f"CPython license is absent from sys.base_prefix: {base_prefix}")
+
+
+def _cpython_source_pin(source_lock_path: Path, expected_source: dict) -> dict:
+    document = _load_json(source_lock_path, "frozen-runtime source lock")
+    raw_sources = document.get("sources")
+    if not isinstance(raw_sources, list):
+        raise RuntimeError("frozen-runtime source lock sources must be an array")
+    matches = []
+    for source in raw_sources:
+        if not isinstance(source, dict):
+            raise RuntimeError("frozen-runtime source lock entry must be an object")
+        provides = source.get("provides")
+        if not isinstance(provides, list):
+            raise RuntimeError("frozen-runtime source provider list is invalid")
+        if any(isinstance(provider, str) and canonicalize_name(provider) == "cpython-runtime" for provider in provides):
+            matches.append(source)
+    if len(matches) != 1:
+        raise RuntimeError("frozen-runtime source lock must contain one CPython source")
+    source = matches[0]
+    public_source = {
+        "filename": source.get("filename"),
+        "name": source.get("name"),
+        "sha256": source.get("sha256"),
+        "url": source.get("url"),
+        "version": source.get("version"),
+    }
+    if public_source != expected_source:
+        raise RuntimeError("frozen-runtime CPython source mapping changed unexpectedly")
+    version = expected_source["version"]
+    if source.get("kind") != "python-official-source":
+        raise RuntimeError("frozen-runtime CPython source kind is invalid")
+    if source.get("filename") != f"Python-{version}.tar.xz":
+        raise RuntimeError("frozen-runtime CPython source filename is invalid")
+    size = source.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= _MAX_CPYTHON_SOURCE_ARCHIVE_SIZE:
+        raise RuntimeError("frozen-runtime CPython source size is invalid")
+    parsed_url = urlsplit(source["url"])
+    if (
+        parsed_url.scheme != "https"
+        or parsed_url.hostname != "www.python.org"
+        or parsed_url.netloc != "www.python.org"
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.query
+        or parsed_url.fragment
+        or PurePosixPath(parsed_url.path).name != source["filename"]
+    ):
+        raise RuntimeError("frozen-runtime CPython source URL is unsafe")
+    return {
+        **public_source,
+        "size": size,
+    }
+
+
+def _curl_executable() -> str:
+    candidates = ("curl.exe", "curl") if sys.platform == "win32" else ("curl",)
+    for candidate in candidates:
+        executable = shutil.which(candidate)
+        if executable is not None:
+            return executable
+    raise RuntimeError("curl is required to fetch the pinned CPython source archive")
+
+
+def _run_curl(url: str, output_path: Path, maximum_size: int) -> None:
+    command = [
+        _curl_executable(),
+        "--fail",
+        "--location",
+        "--show-error",
+        "--silent",
+        "--retry",
+        "5",
+        "--retry-all-errors",
+        "--connect-timeout",
+        "30",
+        "--proto",
+        "=https",
+        "--proto-redir",
+        "=https",
+        "--tlsv1.2",
+        "--max-filesize",
+        str(maximum_size),
+        "--output",
+        str(output_path),
+        url,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=1800,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("curl could not fetch the pinned CPython source archive") from error
+    if result.returncode != 0:
+        raise RuntimeError(f"curl failed with exit code {result.returncode} while fetching CPython source")
+
+
+def _read_cpython_license_from_archive(archive_path: Path, source: dict) -> bytes:
+    if archive_path.is_symlink() or not archive_path.is_file():
+        raise RuntimeError("downloaded CPython source must be a regular non-symlink file")
+    archive_size = archive_path.stat().st_size
+    if archive_size != source["size"]:
+        raise RuntimeError(
+            "downloaded CPython source size mismatch: " f"expected {source['size']}, found {archive_size}"
+        )
+    archive_digest = _sha256_file(archive_path)
+    if archive_digest != source["sha256"]:
+        raise RuntimeError(
+            "downloaded CPython source digest mismatch: " f"expected {source['sha256']}, found {archive_digest}"
+        )
+    expected_root = f"Python-{source['version']}"
+    expected_license = f"{expected_root}/LICENSE"
+    seen_paths = set()
+    license_content = None
+    member_count = 0
+    total_size = 0
+    try:
+        with lzma.open(archive_path, mode="rb") as decompressed:
+            bounded = _BoundedReader(
+                decompressed,
+                _MAX_CPYTHON_SOURCE_EXPANDED_SIZE,
+            )
+            with tarfile.open(fileobj=bounded, mode="r|") as archive:
+                for member in archive:
+                    member_count += 1
+                    if member_count > _MAX_CPYTHON_SOURCE_MEMBER_COUNT:
+                        raise RuntimeError("CPython source archive contains too many members")
+                    member_name = member.name
+                    if (
+                        not member_name
+                        or len(member_name) > _MAX_CPYTHON_SOURCE_PATH_LENGTH
+                        or "\0" in member_name
+                        or "\\" in member_name
+                        or member_name.startswith("/")
+                    ):
+                        raise RuntimeError("CPython source archive contains an unsafe member path")
+                    member_path = PurePosixPath(member_name)
+                    if (
+                        not member_path.parts
+                        or member_path.parts[0] != expected_root
+                        or any(part in {"", ".", ".."} for part in member_path.parts)
+                    ):
+                        raise RuntimeError("CPython source archive member is outside its expected root")
+                    normalized_name = member_path.as_posix()
+                    if normalized_name in seen_paths:
+                        raise RuntimeError("CPython source archive contains a duplicate member path")
+                    seen_paths.add(normalized_name)
+                    if member.isfile():
+                        if (
+                            member.size < 0
+                            or member.size > _MAX_CPYTHON_SOURCE_MEMBER_SIZE
+                            or total_size > _MAX_CPYTHON_SOURCE_TOTAL_SIZE - member.size
+                        ):
+                            raise RuntimeError("CPython source archive exceeds its expanded-size limit")
+                        total_size += member.size
+                    if normalized_name != expected_license:
+                        continue
+                    if not member.isfile():
+                        raise RuntimeError("CPython source LICENSE must be a regular archive member")
+                    if not 0 < member.size <= _MAX_LICENSE_FILE_SIZE:
+                        raise RuntimeError("CPython source LICENSE has an invalid size")
+                    extracted = archive.extractfile(member)
+                    if extracted is None:
+                        raise RuntimeError("CPython source LICENSE could not be read")
+                    content = extracted.read(_MAX_LICENSE_FILE_SIZE + 1)
+                    if len(content) != member.size:
+                        raise RuntimeError("CPython source LICENSE size does not match its archive metadata")
+                    license_content = content
+    except RuntimeError:
+        raise
+    except (OSError, EOFError, lzma.LZMAError, tarfile.TarError) as error:
+        raise RuntimeError("downloaded CPython source is not a valid tar.xz archive") from error
+    if license_content is None:
+        raise RuntimeError(f"CPython source archive is missing {expected_license}")
+    if _COMPONENT_MARKERS["cpython-runtime"] not in license_content:
+        raise RuntimeError("CPython source LICENSE does not contain the expected PSF terms")
+    return license_content
+
+
+def _download_cpython_license(source: dict) -> tuple[str, bytes]:
+    with tempfile.TemporaryDirectory(prefix="dupeguru-cpython-license-") as temporary:
+        temporary_root = Path(temporary)
+        archive_path = temporary_root / source["filename"]
+        _run_curl(source["url"], archive_path, source["size"])
+        return "LICENSE", _read_cpython_license_from_archive(archive_path, source)
+
+
+def _resolved_cpython_license(
+    source_lock_path: Path,
+    expected_source: dict,
+) -> tuple[str, bytes]:
+    source = _cpython_source_pin(source_lock_path, expected_source)
+    try:
+        return _cpython_license()
+    except _CPythonLicenseAbsent:
+        return _download_cpython_license(source)
 
 
 def _distribution_license(
@@ -278,7 +512,10 @@ def generate_inventory(
     try:
         if platform.python_version() != source_components["cpython-runtime"]["version"]:
             raise RuntimeError("active CPython version does not match the frozen-runtime source lock")
-        cpython_filename, cpython_content = _cpython_license()
+        cpython_filename, cpython_content = _resolved_cpython_license(
+            source_lock_path,
+            source_components["cpython-runtime"],
+        )
         pyinstaller, pyinstaller_filename, pyinstaller_content = _distribution_license(
             "PyInstaller",
             _COMPONENT_MARKERS["pyinstaller-bootloader"],

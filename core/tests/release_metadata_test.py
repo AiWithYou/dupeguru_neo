@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import tarfile
 
@@ -121,9 +122,9 @@ def _write_complete_release_subjects(directory, version="5.0.0"):
         "requirements-release.txt",
         f"dupeguru-neo-{version}-source.tar.gz",
         f"dupeguru-neo-{version}.cdx.json",
-        f"dupeguru_neo-{version}-cp312-cp312-linux_x86_64.whl",
-        f"dupeguru_neo-{version}-cp312-cp312-macosx_11_0_arm64.whl",
-        f"dupeguru_neo-{version}-cp312-cp312-win_amd64.whl",
+        f"dupeguru_neo-{version}-cp313-cp313-linux_x86_64.whl",
+        f"dupeguru_neo-{version}-cp313-cp313-macosx_11_0_arm64.whl",
+        f"dupeguru_neo-{version}-cp313-cp313-win_amd64.whl",
         f"dupeguru_neo-{version}.tar.gz",
     }
     for name in names:
@@ -173,7 +174,7 @@ def test_release_contract_requires_one_frozen_abi_wheel_per_runtime_target(tmp_p
     missing_wheel = next(name for name in names if name.endswith("-win_amd64.whl"))
     tmp_path.joinpath(missing_wheel).unlink()
 
-    with pytest.raises(RuntimeError, match="one CPython 3.12 wheel"):
+    with pytest.raises(RuntimeError, match="one CPython 3.13 wheel"):
         release_metadata.verify_release_payload_contract(
             tmp_path,
             version="5.0.0",
@@ -183,8 +184,8 @@ def test_release_contract_requires_one_frozen_abi_wheel_per_runtime_target(tmp_p
 
     tmp_path.joinpath(missing_wheel).write_bytes(b"release subject")
     linux_wheel = next(name for name in names if name.endswith("-linux_x86_64.whl"))
-    tmp_path.joinpath(linux_wheel).rename(tmp_path / linux_wheel.replace("-cp312-cp312-", "-cp313-cp313-"))
-    with pytest.raises(RuntimeError, match="frozen CPython 3.12 ABI"):
+    tmp_path.joinpath(linux_wheel).rename(tmp_path / linux_wheel.replace("-cp313-cp313-", "-cp314-cp314-"))
+    with pytest.raises(RuntimeError, match="frozen CPython 3.13 ABI"):
         release_metadata.verify_release_payload_contract(
             tmp_path,
             version="5.0.0",
@@ -549,6 +550,10 @@ def test_build_manifest_uses_release_identity_and_reproducible_timestamp(tmp_pat
     assert manifest["source_date_epoch"] == 1
     assert manifest["timestamp"] == "1970-01-01T00:00:01Z"
     assert manifest["commit"] == "a" * 40
+    assert manifest["builder_runtime"] == {
+        "implementation": platform.python_implementation(),
+        "version": platform.python_version(),
+    }
     assert manifest["artifacts"] == [
         {
             "name": artifact.name,

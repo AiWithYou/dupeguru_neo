@@ -123,6 +123,8 @@ class ReproducibleBuildExt(build_ext):
                 self._configure_msvc(source_root)
             elif compiler_type == "unix":
                 self._configure_unix(source_root)
+                if sys.platform == "darwin":
+                    self._configure_darwin()
         super().build_extensions()
 
     def _configure_msvc(self, source_root):
@@ -143,6 +145,10 @@ class ReproducibleBuildExt(build_ext):
         compile_args = self._supported_compile_args(candidates)
         for extension in self.extensions:
             extension.extra_compile_args = _append_unique(extension.extra_compile_args, compile_args)
+
+    def _configure_darwin(self):
+        for extension in self.extensions:
+            extension.extra_link_args = _append_unique(extension.extra_link_args, ("-Wl,-no_uuid",))
 
     def _supported_compile_args(self, candidates):
         supported = []

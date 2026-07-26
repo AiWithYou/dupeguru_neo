@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import errno
+import logging
 import os
 import stat
 import sys
@@ -29,6 +30,31 @@ from typing import Iterator, Optional, Sequence, Tuple
 _RENAME_NOREPLACE = 1
 _RENAME_EXCL = 0x00000004
 _FILE_RENAME_INFORMATION = 10
+
+
+def _close_operation_lease(
+    descriptor: int,
+    *,
+    lease_name: str,
+    path: Path | str,
+) -> None:
+    """Release a lease without changing the operation outcome already decided.
+
+    A native rename or delete disposition can commit before descriptor cleanup.
+    Reporting a later ``close()`` failure as the operation result would make the
+    caller incorrectly assume that the original name still exists.  The release
+    problem is therefore diagnostic only and is logged explicitly.
+    """
+
+    try:
+        os.close(descriptor)
+    except OSError:
+        logging.warning(
+            "Failed to release %s for %s; preserving the already-determined operation outcome",
+            lease_name,
+            path,
+            exc_info=True,
+        )
 
 
 def _mtime_ns(value: os.stat_result) -> int:
@@ -456,6 +482,31 @@ class RenameCommit:
     destination_name: str
     postcondition_verified: bool
     verification_error: Optional[str] = None
+    preopened_source_used: bool = False
+
+
+@dataclass(frozen=True)
+class PreopenedRenameSource:
+    """A Windows source lease that must be consumed by the native rename.
+
+    The descriptor owns a handle opened with read, attribute, and delete
+    access while sharing reads only.  Consequently the verified object cannot
+    be written, deleted, or replaced between verification and commit.
+    """
+
+    descriptor: int
+    source_directory_identity: Tuple[int, int]
+    source_name: str
+    expected_signature: Tuple[int, int, int, int, int, int]
+
+    def __post_init__(self) -> None:
+        if type(self.descriptor) is not int or self.descriptor < 0:
+            raise ValueError("A preopened rename source requires a valid descriptor")
+        if len(tuple(self.source_directory_identity)) != 2:
+            raise ValueError("A preopened rename source requires a directory identity")
+        _validate_name(self.source_name)
+        if len(tuple(self.expected_signature)) != 6:
+            raise ValueError("A preopened rename source requires a complete entry signature")
 
 
 def _raise_posix_rename_error(error_number: int, destination: str) -> None:
@@ -573,6 +624,239 @@ def _open_windows_source(path: Path) -> int:
     except BaseException:
         close_handle(handle)
         raise
+
+
+def _open_windows_preverified_source(path: Path) -> int:
+    """Open a regular rename source once, excluding every mutating peer."""
+
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    delete_access = 0x00010000
+    file_read_data = 0x00000001
+    file_read_attributes = 0x00000080
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+
+    handle = create_file(
+        _windows_extended_path(path),
+        delete_access | file_read_data | file_read_attributes,
+        # The same handle is used for verification and rename.  Excluding both
+        # write and delete sharing closes the name-replacement race as well as
+        # the in-place content race.
+        file_share_read,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        close_handle(handle)
+        raise
+
+
+@contextlib.contextmanager
+def open_preverified_rename_source(
+    source_directory: BoundDirectory,
+    source_name: str,
+    expected_signature: Tuple[int, int, int, int, int, int],
+) -> Iterator[PreopenedRenameSource]:
+    """Lease one Windows source for verification and same-handle commit.
+
+    There is deliberately no path-reopen or weaker-share fallback.  A caller
+    on an unsupported platform must use the ordinary bound rename contract
+    and accept that platform's documented namespace-race limits.
+    """
+
+    if os.name != "nt":
+        raise OSError(
+            errno.ENOTSUP,
+            "Preopened same-handle rename sources are only available on Windows",
+            source_name,
+        )
+    source_name = _validate_name(source_name)
+    expected_signature = tuple(expected_signature)
+    if len(expected_signature) != 6:
+        raise ValueError("A preverified rename source requires a complete entry signature")
+    source_path = source_directory.path.joinpath(source_name)
+    descriptor = _open_windows_preverified_source(source_path)
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(opened)
+            or not stat.S_ISREG(opened.st_mode)
+            or _entry_signature(opened) != expected_signature
+        ):
+            raise OSError(
+                errno.ESTALE,
+                "The preopened rename source does not match the verified regular file",
+                source_name,
+            )
+        path_value = source_directory.lstat(source_name)
+        if _is_link_or_reparse(path_value) or _entry_signature(path_value) != expected_signature:
+            raise OSError(
+                errno.ESTALE,
+                "The preopened rename source is no longer bound to its verified name",
+                source_name,
+            )
+        yield PreopenedRenameSource(
+            descriptor=descriptor,
+            source_directory_identity=source_directory.identity,
+            source_name=source_name,
+            expected_signature=expected_signature,
+        )
+    finally:
+        _close_operation_lease(
+            descriptor,
+            lease_name="preverified rename-source lease",
+            path=source_path,
+        )
+
+
+def _set_windows_delete_disposition(descriptor: int, path: Path) -> None:
+    """Delete the object represented by ``descriptor`` when it closes."""
+
+    import msvcrt
+    from ctypes import wintypes
+
+    class _FileDispositionInfoEx(ctypes.Structure):
+        _fields_ = [("flags", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    set_file_information = kernel32.SetFileInformationByHandle
+    set_file_information.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    set_file_information.restype = wintypes.BOOL
+
+    file_disposition_info_ex = 21
+    file_disposition_flag_delete = 0x00000001
+    file_disposition_flag_posix_semantics = 0x00000002
+    file_disposition_flag_ignore_readonly_attribute = 0x00000010
+    disposition = _FileDispositionInfoEx(
+        file_disposition_flag_delete
+        | file_disposition_flag_posix_semantics
+        | file_disposition_flag_ignore_readonly_attribute
+    )
+    if not set_file_information(
+        msvcrt.get_osfhandle(descriptor),
+        file_disposition_info_ex,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def delete_tracked_windows_entry(
+    path: Path,
+    expected_identity: Tuple[int, int],
+    expected_mode: int,
+) -> bool:
+    """Delete only the Windows object whose identity was captured at creation.
+
+    The final name is opened without following reparses and without write or
+    delete sharing.  Deletion is then applied to that verified handle itself;
+    this function never falls back to a path-based unlink.
+    """
+
+    if os.name != "nt":
+        raise OSError(
+            errno.ENOTSUP,
+            "Handle-bound tracked-entry cleanup is only available on Windows",
+            str(path),
+        )
+
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    delete_access = 0x00010000
+    file_read_attributes = 0x00000080
+    file_share_read = 0x00000001
+    open_existing = 3
+    file_flag_backup_semantics = 0x02000000
+    file_flag_open_reparse_point = 0x00200000
+    handle = create_file(
+        _windows_extended_path(path),
+        delete_access | file_read_attributes,
+        file_share_read,
+        None,
+        open_existing,
+        file_flag_backup_semantics | file_flag_open_reparse_point,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(
+            handle,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        close_handle(handle)
+        raise
+
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(opened)
+            or _identity(opened) != tuple(expected_identity)
+            or stat.S_IFMT(opened.st_mode) != stat.S_IFMT(expected_mode)
+        ):
+            return False
+        _set_windows_delete_disposition(descriptor, Path(path))
+        return True
+    finally:
+        _close_operation_lease(
+            descriptor,
+            lease_name="verified delete-disposition lease",
+            path=path,
+        )
 
 
 def _raise_windows_rename_error(status: int, destination: str) -> None:
@@ -716,6 +1000,8 @@ def rename_no_replace(
     source_name: str,
     destination_directory: BoundDirectory,
     destination_name: str,
+    *,
+    preopened_source: Optional[PreopenedRenameSource] = None,
 ) -> RenameCommit:
     """Atomically rename one bound entry and never overwrite ``destination_name``.
 
@@ -741,17 +1027,42 @@ def rename_no_replace(
         )
     expected_signature = _entry_signature(source_before)
     source_handle = -1
+    owns_source_handle = False
+    preopened_source_used = False
     committed = False
     try:
-        if os.name == "posix":
+        if preopened_source is not None:
+            if os.name != "nt":
+                raise OSError(
+                    errno.ENOTSUP,
+                    "A preopened rename source cannot be consumed on this platform",
+                    source_name,
+                )
+            if not isinstance(preopened_source, PreopenedRenameSource):
+                raise TypeError("preopened_source must be a PreopenedRenameSource")
+            if (
+                preopened_source.source_directory_identity != source_directory.identity
+                or preopened_source.source_name != source_name
+                or preopened_source.expected_signature != expected_signature
+            ):
+                raise OSError(
+                    errno.ESTALE,
+                    "The preopened rename source does not match the bound source name",
+                    source_name,
+                )
+            source_handle = preopened_source.descriptor
+            preopened_source_used = True
+        elif os.name == "posix":
             flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             if stat.S_ISDIR(source_before.st_mode):
                 flags |= getattr(os, "O_DIRECTORY", 0)
             source_handle = source_directory.open_entry(source_name, flags)
+            owns_source_handle = True
         elif os.name == "nt":
             source_handle = _open_windows_source(
                 source_directory.path.joinpath(source_name),
             )
+            owns_source_handle = True
         else:
             raise OSError(
                 errno.ENOTSUP,
@@ -802,9 +1113,10 @@ def rename_no_replace(
             destination_name=destination_name,
             postcondition_verified=verified,
             verification_error=verification_error,
+            preopened_source_used=preopened_source_used,
         )
     finally:
-        if source_handle >= 0:
+        if owns_source_handle and source_handle >= 0:
             try:
                 os.close(source_handle)
             except OSError:

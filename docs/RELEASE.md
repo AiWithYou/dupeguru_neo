@@ -14,7 +14,8 @@ artifacts. A local build is useful for testing, but is not a releasable build.
   `master`.
 - `SOURCE_DATE_EPOCH` is mandatory and is read from the commit timestamp.
 - Build metadata records the repository, full commit, tag ref, version,
-  timestamp, artifact sizes and SHA-256 digests, and the SHA-256 of
+  timestamp, exact Python implementation/version used to assemble the public
+  payload, artifact sizes and SHA-256 digests, and the SHA-256 of
   `requirements-release.txt`.
 
 The gate rejects mismatched versions, local or epoch versions, unsafe tag
@@ -26,7 +27,7 @@ release commits that are not on `master`.
 The public release allowlist contains:
 
 1. one canonical pip sdist, built once with the pinned PEP 517 backend;
-2. one CPython 3.12.13 wheel for each supported release target:
+2. one CPython 3.13.14 wheel for each supported release target:
    Linux x86_64, Windows x86_64, and macOS arm64;
 3. `dupeguru-neo-<version>-source.tar.gz`, generated from every tracked object
    in the exact tagged commit;
@@ -240,7 +241,7 @@ part of the official release contract.
    private vulnerability reporting are configured.
 4. Create and push the matching tag.
 5. Approve the protected environment.
-6. Confirm the draft contains exactly the three CPython 3.12 wheels, canonical
+6. Confirm the draft contains exactly the three CPython 3.13 wheels, canonical
    sdist, tagged source archive, notices, locks, CycloneDX SBOM,
    `BUILD-METADATA.json`, `SHA256SUMS`, and one Sigstore bundle per subject.
 7. Confirm that no portable, installer, source-companion file, log, or debug

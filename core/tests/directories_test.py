@@ -65,7 +65,10 @@ testpath = None
 def setup_module(module):
     # In this unit, we have tests depending on two directory structure. One with only one file in it
     # and another with a more complex structure.
-    testpath = Path(tempfile.mkdtemp())
+    # macOS tempfile paths use the system /var -> /private/var alias. Resolve
+    # that trusted OS-provided location before testing the walker's deliberately
+    # strict rejection of user-controlled symlink ancestors.
+    testpath = Path(tempfile.mkdtemp()).resolve(strict=True)
     module.testpath = testpath
     rootpath = testpath.joinpath("onefile")
     rootpath.mkdir()

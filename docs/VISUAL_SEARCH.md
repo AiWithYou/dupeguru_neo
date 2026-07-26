@@ -24,8 +24,11 @@ policy:
 
 The SQLite schema is version 5. Every row is bound to physical file identity,
 size, nanosecond mtime, and a versioned content-generation token (Windows
-`FILE_BASIC_INFO.ChangeTime`, or POSIX ctime). The existing `phashes` BLOB
-stores a strict, size-bounded, versioned JSON feature payload. SQLite
+volume USN-journal identifier plus file USN, or POSIX ctime). Windows has no
+timestamp fallback: an unavailable/disabled journal or a filesystem/share
+without the required USN controls prevents cache reuse and feature
+publication. The existing `phashes` BLOB stores a strict, size-bounded,
+versioned JSON feature payload. SQLite
 `typeof()`/`length()` probes reject oversized values before payload retrieval;
 the JSON lexer then enforces depth, node, scalar, and string budgets before
 decoding. Old raw pHash blobs, unknown payload versions, duplicate keys,

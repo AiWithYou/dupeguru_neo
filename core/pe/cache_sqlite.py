@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3 as sqlite
@@ -26,6 +27,7 @@ from core.file_identity import (
     FileIdentityError,
     IdentityVerdict,
     get_file_identity,
+    get_file_identity_from_fd,
     same_physical_file,
 )
 from core.pe.cache import bytes_to_colors, colors_to_bytes
@@ -543,6 +545,87 @@ def _read_existing_header(path: Path, expected_identity: FileIdentity) -> None:
     application_id = header[SQLITE_APPLICATION_ID_OFFSET : SQLITE_APPLICATION_ID_OFFSET + 4]
     if application_id != SQLITE_APPLICATION_ID_BYTES:
         raise CacheSchemaError("existing SQLite database is not owned by the dupeGuru picture cache")
+
+
+@contextlib.contextmanager
+def _hold_database_path_identity(path: Path, expected_identity: FileIdentity):
+    """Prevent Windows path replacement while the verified database is reopened."""
+
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        from core.file_identity import (
+            _FILE_FLAG_OPEN_REPARSE_POINT,
+            _FILE_READ_ATTRIBUTES,
+            _FILE_SHARE_READ,
+            _FILE_SHARE_WRITE,
+            _INVALID_HANDLE_VALUE,
+            _OPEN_EXISTING,
+            _close_handle,
+            _create_file,
+            windows_extended_path,
+        )
+
+        raw_handle = _create_file(
+            windows_extended_path(path),
+            _FILE_READ_ATTRIBUTES | 0x0001,  # FILE_READ_DATA
+            # Write sharing lets the verified SQLite connection open. Omitting
+            # delete sharing leases this exact directory entry across reopen.
+            _FILE_SHARE_READ | _FILE_SHARE_WRITE,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        if raw_handle == _INVALID_HANDLE_VALUE:
+            error = ctypes.WinError(ctypes.get_last_error())
+            raise CacheSafetyError("image cache path could not be leased across writable reopen") from error
+        try:
+            descriptor = msvcrt.open_osfhandle(
+                raw_handle,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+        except BaseException:
+            _close_handle(raw_handle)
+            raise
+    else:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | _no_follow_open_flag()
+        descriptor = os.open(path, flags)
+
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or is_reparse_point(before) or getattr(before, "st_nlink", None) != 1:
+            raise CacheSafetyError("leased image cache is not a single-link regular file")
+        before_identity = get_file_identity_from_fd(
+            descriptor,
+            path=path,
+            stat_result=before,
+        )
+        if same_physical_file(expected_identity, before_identity).verdict is not IdentityVerdict.SAME:
+            raise CacheSafetyError("image cache identity changed before writable reopen")
+        yield
+        after = os.fstat(descriptor)
+        after_identity = get_file_identity_from_fd(
+            descriptor,
+            path=path,
+            stat_result=after,
+        )
+        if (
+            int(before.st_size) != int(after.st_size)
+            or int(before.st_mtime_ns) != int(after.st_mtime_ns)
+            or getattr(after, "st_nlink", None) != 1
+            or is_reparse_point(after)
+            or same_physical_file(before_identity, after_identity).verdict is not IdentityVerdict.SAME
+        ):
+            raise CacheSafetyError("image cache changed while its writable handle was opened")
+        _path_stat, path_identity = _require_plain_regular_file(path, single_link=True)
+        if same_physical_file(expected_identity, path_identity).verdict is not IdentityVerdict.SAME:
+            raise CacheSafetyError("image cache path changed while its writable handle was opened")
+    except (FileIdentityError, OSError) as error:
+        raise CacheSafetyError("image cache identity could not be leased across writable reopen") from error
+    finally:
+        os.close(descriptor)
 
 
 def validate_sqlite_cache_location(
@@ -1584,6 +1667,23 @@ class SqliteCache:
             raise CacheSafetyError("new image cache changed before SQLite initialization")
         return current_identity
 
+    def _open_verified_writable(self, path, expected_identity):
+        """Open the writable connection while a verified path lease is held."""
+
+        with _hold_database_path_identity(path, expected_identity):
+            _read_existing_header(path, expected_identity)
+            _require_no_sqlite_sidecars(path)
+            self.con = self._connect(readonly=False)
+            self._configure_connection(query_only=False)
+            current_identity = self._require_database_identity(
+                path,
+                expected_identity,
+                require_header=False,
+            )
+            self._validate_or_migrate()
+            _require_no_sqlite_sidecars(path)
+            return current_identity
+
     def _create_con(self):
         if self.dbname == ":memory:":
             if self.readonly:
@@ -1621,23 +1721,6 @@ class SqliteCache:
                     raise CacheSchemaError(
                         "image cache schema {} is unsupported; automatic migration is disabled".format(version)
                     )
-                if not self.readonly:
-                    self.con.close()
-                    self.con = None
-                    _require_no_sqlite_sidecars(path)
-                    self._require_database_identity(
-                        path,
-                        expected_identity,
-                        require_header=True,
-                    )
-                    self.con = self._connect(readonly=False)
-                    self._configure_connection(query_only=False)
-                    self._require_database_identity(
-                        path,
-                        expected_identity,
-                        require_header=True,
-                    )
-                    self._validate_or_migrate()
             else:
                 self.con = self._connect(readonly=False)
                 self._require_database_identity(
@@ -1648,12 +1731,21 @@ class SqliteCache:
                 )
                 self._configure_connection(query_only=False)
                 self._initialize_new()
-            _require_no_sqlite_sidecars(path)
-            current_identity = self._require_database_identity(
-                path,
-                expected_identity,
-                require_header=True,
-            )
+            if self.readonly:
+                _require_no_sqlite_sidecars(path)
+                current_identity = self._require_database_identity(
+                    path,
+                    expected_identity,
+                    require_header=True,
+                )
+            else:
+                self.con.close()
+                self.con = None
+                _require_no_sqlite_sidecars(path)
+                current_identity = self._open_verified_writable(
+                    path,
+                    expected_identity,
+                )
             self._database_identity = current_identity
         except BaseException:
             if self.con is not None:

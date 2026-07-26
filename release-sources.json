@@ -1,7 +1,7 @@
 {
   "schema": "dupeguru.release-source-lock",
   "schema_version": 1,
-  "portable_python_version": "3.12.13",
+  "portable_python_version": "3.13.14",
   "portable_builder": {
     "name": "PyInstaller",
     "version": "6.21.0"
@@ -130,16 +130,16 @@
       "version": "6.21.0"
     },
     {
-      "filename": "Python-3.12.13.tar.xz",
+      "filename": "Python-3.13.14.tar.xz",
       "kind": "python-official-source",
       "name": "CPython",
       "provides": [
         "cpython-runtime"
       ],
-      "sha256": "c08bc65a81971c1dd5783182826503369466c7e67374d1646519adf05207b684",
-      "size": 20801708,
-      "url": "https://www.python.org/ftp/python/3.12.13/Python-3.12.13.tar.xz",
-      "version": "3.12.13"
+      "sha256": "639e43243c620a308f968213df9e00f2f8f62332f7adbaa7a7eeb9783057c690",
+      "size": 23021880,
+      "url": "https://www.python.org/ftp/python/3.13.14/Python-3.13.14.tar.xz",
+      "version": "3.13.14"
     }
   ]
 }

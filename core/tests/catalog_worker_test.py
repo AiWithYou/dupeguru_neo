@@ -249,7 +249,7 @@ def test_generation_token_failure_prevents_artifact_reuse(tmp_path):
     catalog.close()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows ChangeTime integration")
+@pytest.mark.skipif(os.name != "nt", reason="Windows USN generation integration")
 def test_windows_restored_mtime_content_edit_is_rehashed_and_reported_modified(tmp_path):
     original = b"first-generation"
     replacement = b"other-generation"

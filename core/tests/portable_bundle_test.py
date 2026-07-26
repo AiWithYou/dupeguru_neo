@@ -204,11 +204,11 @@ def _write_fake_license_inventory(
 def _write_fake_frozen_runtime_inventory(data_root, lock, system):
     runtime_sources = {
         "cpython-runtime": {
-            "filename": "Python-3.12.13.tar.xz",
+            "filename": "Python-3.13.14.tar.xz",
             "name": "CPython",
             "sha256": "1" * 64,
-            "url": "https://www.python.org/Python-3.12.13.tar.xz",
-            "version": "3.12.13",
+            "url": "https://www.python.org/Python-3.13.14.tar.xz",
+            "version": "3.13.14",
         },
         "pyinstaller-bootloader": {
             "filename": "pyinstaller-6.21.0.tar.gz",
@@ -257,7 +257,7 @@ def _write_fake_frozen_runtime_inventory(data_root, lock, system):
     data_root.joinpath("release-sources.json").write_bytes(source_lock.read_bytes())
     root = data_root / "FROZEN-RUNTIME-LICENSES"
     files = {
-        "components/cpython-runtime-3.12.13/LICENSE.txt": (b"PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2\n"),
+        "components/cpython-runtime-3.13.14/LICENSE.txt": (b"PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2\n"),
         "components/pyinstaller-bootloader-6.21.0/COPYING.txt": (b"Bootloader Exception\n"),
     }
     components = []
@@ -459,7 +459,10 @@ def test_portable_tar_is_deterministic_and_structurally_verified(
 
 
 def test_archive_verification_rejects_path_traversal(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOURCE_DATE_EPOCH", "123456789")
+    # Python 3.14's zipfile honors SOURCE_DATE_EPOCH when constructing a
+    # default ZipInfo, so keep this hostile fixture inside the ZIP timestamp
+    # range. The test is about member-path validation, not epoch clamping.
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1700000000")
     archive_path = tmp_path / portable_bundle.portable_archive_name(
         "5.0.0",
         "windows",
@@ -557,7 +560,7 @@ def test_release_policy_accepts_payload_without_portable_artifacts(tmp_path):
 
 
 def test_release_policy_accepts_normal_wheel_sdist_and_source_archives(tmp_path):
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("core/__init__.py", b"")
         archive.writestr(
@@ -652,7 +655,7 @@ def test_release_policy_rejects_renamed_nested_portable_by_magic(tmp_path):
             "renamed/runtime.data": b"runtime",
         }
     )
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("dupeguru_neo/payload.data", inner)
 
@@ -668,7 +671,7 @@ def test_release_policy_rejects_renamed_nested_source_companion(tmp_path):
             ),
         }
     )
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("dupeguru_neo/payload.data", companion)
 
@@ -677,7 +680,7 @@ def test_release_policy_rejects_renamed_nested_source_companion(tmp_path):
 
 
 def test_release_policy_rejects_corrupt_renamed_nested_archive(tmp_path):
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("dupeguru_neo/payload.data", b"PK\x03\x04not-a-valid-archive")
 
@@ -689,7 +692,7 @@ def test_release_policy_bounds_nested_archive_recursion(tmp_path, monkeypatch):
     monkeypatch.setattr(portable_bundle, "_MAX_RELEASE_ARCHIVE_DEPTH", 1)
     deepest = _zip_bytes({"payload.txt": b"ordinary data"})
     middle = _zip_bytes({"nested.data": deepest})
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("dupeguru_neo/payload.data", middle)
 
@@ -698,7 +701,7 @@ def test_release_policy_bounds_nested_archive_recursion(tmp_path, monkeypatch):
 
 
 def test_release_policy_bounds_member_count_and_uncompressed_bytes(tmp_path, monkeypatch):
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("first.txt", b"123456")
         archive.writestr("second.txt", b"123456")
@@ -720,7 +723,7 @@ def test_release_policy_bounds_member_count_and_uncompressed_bytes(tmp_path, mon
 
 def test_release_policy_bounds_archive_compression_ratio(tmp_path, monkeypatch):
     monkeypatch.setattr(portable_bundle, "_MAX_RELEASE_ARCHIVE_COMPRESSION_RATIO", 2)
-    wheel = tmp_path / "dupeguru_neo-5.0.0-cp312-cp312-win_amd64.whl"
+    wheel = tmp_path / "dupeguru_neo-5.0.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("highly-compressible.txt", b"\0" * 4096)
 

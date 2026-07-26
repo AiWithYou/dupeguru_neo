@@ -120,6 +120,36 @@ def test_existing_picture_cache_is_validated_read_only_before_writable_open(
     cache.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path leases use native no-delete sharing")
+def test_writable_reopen_leases_verified_path_against_replacement(tmp_path, monkeypatch):
+    database = tmp_path / "cache.sqlite3"
+    replacement = tmp_path / "replacement.sqlite3"
+    _create_cache(database)
+    replacement.write_bytes(database.read_bytes())
+    real_connect = sqlite3.connect
+    replacement_attempted = False
+    replacement_blocked = False
+
+    def racing_connect(target, *args, **kwargs):
+        nonlocal replacement_attempted, replacement_blocked
+        if not replacement_attempted and os.fspath(target) == str(database) and kwargs.get("uri") is not True:
+            replacement_attempted = True
+            try:
+                os.replace(replacement, database)
+            except OSError as error:
+                replacement_blocked = getattr(error, "winerror", None) in {5, 32}
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(cache_sqlite.sqlite, "connect", racing_connect)
+
+    cache = SqliteCache(database)
+
+    assert replacement_attempted
+    assert replacement_blocked
+    assert replacement.exists()
+    cache.close()
+
+
 def test_new_database_exclusive_create_does_not_overwrite_racing_file(
     tmp_path,
     monkeypatch,

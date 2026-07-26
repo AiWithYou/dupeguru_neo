@@ -276,7 +276,7 @@ def _same_snapshot(left, right) -> bool:
     )
 
 
-def _open_output_snapshot(descriptor: int, path: Path):
+def _open_output_identity(descriptor: int, path: Path):
     try:
         output_stat = os.fstat(descriptor)
     except OSError as error:
@@ -295,6 +295,11 @@ def _open_output_snapshot(descriptor: int, path: Path):
         )
     except FileIdentityError as error:
         raise ThumbnailCacheSafetyError("thumbnail cache output identity is unavailable") from error
+    return output_stat, identity
+
+
+def _open_output_snapshot(descriptor: int, path: Path):
+    output_stat, identity = _open_output_identity(descriptor, path)
     try:
         generation = get_file_generation_token_from_fd(
             descriptor,
@@ -305,6 +310,67 @@ def _open_output_snapshot(descriptor: int, path: Path):
     except FileGenerationError as error:
         raise ThumbnailCacheSafetyError("thumbnail cache output generation is unavailable") from error
     return output_stat, identity, generation
+
+
+def _open_output_readonly(path: Path) -> int:
+    """Open one completed output without following or sharing mutations."""
+
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        from core.file_identity import (
+            _FILE_FLAG_OPEN_REPARSE_POINT,
+            _FILE_READ_ATTRIBUTES,
+            _FILE_SHARE_READ,
+            _INVALID_HANDLE_VALUE,
+            _OPEN_EXISTING,
+            _close_handle,
+            _create_file,
+            windows_extended_path,
+        )
+
+        raw_handle = _create_file(
+            windows_extended_path(path),
+            _FILE_READ_ATTRIBUTES | 0x0001,  # FILE_READ_DATA
+            # The verified name cannot be written, renamed, or deleted while
+            # its generation and bytes are inspected.
+            _FILE_SHARE_READ,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        if raw_handle == _INVALID_HANDLE_VALUE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return msvcrt.open_osfhandle(
+                raw_handle,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0),
+            )
+        except BaseException:
+            _close_handle(raw_handle)
+            raise
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    if no_follow is None:
+        raise ThumbnailCacheSafetyError("this platform cannot reopen thumbnail outputs without following links")
+    return os.open(path, flags | no_follow)
+
+
+def _read_open_output(descriptor: int, maximum_bytes: int) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks = []
+    total = 0
+    while True:
+        chunk = os.read(descriptor, min(1024 * 1024, maximum_bytes + 1 - total))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > maximum_bytes:
+            raise ThumbnailCacheSafetyError("thumbnail cache output exceeds its verified payload size")
 
 
 def _encode_png(image: QImage) -> bytes | None:
@@ -371,10 +437,10 @@ def _create_entry_exclusive(
 
     try:
         os.set_inheritable(descriptor, False)
-        opened_before = _open_output_snapshot(descriptor, path)
+        opened_before = _open_output_identity(descriptor, path)
         _write_all(descriptor, payload)
         os.fsync(descriptor)
-        opened_after = _open_output_snapshot(descriptor, path)
+        opened_after = _open_output_identity(descriptor, path)
         if same_physical_file(
             opened_before[1],
             opened_after[1],
@@ -392,18 +458,45 @@ def _create_entry_exclusive(
     finally:
         os.close(descriptor)
 
-    installed = _target_snapshot_with_generation(
-        path,
-        allow_missing=False,
-        private_root=private_root,
-    )
-    if same_physical_file(
-        opened_after[1],
-        installed[1],
-    ).verdict is not IdentityVerdict.SAME or int(
-        installed[0].st_size
-    ) != len(payload):
-        raise ThumbnailCacheSafetyError("thumbnail cache target does not identify the exclusively created output")
+    try:
+        readonly_descriptor = _open_output_readonly(path)
+    except OSError as error:
+        raise ThumbnailCacheSafetyError(
+            "thumbnail cache output could not be reopened without mutation sharing: '{}'".format(path)
+        ) from error
+    try:
+        verified_before = _open_output_snapshot(readonly_descriptor, path)
+        if same_physical_file(
+            opened_after[1],
+            verified_before[1],
+        ).verdict is not IdentityVerdict.SAME or int(
+            verified_before[0].st_size
+        ) != len(payload):
+            raise ThumbnailCacheSafetyError("thumbnail cache target does not identify the exclusively created output")
+        verified_payload = _read_open_output(
+            readonly_descriptor,
+            len(payload),
+        )
+        verified_after = _open_output_snapshot(readonly_descriptor, path)
+        if verified_payload != payload or not _same_snapshot(
+            verified_before,
+            verified_after,
+        ):
+            raise ThumbnailCacheSafetyError("thumbnail cache output changed while its bytes were being verified")
+        installed = _target_snapshot_with_generation(
+            path,
+            allow_missing=False,
+            private_root=private_root,
+        )
+        if not _same_snapshot(verified_after, installed):
+            raise ThumbnailCacheSafetyError("thumbnail cache target changed while its verified handle was open")
+    except OSError as error:
+        raise ThumbnailCacheSafetyError(
+            "thumbnail cache output could not be verified safely: '{}'".format(path)
+        ) from error
+    finally:
+        os.close(readonly_descriptor)
+
     stable_installed = _target_snapshot_with_generation(
         path,
         allow_missing=False,

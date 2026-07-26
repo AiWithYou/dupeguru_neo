@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import errno
 import hashlib
 import json
 import logging
@@ -54,8 +55,11 @@ from core.file_identity import (
 from core.safe_json import JOURNAL_RECORD_JSON_LIMITS, strict_bounded_json_loads
 from hscommon.atomic_rename import (
     BoundDirectory,
+    PreopenedRenameSource,
     RenameCommit,
+    delete_tracked_windows_entry,
     open_bound_directory,
+    open_preverified_rename_source,
     rename_no_replace as atomic_rename_no_replace,
 )
 
@@ -563,8 +567,40 @@ def _path_components(path: Path) -> Iterator[Path]:
         yield current
 
 
+class UnverifiedRenameCommitError(RuntimeError):
+    """A native rename committed, but its exact post-state was not proven."""
+
+    def __init__(
+        self,
+        source: Path,
+        destination: Path,
+        commit: RenameCommit,
+        reason: str,
+    ):
+        self.source = Path(source)
+        self.destination = Path(destination)
+        self.commit = commit
+        self.reason = str(reason)
+        super().__init__(
+            "Atomic rename committed from '{}' to '{}', but the payload is unverified: {}".format(
+                self.source,
+                self.destination,
+                self.reason,
+            )
+        )
+
+
 class FileSystemAdapter:
-    """Platform boundary for no-follow opens and durable filesystem operations."""
+    """Trusted internal boundary for durable filesystem operations.
+
+    ``rename_no_replace()`` is the weaker primitive used to publish immutable
+    application-state files.  It is not proof-bearing and must not be used by
+    safety-critical user-file executors.  Those paths must retain their content
+    verification handle and call ``rename_no_replace_verified()`` or
+    ``delete_verified_regular_file()``.  Adapter instances and subclasses are
+    part of the trusted computing base; production callers must not accept an
+    untrusted override of the verified methods.
+    """
 
     @contextlib.contextmanager
     def open_readonly(self, path: Path) -> Iterator[BinaryIO]:
@@ -597,16 +633,19 @@ class FileSystemAdapter:
         source_name: str,
         destination_directory: BoundDirectory,
         destination_name: str,
+        *,
+        preopened_source: Optional[PreopenedRenameSource] = None,
     ) -> RenameCommit:
         return atomic_rename_no_replace(
             source_directory,
             source_name,
             destination_directory,
             destination_name,
+            preopened_source=preopened_source,
         )
 
     def rename_no_replace(self, source: Path, destination: Path) -> RenameCommit:
-        """Bind both parents before issuing the native no-replace rename."""
+        """Publish app-state with native no-replace semantics, without a content proof."""
 
         source = _absolute(source)
         destination = _absolute(destination)
@@ -625,6 +664,129 @@ class FileSystemAdapter:
                         commit.verification_error,
                     )
                 return commit
+
+    def rename_no_replace_verified(
+        self,
+        source: Path,
+        destination: Path,
+        verified_handle: BinaryIO,
+    ) -> RenameCommit:
+        """Rename the path only if it still names the caller's live verified handle.
+
+        The caller must retain ``verified_handle`` from content verification until
+        this method returns.  Windows needs a second handle with DELETE access to
+        perform the rename, but that capability is accepted only when it identifies
+        the same object and metadata observed through the still-live proof handle.
+        """
+
+        source = _absolute(source)
+        destination = _absolute(destination)
+        source_stat = os.fstat(verified_handle.fileno())
+        if not stat.S_ISREG(source_stat.st_mode) or _is_reparse_point(source_stat):
+            raise OSError(errno.EINVAL, "Verified rename source is not a regular file", str(source))
+        expected_identity = (int(source_stat.st_dev), int(source_stat.st_ino))
+        expected_signature = (
+            *expected_identity,
+            stat.S_IFMT(source_stat.st_mode),
+            int(source_stat.st_size),
+            _mtime_ns(source_stat),
+            int(source_stat.st_nlink),
+        )
+        current = self.lstat(source)
+        current_signature = (
+            int(current.st_dev),
+            int(current.st_ino),
+            stat.S_IFMT(current.st_mode),
+            int(current.st_size),
+            _mtime_ns(current),
+            int(current.st_nlink),
+        )
+        if current_signature != expected_signature or _is_reparse_point(current):
+            raise OSError(errno.ESTALE, "Verified rename source changed", str(source))
+        with open_bound_directory(source.parent) as source_directory:
+            with open_bound_directory(destination.parent) as destination_directory:
+                if os.name == "nt":
+                    with open_preverified_rename_source(
+                        source_directory,
+                        source.name,
+                        expected_signature,
+                    ) as preopened_source:
+                        commit = self.rename_no_replace_bound(
+                            source_directory,
+                            source.name,
+                            destination_directory,
+                            destination.name,
+                            preopened_source=preopened_source,
+                        )
+                else:
+                    commit = self.rename_no_replace_bound(
+                        source_directory,
+                        source.name,
+                        destination_directory,
+                        destination.name,
+                    )
+                if not isinstance(commit, RenameCommit):
+                    raise TypeError("A verified rename must return RenameCommit")
+                mismatches = []
+                if commit.source_identity != expected_identity:
+                    mismatches.append("source identity")
+                if commit.destination_parent_identity != destination_directory.identity:
+                    mismatches.append("destination parent identity")
+                if commit.destination_name != destination.name:
+                    mismatches.append("destination name")
+                if os.name == "nt" and not commit.preopened_source_used:
+                    mismatches.append("preopened source capability")
+                if mismatches or not commit.postcondition_verified:
+                    reason = (
+                        "commit metadata mismatched: {}".format(", ".join(mismatches))
+                        if mismatches
+                        else commit.verification_error or "post-commit verification did not succeed"
+                    )
+                    raise UnverifiedRenameCommitError(
+                        source,
+                        destination,
+                        commit,
+                        reason,
+                    )
+                return commit
+
+    def delete_verified_regular_file(
+        self,
+        path: Path,
+        verified_handle: BinaryIO,
+    ) -> bool:
+        """Delete only the object identified by the caller's live verified handle."""
+
+        path = _absolute(path)
+        source_stat = os.fstat(verified_handle.fileno())
+        if not stat.S_ISREG(source_stat.st_mode) or _is_reparse_point(source_stat):
+            return False
+        expected_identity = (int(source_stat.st_dev), int(source_stat.st_ino))
+        if os.name == "nt":
+            removed = delete_tracked_windows_entry(
+                path,
+                expected_identity,
+                int(source_stat.st_mode),
+            )
+            if removed:
+                self.fsync_directory(path.parent)
+            return removed
+
+        with open_bound_directory(path.parent) as parent:
+            try:
+                current = parent.lstat(path.name)
+            except FileNotFoundError:
+                return False
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or _is_reparse_point(current)
+                or (int(current.st_dev), int(current.st_ino)) != expected_identity
+                or stat.S_IFMT(current.st_mode) != stat.S_IFMT(source_stat.st_mode)
+            ):
+                return False
+            parent.unlink_parts((path.name,))
+        self.fsync_directory(path.parent)
+        return True
 
     def unlink(self, path: Path) -> None:
         os.unlink(str(path))
@@ -722,15 +884,28 @@ def cleanup_created_regular_file(
 ) -> bool:
     """Best-effort cleanup of one private staging name bound at creation.
 
-    The parent directory is held by identity and the final entry is inspected
-    without following links.  A missing path or any replacement is preserved.
-    The caller must obtain ``created_identity`` from ``fstat()`` on the
-    descriptor returned by the exclusive create.
+    On Windows, identity validation and deletion apply to one no-follow DELETE
+    handle, so a name replacement cannot be unlinked after a path check.  On
+    POSIX, the parent is descriptor-bound and identity is rechecked immediately
+    before unlink; POSIX has no identity-conditional unlink primitive, so a
+    hostile same-user process with write access to the private parent remains
+    outside this cleanup claim.  A missing path or any observed replacement is
+    preserved.  The caller must obtain ``created_identity`` from ``fstat()`` on
+    the descriptor returned by the exclusive create.
     """
 
     absolute = _absolute(path)
     try:
         with open_bound_directory(absolute.parent) as parent:
+            if os.name == "nt":
+                if not delete_tracked_windows_entry(
+                    absolute,
+                    tuple(created_identity),
+                    stat.S_IFREG,
+                ):
+                    return False
+                fs.fsync_directory(absolute.parent)
+                return True
             try:
                 current = parent.lstat(absolute.name)
             except FileNotFoundError:
@@ -1520,7 +1695,12 @@ class SafeActionExecutor:
             "Plan quarantine directory",
         )
 
-    def _verify_staged(self, plan: OperationPlan, require_keeper: bool) -> None:
+    @contextlib.contextmanager
+    def _open_verified_staged(
+        self,
+        plan: OperationPlan,
+        require_keeper: bool,
+    ) -> Iterator[BinaryIO]:
         quarantine_path = plan.quarantine_path
         if require_keeper:
             with _open_verified_pair(
@@ -1531,11 +1711,11 @@ class SafeActionExecutor:
                 expected_target=plan.target,
                 expected_keeper=plan.keeper,
                 strict_target_metadata=False,
-            ):
-                pass
-            keeper_resolved = _validate_allowed_path(Path(plan.keeper.path), self._roots(plan), self.fs)
-            if _normalized(keeper_resolved) != _normalized(Path(plan.keeper.resolved_path)):
-                raise _SafetyFailure(FailureCode.PATH_CHANGED, "Keeper path now resolves elsewhere")
+            ) as (target_handle, _keeper_handle):
+                keeper_resolved = _validate_allowed_path(Path(plan.keeper.path), self._roots(plan), self.fs)
+                if _normalized(keeper_resolved) != _normalized(Path(plan.keeper.resolved_path)):
+                    raise _SafetyFailure(FailureCode.PATH_CHANGED, "Keeper path now resolves elsewhere")
+                yield target_handle
             return
 
         _ensure_no_link_components(quarantine_path, self.fs)
@@ -1563,8 +1743,13 @@ class SafeActionExecutor:
                 after,
                 generation_before,
             )
-        _compare_lstat_to_open(quarantine_lstat, opened, quarantine_path)
-        _check_expected(opened, plan.target, False)
+            _compare_lstat_to_open(quarantine_lstat, opened, quarantine_path)
+            _check_expected(opened, plan.target, False)
+            yield target_handle
+
+    def _verify_staged(self, plan: OperationPlan, require_keeper: bool) -> None:
+        with self._open_verified_staged(plan, require_keeper):
+            pass
 
     def _recover_existing_stage(self, plan: OperationPlan) -> ActionResult:
         self._verify_staged(plan, require_keeper=True)
@@ -1579,6 +1764,7 @@ class SafeActionExecutor:
     def stage(self, plan: OperationPlan) -> ActionResult:
         """Revalidate target and keeper, then atomically move target to quarantine."""
 
+        stage_changed = False
         try:
             self._validate_plan(plan)
             target_path = Path(plan.target.path)
@@ -1615,7 +1801,12 @@ class SafeActionExecutor:
                         quarantine_path,
                     )
                 try:
-                    self.fs.rename_no_replace(target_path, quarantine_path)
+                    self.fs.rename_no_replace_verified(
+                        target_path,
+                        quarantine_path,
+                        target_handle,
+                    )
+                    stage_changed = True
                 except FileExistsError:
                     raise _SafetyFailure(
                         FailureCode.QUARANTINE_CONFLICT,
@@ -1632,7 +1823,12 @@ class SafeActionExecutor:
                     _check_expected(keeper_opened, plan.keeper, True)
                 except _SafetyFailure:
                     if self.fs.lexists(quarantine_path) and not self.fs.lexists(target_path):
-                        self.fs.rename_no_replace(quarantine_path, target_path)
+                        self.fs.rename_no_replace_verified(
+                            quarantine_path,
+                            target_path,
+                            target_handle,
+                        )
+                        stage_changed = False
                         self.fs.fsync_directory(target_path.parent)
                         self._append(plan, JournalEventType.ROLLED_BACK, reason="post_stage_verification_failed")
                     raise
@@ -1661,31 +1857,72 @@ class SafeActionExecutor:
                 "Target revalidated and moved to quarantine",
                 changed=True,
             )
+        except UnverifiedRenameCommitError as error:
+            failure = _SafetyFailure(FailureCode.IO_ERROR, str(error), error.destination)
+            self._append_failure(plan, failure)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=True,
+            )
         except _SafetyFailure as error:
             self._append_failure(plan, error)
-            return self._result(plan, ActionState.FAILED, error.code, error.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                error.code,
+                error.message,
+                changed=stage_changed,
+            )
         except FileNotFoundError as error:
             failure = _SafetyFailure(
                 FailureCode.MISSING_KEEPER, str(error), Path(error.filename) if error.filename else None
             )
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=stage_changed,
+            )
         except OSError as error:
             failure = _SafetyFailure(FailureCode.IO_ERROR, str(error), Path(error.filename) if error.filename else None)
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=stage_changed,
+            )
         except (TypeError, ValueError) as error:
             failure = _SafetyFailure(FailureCode.INVALID_PLAN, str(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=stage_changed,
+            )
         except Exception as error:
             failure = _SafetyFailure(FailureCode.INTERNAL_ERROR, repr(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=stage_changed,
+            )
 
     def restore(self, plan: OperationPlan) -> ActionResult:
         """Restore a staged target without overwriting an occupied original path."""
 
+        restore_changed = False
         try:
             self._validate_plan(plan)
             target_path = Path(plan.target.path)
@@ -1758,17 +1995,22 @@ class SafeActionExecutor:
                     raise _SafetyFailure(FailureCode.INVALID_STATE, "A finalized target cannot be restored")
                 raise _SafetyFailure(FailureCode.MISSING_TARGET, "Neither target nor staged payload exists")
 
-            self._verify_staged(plan, require_keeper=False)
-            _validate_restore_parent(plan.target, self.fs)
-            self._ensure_journal_capacity(2)
-            self._append(plan, JournalEventType.RESTORE_PREPARED, target=str(target_path))
-            self.fs.rename_no_replace(quarantine_path, target_path)
-            self.fs.fsync_directory(target_path.parent)
-            self.fs.fsync_directory(plan.quarantine_directory)
-            target_resolved = _validate_allowed_path(target_path, self._roots(plan), self.fs)
-            if _normalized(target_resolved) != _normalized(Path(plan.target.resolved_path)):
-                raise _SafetyFailure(FailureCode.PATH_CHANGED, "Restored path resolves elsewhere", target_path)
-            with self.fs.open_readonly(target_path) as target_handle:
+            with self._open_verified_staged(plan, require_keeper=False) as target_handle:
+                _validate_restore_parent(plan.target, self.fs)
+                self._ensure_journal_capacity(2)
+                self._append(plan, JournalEventType.RESTORE_PREPARED, target=str(target_path))
+                self.fs.rename_no_replace_verified(
+                    quarantine_path,
+                    target_path,
+                    target_handle,
+                )
+                restore_changed = True
+                self.fs.fsync_directory(target_path.parent)
+                self.fs.fsync_directory(plan.quarantine_directory)
+                target_resolved = _validate_allowed_path(target_path, self._roots(plan), self.fs)
+                if _normalized(target_resolved) != _normalized(Path(plan.target.resolved_path)):
+                    raise _SafetyFailure(FailureCode.PATH_CHANGED, "Restored path resolves elsewhere", target_path)
+                target_lstat = self.fs.lstat(target_path)
                 before = os.fstat(target_handle.fileno())
                 generation_before = get_file_generation_token_from_fd(
                     target_handle.fileno(),
@@ -1789,7 +2031,8 @@ class SafeActionExecutor:
                     after,
                     generation_before,
                 )
-            _check_expected(opened, plan.target, False)
+                _compare_lstat_to_open(target_lstat, opened, target_path)
+                _check_expected(opened, plan.target, False)
             self._append(plan, JournalEventType.RESTORED, target=str(target_path))
             return self._result(
                 plan,
@@ -1798,29 +2041,70 @@ class SafeActionExecutor:
                 "Staged target restored",
                 changed=True,
             )
+        except UnverifiedRenameCommitError as error:
+            failure = _SafetyFailure(FailureCode.IO_ERROR, str(error), error.destination)
+            self._append_failure(plan, failure)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=True,
+            )
         except _SafetyFailure as error:
             self._append_failure(plan, error)
-            return self._result(plan, ActionState.FAILED, error.code, error.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                error.code,
+                error.message,
+                changed=restore_changed,
+            )
         except FileExistsError:
             error = _SafetyFailure(FailureCode.TARGET_CONFLICT, "Restore target appeared during restore")
             self._append_failure(plan, error)
-            return self._result(plan, ActionState.FAILED, error.code, error.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                error.code,
+                error.message,
+                changed=restore_changed,
+            )
         except FileNotFoundError as error:
             failure = _SafetyFailure(FailureCode.MISSING_TARGET, str(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=restore_changed,
+            )
         except OSError as error:
             failure = _SafetyFailure(FailureCode.IO_ERROR, str(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=restore_changed,
+            )
         except Exception as error:
             failure = _SafetyFailure(FailureCode.INTERNAL_ERROR, repr(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=restore_changed,
+            )
 
     def finalize(self, plan: OperationPlan) -> ActionResult:
         """Permanently unlink a staged payload after revalidating its keeper."""
 
+        finalize_changed = False
         try:
             self._validate_plan(plan)
             target_path = Path(plan.target.path)
@@ -1919,7 +2203,12 @@ class SafeActionExecutor:
                     )
                 if staged_path == quarantine_path:
                     try:
-                        self.fs.rename_no_replace(quarantine_path, finalize_path)
+                        self.fs.rename_no_replace_verified(
+                            quarantine_path,
+                            finalize_path,
+                            target_handle,
+                        )
+                        finalize_changed = True
                     except FileExistsError:
                         raise _SafetyFailure(
                             FailureCode.QUARANTINE_CONFLICT,
@@ -1956,8 +2245,16 @@ class SafeActionExecutor:
                 )
                 _check_expected(target_before_unlink, plan.target, False)
                 _check_expected(keeper_before_unlink, plan.keeper, True)
-                self.fs.unlink(finalize_path)
-                self.fs.fsync_directory(plan.quarantine_directory)
+                if not self.fs.delete_verified_regular_file(
+                    finalize_path,
+                    target_handle,
+                ):
+                    raise _SafetyFailure(
+                        FailureCode.IDENTITY_MISMATCH,
+                        "Finalize tombstone no longer identifies the verified payload",
+                        finalize_path,
+                    )
+                finalize_changed = True
                 _, keeper_after = _compare_open_files(target_handle, keeper_handle)
                 _check_expected(keeper_after, plan.keeper, True)
             self._append(plan, JournalEventType.FINALIZED)
@@ -1968,21 +2265,55 @@ class SafeActionExecutor:
                 "Staged target permanently finalized",
                 changed=True,
             )
+        except UnverifiedRenameCommitError as error:
+            failure = _SafetyFailure(FailureCode.IO_ERROR, str(error), error.destination)
+            self._append_failure(plan, failure)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=True,
+            )
         except _SafetyFailure as error:
             self._append_failure(plan, error)
-            return self._result(plan, ActionState.FAILED, error.code, error.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                error.code,
+                error.message,
+                changed=finalize_changed,
+            )
         except FileNotFoundError as error:
             failure = _SafetyFailure(FailureCode.MISSING_KEEPER, str(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=finalize_changed,
+            )
         except OSError as error:
             failure = _SafetyFailure(FailureCode.IO_ERROR, str(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=finalize_changed,
+            )
         except Exception as error:
             failure = _SafetyFailure(FailureCode.INTERNAL_ERROR, repr(error))
             self._append_failure(plan, failure)
-            return self._result(plan, ActionState.FAILED, failure.code, failure.message)
+            return self._result(
+                plan,
+                ActionState.FAILED,
+                failure.code,
+                failure.message,
+                changed=finalize_changed,
+            )
 
 
 __all__ = [
@@ -2002,6 +2333,7 @@ __all__ = [
     "PlanBuildResult",
     "PosixFileSystemAdapter",
     "SafeActionExecutor",
+    "UnverifiedRenameCommitError",
     "WindowsFileSystemAdapter",
     "build_operation_plan",
     "cleanup_created_regular_file",
