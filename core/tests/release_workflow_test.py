@@ -73,7 +73,7 @@ def test_transifex_sync_is_an_optional_push_only_integration():
     assert "enabled=true" in gate
     assert "::notice title=Transifex sync skipped::" in gate
     assert "GITHUB_STEP_SUMMARY" in gate
-    assert "optional repository secret `TX_TOKEN` is not configured" in gate
+    assert r"optional repository secret \`TX_TOKEN\` is not configured" in gate
     assert "No Transifex client was downloaded" in gate
     assert workflow.count("if: steps.transifex.outputs.enabled == 'true'") == 3
 

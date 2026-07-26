@@ -39,7 +39,7 @@ jobs:
               '::notice title=Transifex sync skipped::Optional TX_TOKEN repository secret is not configured; no translation source was uploaded.'
             {
               printf '### Transifex sync\n\n'
-              printf 'Skipped: optional repository secret `TX_TOKEN` is not configured.\n\n'
+              printf "Skipped: optional repository secret \`TX_TOKEN\` is not configured.\n\n"
               printf 'No Transifex client was downloaded and no translation source was uploaded.\n'
             } >> "${GITHUB_STEP_SUMMARY}"
           else
