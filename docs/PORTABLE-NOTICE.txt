@@ -1,8 +1,10 @@
-dupeGuru Neo local portable GUI bundle
+dupeGuru Neo local frozen desktop artifact
 
-This archive is a local development build for the operating system and
-architecture named in its filename. The official tagged-release workflow does
-not publish portable archives. It is not an operating-system-trusted installer.
+This artifact is a development build for the operating system and architecture
+named in its filename. CI may retain a checked Windows EXE or macOS APP ZIP for
+seven days, but the official tagged-release workflow does not publish frozen
+desktop artifacts as GitHub Release assets. It is not an
+operating-system-trusted installer.
 
 - The Windows executable is not Authenticode-signed.
 - The macOS application is not signed with an Apple Developer ID and is not
@@ -14,11 +16,13 @@ Do not infer official checksums, GitHub attestation, Sigstore identity, or
 publisher trust from this filename. Build or receive it only through a channel
 whose provenance you independently trust.
 
-This bundle embeds THIRD-PARTY-LICENSES/ for installed Python dependencies and
-FROZEN-RUNTIME-LICENSES/ for the CPython PSF license and PyInstaller
-COPYING/Bootloader Exception. Their JSON indexes bind the copied texts to the
-exact dependency and source locks; do not discard those directories when
-redistributing the bundle.
+This artifact embeds THIRD-PARTY-LICENSES/ for installed Python dependencies
+and FROZEN-RUNTIME-LICENSES/ for the CPython PSF license and PyInstaller
+COPYING/Bootloader Exception. The standalone Windows EXE contains them in its
+one-file archive; the portable tree and macOS APP expose them in their data or
+Resources directory. Their JSON indexes bind the copied texts to the exact
+dependency and source locks; do not discard them when redistributing a
+directory or APP bundle.
 
 Those inventories operate mainly at the Python-distribution level. Binary
 wheels may contain native libraries below that level. The current project does

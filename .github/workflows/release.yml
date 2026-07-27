@@ -237,7 +237,7 @@ jobs:
           compression-level: 0
 
   portable:
-    name: Non-published portable smoke / ${{ matrix.platform }}
+    name: Desktop package / ${{ matrix.platform }}
     needs: [validate, quality]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -284,12 +284,44 @@ jobs:
           --editable .
       - name: Build native modules, translations, and help
         run: python build.py --clean
-      - name: Build and smoke the local frozen GUI without publishing it
+      - name: Build and smoke the verified portable GUI
         run: >-
           python scripts/portable_bundle.py build
           --version "${{ needs.validate.outputs.version }}"
           --output-directory portable-dist
           --build-root portable-build
+      - name: Build and verify the easy-launch EXE or APP
+        if: runner.os != 'Linux'
+        run: >-
+          python scripts/desktop_bundle.py build
+          --version "${{ needs.validate.outputs.version }}"
+          --output-directory desktop-dist
+          --portable-build-root portable-build
+          --build-root desktop-build
+      - name: Upload the checked Windows EXE as a short-retention CI artifact
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dupeguru-neo-windows-exe-${{ github.sha }}
+          path: |
+            desktop-dist/*.exe
+            desktop-dist/*.exe.sha256
+            desktop-dist/README-WINDOWS.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Upload the checked macOS APP as a short-retention CI artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dupeguru-neo-macos-app-${{ github.sha }}
+          path: |
+            desktop-dist/*.app.zip
+            desktop-dist/*.app.zip.sha256
+            desktop-dist/README-MACOS.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   assemble:
     name: Assemble and inventory the complete release payload

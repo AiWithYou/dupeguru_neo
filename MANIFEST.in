@@ -2,6 +2,7 @@ include LICENSE
 include SECURITY.md
 include THIRD_PARTY_NOTICES.md
 include README.md
+include README.ja.md
 include build.py
 include package.py
 include pyproject.toml

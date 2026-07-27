@@ -1,5 +1,7 @@
 # dupeGuru Neo
 
+[日本語版 README](README.ja.md) | English
+
 dupeGuru Neo is a safety-first duplicate detector and large media-library
 organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
 core and Qt desktop workflow while making the evidence behind every result and
@@ -96,6 +98,26 @@ Version 5 stores its exact-hash cache in `hash_cache_v3.sqlite3`. The older
 overwritten. It remains in the application-data directory for manual recovery
 or removal, and the first Version 5 scan recalculates exact hashes into the new
 owned cache.
+
+## Easy-launch desktop builds
+
+Every successful `master` CI run keeps two checked, seven-day desktop artifacts:
+
+- **Windows:** download `dupeguru-neo-windows-exe-<commit>`, expand the GitHub
+  artifact once, and double-click the versioned `.exe`. It is a single GUI file;
+  Python and a separate support folder are not required.
+- **macOS:** download `dupeguru-neo-macos-app-<commit>`, expand the GitHub
+  artifact, then expand the included `.app.zip`. Move `dupeguru-neo.app` to
+  Applications and open it. The inner ZIP preserves executable permissions,
+  framework symlinks, and the application bundle.
+
+Use the Artifacts section of the
+[latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
+Each artifact includes a SHA-256 sidecar, bilingual instructions, and a link to
+the exact source commit. The EXE is not Authenticode-signed; the APP is only
+ad-hoc signed and is not Apple-notarized, so the operating system may show a
+warning. These short-retention developer conveniences are not official release
+assets and make no platform-publisher trust claim.
 
 ## Install and run from source
 
@@ -295,12 +317,13 @@ independent installed-file manifests provide post-install provenance, not
 hash-before-install authentication of package-index downloads.
 
 Portable builds remain available for local development and are smoke-tested on
-all three operating systems, but they are not uploaded as CI or official
-release assets. Binary wheels can embed native codec, rendering, and runtime
-libraries below the Python-distribution level; the current source lock,
+all three operating systems. The checked Windows EXE and macOS APP are uploaded
+only as short-retention CI artifacts; none of these frozen artifacts is an
+official release asset. Binary wheels can embed native codec, rendering, and
+runtime libraries below the Python-distribution level; the current source lock,
 license inventory, and SBOM do not yet prove that complete native component
-closure. The exact top-level allowlist rejects non-contract assets, and an
-independent bounded archive scanner rejects portable or source-companion
+closure. The exact official-release allowlist rejects non-contract assets, and
+an independent bounded archive scanner rejects portable or source-companion
 content even when it is renamed or nested inside an otherwise allowed archive.
 See [docs/RELEASE.md](docs/RELEASE.md).
 

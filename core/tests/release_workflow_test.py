@@ -13,6 +13,26 @@ def _workflow(name):
     return WORKFLOW_DIRECTORY.joinpath(name).read_text(encoding="utf-8")
 
 
+def test_top_level_readme_exposes_a_complete_japanese_entry_point():
+    readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+    japanese = ROOT.joinpath("README.ja.md").read_text(encoding="utf-8")
+
+    assert "[日本語版 README](README.ja.md)" in "\n".join(readme.splitlines()[:8])
+    assert "[English README](README.md)" in "\n".join(japanese.splitlines()[:8])
+    for required in (
+        "Verified Exact",
+        "安全性ラベル",
+        "すぐ使えるデスクトップ版",
+        "Windows",
+        "macOS",
+        ".exe",
+        ".app",
+        "CLI クイックスタート",
+        "ライセンスと provenance",
+    ):
+        assert required in japanese
+
+
 def test_debian_changelog_starts_with_the_application_version():
     changelog = ROOT.joinpath("pkg", "debian", "changelog").read_text(encoding="utf-8")
     assert changelog.startswith(f"dupeguru ({__version__}-1) ")
@@ -226,17 +246,26 @@ def test_package_ci_has_build_validation_and_clean_install_smokes():
     assert 'PYTHONHASHSEED: "0"' in ci
 
 
-def test_ci_builds_and_smokes_local_portable_gui_without_uploading_it():
+def test_ci_builds_checked_easy_launch_windows_exe_and_macos_app_artifacts():
     ci = _workflow("default.yml")
     for required in (
-        "Portable GUI smoke",
+        "Desktop package / ${{ matrix.platform }}",
         "ubuntu-24.04",
         "windows-2022",
         "macos-15",
         '"pyinstaller==6.21.0"',
         '"sphinx==8.1.3"',
         "scripts/portable_bundle.py build",
-        "Build and smoke the local frozen GUI without publishing it",
+        "scripts/desktop_bundle.py build",
+        "Build and smoke the verified portable GUI",
+        "Build and verify the easy-launch EXE or APP",
+        "dupeguru-neo-windows-exe-${{ github.sha }}",
+        "desktop-dist/*.exe",
+        "dupeguru-neo-macos-app-${{ github.sha }}",
+        "desktop-dist/*.app.zip",
+        "retention-days: 7",
+        "github.event_name == 'push'",
+        "github.ref == 'refs/heads/master'",
         "requirements-release.txt",
     ):
         assert required in ci
@@ -377,9 +406,10 @@ def test_final_publication_gate_binds_the_exact_remote_draft_asset_set():
 
 def test_release_artifacts_survive_protected_environment_approval_waits():
     release = _workflow("release.yml")
-    retention_values = re.findall(r"retention-days:\s*([0-9]+)", release)
-    assert retention_values
-    assert set(retention_values) == {"30"}
+    desktop_job = release.split("  portable:\n", 1)[1].split("  assemble:\n", 1)[0]
+    release_payload_jobs = release.replace(desktop_job, "")
+    assert set(re.findall(r"retention-days:\s*([0-9]+)", desktop_job)) == {"7"}
+    assert set(re.findall(r"retention-days:\s*([0-9]+)", release_payload_jobs)) == {"30"}
 
 
 def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
@@ -396,7 +426,7 @@ def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
             "Sigstore",
             "OIDC",
             "post-install",
-            "not uploaded",
+            "official release asset",
             "complete native",
         ):
             assert required in text
@@ -417,8 +447,12 @@ def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
 def test_release_smokes_portables_but_forbids_them_from_public_assets():
     release = _workflow("release.yml")
     for required in (
-        "Non-published portable smoke / ${{ matrix.platform }}",
+        "Desktop package / ${{ matrix.platform }}",
         "scripts/portable_bundle.py build",
+        "scripts/desktop_bundle.py build",
+        "dupeguru-neo-windows-exe-${{ github.sha }}",
+        "dupeguru-neo-macos-app-${{ github.sha }}",
+        "short-retention CI artifact",
         "enforce-release-policy",
         "--artifacts-directory dist",
         "cp LICENSE dist/LICENSE",

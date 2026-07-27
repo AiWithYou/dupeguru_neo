@@ -12,12 +12,16 @@ build/
 .ci-*/
 develop-eggs/
 dist/
+desktop-build/
+desktop-dist/
 downloads/
 eggs/
 .eggs/
 lib/
 lib64/
 parts/
+portable-build/
+portable-dist/
 sdist/
 var/
 wheels/

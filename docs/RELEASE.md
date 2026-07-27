@@ -70,12 +70,20 @@ working tree. Its paths, executable modes, symlink targets, sizes, and contents
 are revalidated against the tagged tree before publication. The ordinary sdist
 is independently checked for its declared rebuild inputs.
 
-## Portable-build publication boundary
+## Frozen desktop publication boundary
 
 CI still builds and smoke-tests the PyInstaller GUI on Ubuntu 24.04,
 Windows Server 2022, and the macOS 15 arm64 runner. This preserves local build
-coverage. The resulting archives are deliberately not uploaded as workflow
-artifacts and are not copied into the release payload.
+coverage. After the verified portable build succeeds, Windows additionally
+produces a single-file, windowed `.exe`, and macOS produces a permission- and
+symlink-preserving ZIP whose only root is `dupeguru-neo.app`. Both are unpacked
+or inspected, license-checked, trust-state-checked, and smoke-tested again.
+
+The Windows EXE and macOS APP ZIP are uploaded only as seven-day GitHub Actions
+artifacts, together with SHA-256 sidecars, bilingual usage notes, and the exact
+source-commit URL. They are explicitly named `unsigned` and `adhoc`,
+respectively. They are not copied into `dist`, are not signed by the release
+workflow, and neither is an official release asset or a GitHub Release asset.
 
 This is a source-completeness boundary, not a naming preference. Binary Python
 wheels may contain native libraries below the Python-distribution level. For
@@ -101,10 +109,14 @@ Two independent gates enforce the boundary:
   including renamed or nested ZIP/TAR bundles.
 
 `scripts/portable_bundle.py build` and `verify` remain available for local
-testing. `scripts/source_companion.py` remains an experimental local research
-tool for the Python-distribution-level source set. Its local proof is not
-signed by the release workflow, is not an official release asset, and must not
-be described as complete corresponding source for a frozen executable.
+testing. `scripts/desktop_bundle.py build` consumes that already verified tree;
+it fails if the host, architecture, native trust state, embedded locks, license
+inventories, Windows PE metadata, macOS ZIP structure, code signature, or
+offscreen runtime smoke cannot be proved. `scripts/source_companion.py` remains
+an experimental local research tool for the Python-distribution-level source
+set. Its local proof is not signed by the release workflow, is not an official
+release asset, and must not be described as complete corresponding source for a
+frozen executable.
 
 Portable verification is fail-closed before accepting archive contents. The
 input archive is limited to 512 MiB, 100,000 members, 4,096 UTF-8 bytes per
@@ -143,7 +155,9 @@ Publishing a portable in the future requires all of the following:
 
 Missing evidence fails closed. A missing signing credential or native-source
 mapping never silently downgrades into a publicly downloadable "unsigned
-portable."
+portable" GitHub Release asset. Short-retention CI artifacts remain explicitly
+untrusted development conveniences and never cross the official-release
+allowlist.
 
 ## Dependency and provenance limits
 
