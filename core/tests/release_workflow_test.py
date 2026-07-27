@@ -297,6 +297,28 @@ def test_ci_bounds_each_test_and_runs_high_cardinality_scale_tests_once():
         assert required in ci
 
 
+def test_japanese_catalog_tests_install_polib_in_compatibility_matrix():
+    ci = _workflow("default.yml")
+    install_step = ci.split(
+        "- name: Install test dependencies",
+        1,
+    )[1].split(
+        "- name: Build native modules",
+        1,
+    )[0]
+    setup = ROOT.joinpath("setup.cfg").read_text(encoding="utf-8")
+    test_extras = setup.split(
+        "test =",
+        1,
+    )[1].split(
+        "build =",
+        1,
+    )[0]
+
+    assert '"polib==1.2.0"' in install_step
+    assert "polib>=1.2.0,<2.0.0" in test_extras
+
+
 def test_ci_builds_checked_easy_launch_windows_exe_and_macos_app_artifacts():
     ci = _workflow("default.yml")
     for required in (
