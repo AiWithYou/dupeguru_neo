@@ -2,6 +2,8 @@
 
 [English README](README.md) | 日本語
 
+[Windows / macOS デスクトップ版をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
 重複検出・大規模メディアライブラリ整理ツールです。dupeGuru の成熟した
 Python コアと Qt デスクトップ操作を受け継ぎながら、すべての判定結果と
@@ -99,8 +101,24 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-`master` の CI が成功するたびに、検証済みのデスクトップ成果物を 7 日間保存
-します。
+[dupeGuru Neo 5.0.0 — Windows / macOS Development Build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+から、恒久公開の開発用プレリリースをダウンロードできます。
+
+- **Windows 10 / 11 x86_64:** [単一ファイルの EXE をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-windows-x86_64-unsigned.exe)
+  してダブルクリックします。インストーラー、Python、別の補助フォルダーは
+  不要です。
+- **macOS Apple Silicon / arm64:** [APP ZIP をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip)
+  して展開し、`dupeguru-neo.app` を Applications へ移動して開きます。
+
+リリースページには SHA-256 ファイル、日英の手順、対応する正確なソース
+コミットへのリンクもあります。これは明示的に開発用としたプレリリースであり、
+正式な署名済み安定版ではありません。EXE は Authenticode 未署名、APP は
+ad-hoc 署名のみで Apple の公証を受けていないため、SmartScreen または
+Gatekeeper が警告を表示する場合があります。GitHub Release 上のこの
+ダウンロードには、Actions 成果物の 7 日間の保存期限は適用されません。
+
+加えて、`master` の CI が成功するたびに、最新コミット用の検証済み
+デスクトップ成果物を 7 日間保存します。
 
 - **Windows:** `dupeguru-neo-windows-exe-<コミット>` をダウンロードして、
   GitHub の成果物 ZIP を 1 回展開し、バージョン付き `.exe` をダブルクリック
@@ -111,11 +129,9 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
   実行権限、フレームワークのシンボリックリンク、アプリバンドル構造を保持します。
 
 [最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
-の Artifacts 欄から取得できます。各成果物には SHA-256 ファイル、日英の手順、
-対応する正確なソースコミットへのリンクが含まれます。EXE は Authenticode
-未署名、APP は ad-hoc 署名のみで Apple の公証を受けていないため、OS が警告を
-表示する場合があります。これらは短期保存の開発用成果物であり、公式リリース
-資産でも、OS が発行元を保証するパッケージでもありません。
+の Artifacts 欄から取得できます。各 CI 成果物にも同種のチェックサム、
+ソースリンク、信頼状態の注意書きが含まれます。これは安定版の配布経路ではなく、
+短期保存の開発用成果物です。
 
 ## ソースからインストールして起動
 
@@ -308,14 +324,18 @@ provenance であり、パッケージインデックスから取得する wheel
 認証するものではありません。
 
 ローカル開発用 portable は 3 OS すべてでビルド・スモークテストします。
-検証済み Windows EXE と macOS APP は短期保存の CI 成果物としてのみアップロード
-し、これらの frozen 成果物を公式リリース資産には含めません。Binary wheel には、
-Python distribution より下位のネイティブ codec、描画ライブラリ、runtime が
-組み込まれる場合があります。現在の source lock、license inventory、SBOM は、
-その完全なネイティブコンポーネント閉包まではまだ証明していません。公式リリースの
-厳密なトップレベル allowlist は契約外の資産を拒否し、独立した上限付き archive
-scanner は、名前を変えたり別 archive に入れたりした portable／source companion
-も拒否します。詳細は [docs/RELEASE.md](docs/RELEASE.md) を参照してください。
+公式の `v*` タグ付きリリースワークフローでは、検証済み Windows EXE と
+macOS APP を短期保存の CI 成果物としてのみアップロードし、署名付き公式
+payload から除外します。利用しやすくするため、正確に同一で検証済みの 1 組を、
+別名の `desktop-*` 開発用プレリリースへ複製する場合があります。この複製版も
+未署名／ad-hoc のままで、正式な署名済み安定版にはなりません。Binary wheel
+には、Python distribution より下位のネイティブ codec、描画ライブラリ、
+runtime が組み込まれる場合があります。現在の source lock、license inventory、
+SBOM は、その完全なネイティブコンポーネント閉包まではまだ証明していません。
+公式リリースの厳密なトップレベル allowlist は契約外の資産を拒否し、独立した
+上限付き archive scanner は、名前を変えたり別 archive に入れたりした
+portable／source companion も拒否します。詳細は
+[docs/RELEASE.md](docs/RELEASE.md) を参照してください。
 
 ## ソース構成
 

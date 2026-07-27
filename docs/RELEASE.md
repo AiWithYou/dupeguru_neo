@@ -79,11 +79,20 @@ produces a single-file, windowed `.exe`, and macOS produces a permission- and
 symlink-preserving ZIP whose only root is `dupeguru-neo.app`. Both are unpacked
 or inspected, license-checked, trust-state-checked, and smoke-tested again.
 
-The Windows EXE and macOS APP ZIP are uploaded only as seven-day GitHub Actions
-artifacts, together with SHA-256 sidecars, bilingual usage notes, and the exact
-source-commit URL. They are explicitly named `unsigned` and `adhoc`,
-respectively. They are not copied into `dist`, are not signed by the release
-workflow, and neither is an official release asset or a GitHub Release asset.
+The official `v*` tagged-release workflow uploads the Windows EXE and macOS APP
+ZIP only as seven-day GitHub Actions artifacts, together with SHA-256 sidecars,
+bilingual usage notes, and the exact source-commit URL. They are explicitly
+named `unsigned` and `adhoc`, respectively. They are not copied into `dist`,
+are not signed by that workflow, and are excluded from the official release
+payload and attestation.
+
+For easier installation, a separately named `desktop-*` GitHub development
+pre-release may mirror one exact pair that already passed those checks. The
+mirror must retain the original artifact bytes and SHA-256 sidecars, name the
+exact source commit, carry bilingual unsigned/ad-hoc trust warnings, and remain
+marked as a pre-release. This convenience channel does not weaken the `v*`
+official-release allowlist and does not turn a frozen desktop artifact into an
+official release asset of the signed stable `v*` channel.
 
 This is a source-completeness boundary, not a naming preference. Binary Python
 wheels may contain native libraries below the Python-distribution level. For
