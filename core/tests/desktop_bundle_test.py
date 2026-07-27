@@ -224,6 +224,7 @@ def test_desktop_sidecars_include_checksum_usage_and_exact_source(tmp_path, monk
 
 def test_desktop_source_identity_rejects_a_dirty_tree(tmp_path, monkeypatch):
     commit = "1" * 40
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
     results = iter(
         [
             subprocess.CompletedProcess([], 0, stdout=f"{commit}\n", stderr=""),
