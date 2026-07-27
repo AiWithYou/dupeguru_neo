@@ -2,6 +2,7 @@ import gzip
 import hashlib
 import io
 import json
+import plistlib
 from email.parser import Parser
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -173,6 +174,15 @@ def _linux_tree(parent):
 def _macos_tree(parent):
     root = parent / "dupeguru-neo.app"
     _write_file(root / "Contents" / "MacOS" / "dupeguru-neo", executable=True)
+    _write_file(
+        root / "Contents" / "Info.plist",
+        plistlib.dumps(
+            {
+                "CFBundleShortVersionString": "5.0.0",
+                "CFBundleVersion": "5.0.0",
+            }
+        ),
+    )
     _write_file(root / "Contents" / "Resources" / "PORTABLE-NOTICE.txt")
     _write_file(root / "Contents" / "Resources" / "LICENSE")
     _write_file(root / "Contents" / "Resources" / "THIRD_PARTY_NOTICES.md")
@@ -487,6 +497,96 @@ def test_windows_bundle_smokes_gui_and_qt_free_cli(tmp_path, monkeypatch):
         ("doctor",),
         ("schema", "deletion-plan"),
     ]
+
+
+def test_macos_bundle_version_is_stamped_resigned_and_verified(tmp_path, monkeypatch):
+    root = tmp_path / "dupeguru-neo.app"
+    info_plist = root / "Contents" / "Info.plist"
+    _write_file(
+        info_plist,
+        plistlib.dumps(
+            {
+                "CFBundleIdentifier": "io.github.AiWithYou.dupeguru_neo",
+                "CFBundleShortVersionString": "0.0.0",
+            }
+        ),
+    )
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(portable_bundle.subprocess, "run", run)
+
+    portable_bundle._stamp_macos_bundle_version(root, "5.3.0")
+
+    with info_plist.open("rb") as stream:
+        document = plistlib.load(stream)
+    assert document["CFBundleIdentifier"] == "io.github.AiWithYou.dupeguru_neo"
+    assert document["CFBundleShortVersionString"] == "5.3.0"
+    assert document["CFBundleVersion"] == "5.3.0"
+    assert calls == [
+        (
+            [
+                "codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                str(root),
+            ],
+            {
+                "check": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": 120,
+            },
+        )
+    ]
+    portable_bundle._verify_macos_bundle_version(root, "5.3.0")
+
+
+def test_macos_bundle_version_verification_rejects_wrong_or_invalid_versions(tmp_path):
+    root = tmp_path / "dupeguru-neo.app"
+    _write_file(
+        root / "Contents" / "Info.plist",
+        plistlib.dumps(
+            {
+                "CFBundleShortVersionString": "0.0.0",
+                "CFBundleVersion": "0.0.0",
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        portable_bundle._verify_macos_bundle_version(root, "5.3.0")
+    with pytest.raises(RuntimeError, match="three numeric components"):
+        portable_bundle._verify_macos_bundle_version(root, "5.3.0rc1")
+
+
+def test_macos_bundle_smoke_checks_info_plist_before_launch(tmp_path, monkeypatch):
+    root = tmp_path / "dupeguru-neo.app"
+    _write_file(root / "Contents" / "MacOS" / "dupeguru-neo", executable=True)
+    _write_file(
+        root / "Contents" / "Info.plist",
+        plistlib.dumps(
+            {
+                "CFBundleShortVersionString": "0.0.0",
+                "CFBundleVersion": "0.0.0",
+            }
+        ),
+    )
+    calls = []
+    monkeypatch.setattr(
+        portable_bundle,
+        "_run_frozen",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        portable_bundle.smoke_frozen_bundle(root, "macos", "5.3.0")
+    assert calls == []
 
 
 @pytest.mark.parametrize(

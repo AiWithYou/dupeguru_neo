@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import plistlib
 import posixpath
 import re
 import shutil
@@ -43,6 +44,7 @@ _ARCHIVE_NAME = re.compile(
     r"unsigned-portable(?P<extension>\.zip|\.tar\.gz)$"
 )
 _SAFE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
+_MACOS_RELEASE_VERSION = re.compile(r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$")
 _DISALLOWED_NATIVE_SUFFIXES = {
     ".app",
     ".appimage",
@@ -114,6 +116,7 @@ _MAX_RELEASE_ARCHIVE_TOTAL_SIZE = 1024 * 1024 * 1024
 _MAX_RELEASE_ARCHIVE_INPUT_SIZE = 512 * 1024 * 1024
 _MAX_RELEASE_ARCHIVE_COMPRESSION_RATIO = 200
 _MAX_RELEASE_JSON_INSPECTION_SIZE = 8 * 1024 * 1024
+_MAX_MACOS_INFO_PLIST_SIZE = 1024 * 1024
 _RELEASE_MEMBER_PREFIX_SIZE = 512
 _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 _COMPRESSED_TAR_MAGICS = (b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00")
@@ -924,6 +927,107 @@ def _frozen_windows_cli(bundle_root: Path) -> Path:
     return bundle_root.joinpath("dupeguru.exe")
 
 
+def _validated_macos_release_version(version: str) -> str:
+    _validate_version(version)
+    if _MACOS_RELEASE_VERSION.fullmatch(version) is None:
+        raise RuntimeError("macOS application versions must contain exactly three numeric components: " f"{version!r}")
+    return version
+
+
+def _macos_info_plist(bundle_root: Path) -> Path:
+    info_plist = bundle_root.joinpath("Contents", "Info.plist")
+    try:
+        metadata = info_plist.lstat()
+    except FileNotFoundError as error:
+        raise RuntimeError(f"macOS application has no Info.plist: {info_plist}") from error
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RuntimeError(f"macOS application Info.plist is not a regular file: {info_plist}")
+    if not 0 < metadata.st_size <= _MAX_MACOS_INFO_PLIST_SIZE:
+        raise RuntimeError("macOS application Info.plist size is outside the safety limit")
+    return info_plist
+
+
+def _read_macos_info_plist(bundle_root: Path) -> tuple[Path, dict]:
+    info_plist = _macos_info_plist(bundle_root)
+    try:
+        with info_plist.open("rb") as stream:
+            document = plistlib.load(stream)
+    except (OSError, plistlib.InvalidFileException) as error:
+        raise RuntimeError("macOS application Info.plist is invalid") from error
+    if not isinstance(document, dict):
+        raise RuntimeError("macOS application Info.plist root is not a dictionary")
+    return info_plist, document
+
+
+def _write_macos_bundle_version(bundle_root: Path, version: str) -> None:
+    version = _validated_macos_release_version(version)
+    info_plist, document = _read_macos_info_plist(bundle_root)
+    document["CFBundleShortVersionString"] = version
+    document["CFBundleVersion"] = version
+    encoded = plistlib.dumps(
+        document,
+        fmt=plistlib.FMT_XML,
+        sort_keys=True,
+    )
+    if len(encoded) > _MAX_MACOS_INFO_PLIST_SIZE:
+        raise RuntimeError("updated macOS application Info.plist exceeds the safety limit")
+    original_mode = stat.S_IMODE(info_plist.stat().st_mode)
+    with tempfile.NamedTemporaryFile(
+        dir=info_plist.parent,
+        prefix=".Info.plist.",
+        suffix=".tmp",
+        delete=False,
+    ) as temporary:
+        temporary_path = Path(temporary.name)
+        temporary.write(encoded)
+    try:
+        temporary_path.chmod(original_mode)
+        os.replace(temporary_path, info_plist)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def _verify_macos_bundle_version(bundle_root: Path, version: str) -> None:
+    version = _validated_macos_release_version(version)
+    _, document = _read_macos_info_plist(bundle_root)
+    actual = {
+        key: document.get(key)
+        for key in (
+            "CFBundleShortVersionString",
+            "CFBundleVersion",
+        )
+    }
+    if any(value != version for value in actual.values()):
+        raise RuntimeError(f"macOS application bundle version does not match {version!r}: {actual!r}")
+
+
+def _stamp_macos_bundle_version(bundle_root: Path, version: str) -> None:
+    _write_macos_bundle_version(bundle_root, version)
+    try:
+        result = subprocess.run(
+            [
+                "codesign",
+                "--force",
+                "--sign",
+                "-",
+                "--timestamp=none",
+                str(bundle_root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError("codesign is required to stamp the macOS application version") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("macOS application re-signing timed out") from error
+    if result.returncode != 0:
+        raise RuntimeError("cannot ad-hoc re-sign the versioned macOS application: " f"{result.stderr[-2000:]}")
+    _verify_macos_bundle_version(bundle_root, version)
+
+
 def _run_frozen(command: list[Path | str], *, env: dict[str, str]) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
@@ -985,6 +1089,8 @@ def _smoke_frozen_windows_cli(
 
 
 def smoke_frozen_bundle(bundle_root: Path, platform_name: str, version: str) -> None:
+    if platform_name == "macos":
+        _verify_macos_bundle_version(bundle_root, version)
     executable = _frozen_executable(bundle_root, platform_name).resolve(strict=True)
     if not executable.is_file():
         raise RuntimeError(f"frozen executable is not a file: {executable}")
@@ -1193,6 +1299,8 @@ def build_portable_bundle(version: str, output_directory: Path, build_root: Path
     else:
         bundle_root = build_root.joinpath("dist", "dupeguru-neo")
     bundle_root = bundle_root.resolve(strict=True)
+    if platform_name == "macos":
+        _stamp_macos_bundle_version(bundle_root, version)
     if platform_name == "windows":
         cli_source = build_root.joinpath("cli-dist", "dupeguru.exe")
         if cli_source.is_symlink() or not cli_source.is_file():
