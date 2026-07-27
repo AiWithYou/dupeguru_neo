@@ -2,7 +2,8 @@
 
 [English README](README.en.md) | **日本語**
 
-[GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
+[**Windows 10 / 11版 5.2.0 をダウンロード（ZIP・約68 MB）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip) |
+[ほかのリリース](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
@@ -132,27 +133,33 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-現在のソース版は **5.2.0** です。恒久公開済みのパッケージは
-[GitHub Releases の一覧](https://github.com/AiWithYou/dupeguru_neo/releases)
-で確認できます。リリース一覧には過去の開発版も残るため、ダウンロード前に
-ページ上のバージョンを確認してください。現行ソースの変更を含む最新の開発版は、
-`master` の CI が成功するたびに作成され、検証済みデスクトップ成果物として
-7 日間保存されます。
+現在のソース版は **5.2.0** です。
 
-- **Windows:** `dupeguru-neo-windows-exe-<コミット>` をダウンロードして、
-  GitHub の成果物 ZIP を 1 回展開し、バージョン付き `.exe` をダブルクリック
-  します。GUI は単一ファイルで、Python や別の補助フォルダは不要です。
+- **Windows 10 / 11（64ビット）:**
+  [**5.2.0 ポータブル ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip)
+  します。ダウンロード後に ZIP を右クリックして「すべて展開」を選び、展開した
+  `dupeguru-neo` フォルダー内の `dupeguru-neo.exe` をダブルクリックしてください。
+  Python やインストーラーは不要です。`_internal` フォルダーは実行に必要なので、
+  EXE だけを別の場所へ移動しないでください。
+- **チェックサム:**
+  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip.sha256)
+  （`b8e3e513c2d47ad7d2c70ca32d1eac223ba9f6d146ee665d01c60a9a5d598613`）
 - **macOS:** `dupeguru-neo-macos-app-<コミット>` をダウンロードし、GitHub の
   成果物を展開してから、中にある `.app.zip` を展開します。
   `dupeguru-neo.app` を Applications へ移動して開いてください。内側の ZIP は
   実行権限、フレームワークのシンボリックリンク、アプリバンドル構造を保持します。
 
+Windows ZIP は恒久公開の
+[5.2.0 開発用プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.2.0-dev-1041a64)
+から、GitHub へのログインなしで取得できます。macOS 版や、さらに新しいコミットの
+短期保存ビルドは、
 [最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
-の Artifacts 欄から取得できます。各 CI 成果物にも同種のチェックサム、
-ソースリンク、信頼状態の注意書きが含まれます。GitHub へのログインが必要です。
-これは安定版の配布経路ではなく、短期保存の開発用成果物です。EXE は
-Authenticode 未署名、APP は ad-hoc 署名のみで Apple の公証を受けていないため、
-SmartScreen または Gatekeeper が警告を表示する場合があります。
+の Artifacts 欄から取得できます。Actions 成果物の取得には GitHub へのログインが
+必要で、保存期間は 7 日間です。
+
+これらは正式な署名済み安定版ではありません。Windows の実行ファイルは
+Authenticode 未署名、macOS APP は ad-hoc 署名のみで Apple の公証を受けていない
+ため、SmartScreen または Gatekeeper が警告を表示する場合があります。
 
 ## ソースからインストールして起動
 

@@ -2,7 +2,8 @@
 
 [**日本語版 README（GitHub既定）**](README.md) | English
 
-[GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
+[**Download 5.2.0 for Windows 10 / 11 (ZIP, about 68 MB)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip) |
+[Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
@@ -104,27 +105,31 @@ owned cache.
 
 ## Easy-launch desktop builds
 
-The current source version is **5.2.0**. Permanently published packages are
-listed on [GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases).
-That list also retains older development builds, so check the version shown on
-the release page before downloading. The latest development build containing
-the current source changes is generated after each successful `master` CI run
-and retained as checked desktop artifacts for seven days:
+The current source version is **5.2.0**.
 
-- **Windows:** download `dupeguru-neo-windows-exe-<commit>`, expand the GitHub
-  artifact once, and double-click the versioned `.exe`. It is a single GUI file;
-  Python and a separate support folder are not required.
+- **64-bit Windows 10 / 11:**
+  [**Download the 5.2.0 portable ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip).
+  Fully extract the ZIP, then double-click `dupeguru-neo.exe` inside the
+  extracted `dupeguru-neo` folder. Python and an installer are not required.
+  Keep the `_internal` folder beside the executable.
+- **Checksum:**
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip.sha256)
+  (`b8e3e513c2d47ad7d2c70ca32d1eac223ba9f6d146ee665d01c60a9a5d598613`)
 - **macOS:** download `dupeguru-neo-macos-app-<commit>`, expand the GitHub
   artifact, then expand the included `.app.zip`. Move `dupeguru-neo.app` to
   Applications and open it. The inner ZIP preserves executable permissions,
   framework symlinks, and the application bundle.
 
-Use the Artifacts section of the
+The Windows ZIP is permanently available from the
+[5.2.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.2.0-dev-1041a64)
+without a GitHub login. For macOS and newer short-retention builds, use the
+Artifacts section of the
 [latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
-Each CI artifact includes the same kind of checksum, source link, and trust
-warning. A GitHub login is required to download Actions artifacts. This is a
-short-retention developer convenience rather than a stable release channel.
-The EXE is not Authenticode-signed; the APP is ad-hoc signed and is not
+A GitHub login is required for Actions artifacts, which are retained for seven
+days.
+
+These are not officially signed stable releases. The Windows executables are
+not Authenticode-signed; the macOS APP is ad-hoc signed and is not
 Apple-notarized, so SmartScreen or Gatekeeper may show a warning.
 
 ## Install and run from source
