@@ -2,7 +2,8 @@
 
 [**日本語版 README（GitHub既定）**](README.md) | English
 
-[Download the Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+[GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
+[Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
 organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
@@ -103,24 +104,12 @@ owned cache.
 
 ## Easy-launch desktop builds
 
-A permanent public development pre-release is available from
-[dupeGuru Neo 5.0.0 — Windows / macOS Development Build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045):
-
-- **Windows 10 / 11 x86_64:** [download the single-file EXE](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-windows-x86_64-unsigned.exe)
-  and double-click it. No installer, Python installation, or companion folder
-  is required.
-- **macOS Apple Silicon / arm64:** [download the APP ZIP](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip),
-  expand it, move `dupeguru-neo.app` to Applications, and open it.
-
-The release page also provides SHA-256 sidecars, bilingual instructions, and a
-link to the exact source commit. This is an explicitly labeled development
-pre-release, not an officially signed stable release. The EXE is not
-Authenticode-signed; the APP is ad-hoc signed and is not Apple-notarized, so
-SmartScreen or Gatekeeper may show a warning. These GitHub Release downloads do
-not use the seven-day Actions artifact retention period.
-
-Every successful `master` CI run additionally keeps two checked, seven-day
-artifacts for the newest commit:
+The current source version is **5.2.0**. Permanently published packages are
+listed on [GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases).
+That list also retains older development builds, so check the version shown on
+the release page before downloading. The latest development build containing
+the current source changes is generated after each successful `master` CI run
+and retained as checked desktop artifacts for seven days:
 
 - **Windows:** download `dupeguru-neo-windows-exe-<commit>`, expand the GitHub
   artifact once, and double-click the versioned `.exe`. It is a single GUI file;
@@ -133,8 +122,10 @@ artifacts for the newest commit:
 Use the Artifacts section of the
 [latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
 Each CI artifact includes the same kind of checksum, source link, and trust
-warning. It is a short-retention developer convenience rather than a stable
-release channel.
+warning. A GitHub login is required to download Actions artifacts. This is a
+short-retention developer convenience rather than a stable release channel.
+The EXE is not Authenticode-signed; the APP is ad-hoc signed and is not
+Apple-notarized, so SmartScreen or Gatekeeper may show a warning.
 
 ## Install and run from source
 

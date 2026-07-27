@@ -19,6 +19,13 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
 
     assert "[English README](README.en.md)" in "\n".join(readme.splitlines()[:8])
     assert "README（GitHub既定）" in "\n".join(english.splitlines()[:8])
+    assert f"現在のソース版は **{__version__}**" in readme
+    assert f"current source version is **{__version__}**" in english
+    for text in (readme, english):
+        assert "https://github.com/AiWithYou/dupeguru_neo/releases" in text
+        assert "actions/workflows/default.yml?query=branch%3Amaster+event%3Apush" in text
+        assert "desktop-5.0.0-dev-0d21045" not in text
+        assert "dupeguru-neo-5.0.0-" not in text
     for required in (
         "Verified Exact",
         "安全性ラベル",

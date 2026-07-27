@@ -2,7 +2,8 @@
 
 [English README](README.en.md) | **日本語**
 
-[Windows / macOS デスクトップ版をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+[GitHub Releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
+[最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
 重複検出・大規模メディアライブラリ整理ツールです。dupeGuru の成熟した
@@ -131,24 +132,12 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-[dupeGuru Neo 5.0.0 — Windows / macOS Development Build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
-から、恒久公開の開発用プレリリースをダウンロードできます。
-
-- **Windows 10 / 11 x86_64:** [単一ファイルの EXE をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-windows-x86_64-unsigned.exe)
-  してダブルクリックします。インストーラー、Python、別の補助フォルダーは
-  不要です。
-- **macOS Apple Silicon / arm64:** [APP ZIP をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip)
-  して展開し、`dupeguru-neo.app` を Applications へ移動して開きます。
-
-リリースページには SHA-256 ファイル、日英の手順、対応する正確なソース
-コミットへのリンクもあります。これは明示的に開発用としたプレリリースであり、
-正式な署名済み安定版ではありません。EXE は Authenticode 未署名、APP は
-ad-hoc 署名のみで Apple の公証を受けていないため、SmartScreen または
-Gatekeeper が警告を表示する場合があります。GitHub Release 上のこの
-ダウンロードには、Actions 成果物の 7 日間の保存期限は適用されません。
-
-加えて、`master` の CI が成功するたびに、最新コミット用の検証済み
-デスクトップ成果物を 7 日間保存します。
+現在のソース版は **5.2.0** です。恒久公開済みのパッケージは
+[GitHub Releases の一覧](https://github.com/AiWithYou/dupeguru_neo/releases)
+で確認できます。リリース一覧には過去の開発版も残るため、ダウンロード前に
+ページ上のバージョンを確認してください。現行ソースの変更を含む最新の開発版は、
+`master` の CI が成功するたびに作成され、検証済みデスクトップ成果物として
+7 日間保存されます。
 
 - **Windows:** `dupeguru-neo-windows-exe-<コミット>` をダウンロードして、
   GitHub の成果物 ZIP を 1 回展開し、バージョン付き `.exe` をダブルクリック
@@ -160,8 +149,10 @@ Gatekeeper が警告を表示する場合があります。GitHub Release 上の
 
 [最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 の Artifacts 欄から取得できます。各 CI 成果物にも同種のチェックサム、
-ソースリンク、信頼状態の注意書きが含まれます。これは安定版の配布経路ではなく、
-短期保存の開発用成果物です。
+ソースリンク、信頼状態の注意書きが含まれます。GitHub へのログインが必要です。
+これは安定版の配布経路ではなく、短期保存の開発用成果物です。EXE は
+Authenticode 未署名、APP は ad-hoc 署名のみで Apple の公証を受けていないため、
+SmartScreen または Gatekeeper が警告を表示する場合があります。
 
 ## ソースからインストールして起動
 
