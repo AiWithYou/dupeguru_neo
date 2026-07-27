@@ -5,7 +5,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-from PyQt6.QtCore import QSize, QStandardPaths  # noqa: E402
+from PyQt6.QtCore import QSize, QStandardPaths, QThreadPool  # noqa: E402
 from PyQt6.QtGui import QColor, QImage, QPixmap  # noqa: E402
 from PyQt6.QtTest import QSignalSpy  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
@@ -45,6 +45,14 @@ def source_generation_token(path):
 def qapp():
     application = QApplication.instance() or QApplication([])
     yield application
+    assert QThreadPool.globalInstance().waitForDone(3000)
+    application.processEvents()
+
+
+def close_loader(loader, application):
+    loader.close()
+    if loader._owns_thread_pool:
+        assert loader.thread_pool.waitForDone(3000)
     application.processEvents()
 
 
@@ -168,6 +176,7 @@ def test_corrupt_entry_is_removed_and_lazy_loader_regenerates_it(qapp, tmp_path)
     assert regenerated is not None
     assert regenerated.width() <= target_size.width()
     assert regenerated.height() <= target_size.height()
+    close_loader(loader, qapp)
 
 
 def test_disk_cache_hit_is_rejected_when_source_file_disappears(qapp, tmp_path):
@@ -193,6 +202,7 @@ def test_disk_cache_hit_is_rejected_when_source_file_disappears(qapp, tmp_path):
     )
     assert first_ready.wait(3000)
     qapp.processEvents()
+    close_loader(first_loader, qapp)
     source_path.unlink()
 
     second_loader = LazyThumbnailLoader(target_size, disk_cache=cache)
@@ -215,6 +225,7 @@ def test_disk_cache_hit_is_rejected_when_source_file_disappears(qapp, tmp_path):
     assert not cached.isNull()
     assert cached.size() == target_size
     assert cached.toImage().pixelColor(0, 0) == QColor("#252A33")
+    close_loader(second_loader, qapp)
 
 
 def test_disk_cache_hit_rejects_same_size_restored_mtime_edit(qapp, tmp_path):
@@ -264,6 +275,7 @@ def test_disk_cache_hit_rejects_same_size_restored_mtime_edit(qapp, tmp_path):
     )
     assert result.size() == target_size
     assert result.toImage().pixelColor(0, 0) == QColor("#252A33")
+    close_loader(loader, qapp)
 
 
 def test_thumbnail_source_rechecks_same_handle_generation_after_use(
@@ -381,6 +393,7 @@ def test_thumbnail_failures_always_release_pending_key(qapp, tmp_path):
     qapp.processEvents()
     assert loader.pending_count == 0
     assert loader.cached_count == 1
+    close_loader(loader, qapp)
 
 
 def test_thumbnail_pixel_and_generation_limits_fail_closed(qapp, tmp_path):
@@ -416,6 +429,7 @@ def test_thumbnail_pixel_and_generation_limits_fail_closed(qapp, tmp_path):
         qapp.processEvents()
         assert loader.pending_count == 0
         assert loader.cached_count == 1
+        close_loader(loader, qapp)
 
 
 def test_thumbnail_cache_errors_do_not_strand_pending_or_hide_decoded_image(
@@ -460,6 +474,7 @@ def test_thumbnail_cache_errors_do_not_strand_pending_or_hide_decoded_image(
         str(source_path),
         expected_generation_token=source_generation_token(source_path),
     ).size() == QSize(40, 20)
+    close_loader(loader, qapp)
 
 
 def test_closed_thumbnail_loader_ignores_late_worker_publication(qapp, tmp_path):
@@ -640,6 +655,7 @@ def test_thumbnail_source_symlink_is_not_followed(qapp, tmp_path):
         ).size()
         == target_size
     )
+    close_loader(loader, qapp)
 
 
 def test_default_thumbnail_pool_bounds_concurrent_source_payloads(
@@ -699,4 +715,4 @@ def test_default_thumbnail_pool_bounds_concurrent_source_payloads(
 
     assert loader.pending_count == 0
     assert loader.cached_count == 8
-    loader.close()
+    close_loader(loader, qapp)
