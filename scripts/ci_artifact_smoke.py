@@ -26,7 +26,7 @@ import tempfile
 import venv
 import zipfile
 
-EXPECTED_HELP_LANGUAGES = ("de", "en", "fr", "hy", "ru", "uk")
+EXPECTED_HELP_LANGUAGES = ("de", "en", "fr", "hy", "ja", "ru", "uk")
 EXPECTED_GETTEXT_CATALOGS = 63
 MAX_COMMAND_DIAGNOSTIC_CHARACTERS = 4000
 DARWIN_BUILD_UUID = re.compile(
@@ -539,7 +539,7 @@ def _validate_sdist_build_inputs(sdist: Path) -> None:
         "LICENSE",
         "MANIFEST.in",
         "README.md",
-        "README.ja.md",
+        "README.en.md",
         "SECURITY.md",
         "THIRD_PARTY_NOTICES.md",
         "build.py",

@@ -65,7 +65,7 @@ _SOURCE_REQUIRED_FILES = {
     "LICENSE",
     "MANIFEST.in",
     "README.md",
-    "README.ja.md",
+    "README.en.md",
     "THIRD_PARTY_NOTICES.md",
     "build.py",
     "docs/SOURCE-COMPANION.md",

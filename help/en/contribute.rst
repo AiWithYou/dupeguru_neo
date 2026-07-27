@@ -5,7 +5,7 @@ dupeGuru Neo is GPLv3 software. Contributions to the engine, Qt application,
 tests, documentation, translations, packaging, and safety analysis are
 welcome. The canonical repository is the `source code repository`_.
 
-Before starting work, read ``README.md``, ``docs/ARCHITECTURE.md``, and
+Before starting work, read ``README.en.md``, ``docs/ARCHITECTURE.md``, and
 ``docs/SAFETY_MODEL.md`` from the repository. A change that can move,
 quarantine, restore, or permanently remove a file must preserve the
 fail-closed evidence and live-revalidation rules described by the safety
@@ -15,7 +15,7 @@ Development process
 -------------------
 
 The ``master`` branch is the current integration branch. Build and test a fresh
-checkout using the commands in ``README.md``. Keep changes focused, add a
+checkout using the commands in ``README.en.md``. Keep changes focused, add a
 regression test for behavior changes, and run the formatter, linter, relevant
 tests, and an appropriate build or smoke test before proposing a change.
 

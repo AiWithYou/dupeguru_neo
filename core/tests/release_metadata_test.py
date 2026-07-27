@@ -805,7 +805,7 @@ def test_corresponding_source_is_deterministic_and_matches_tagged_git_tree(
         "LICENSE": "GPLv3\n",
         "MANIFEST.in": "include LICENSE\n",
         "README.md": "dupeGuru Neo\n",
-        "README.ja.md": "dupeGuru Neo 日本語\n",
+        "README.en.md": "dupeGuru Neo English\n",
         "THIRD_PARTY_NOTICES.md": "BSD notices\n",
         "build.py": "print('build')\n",
         "core/__init__.py": "__version__ = '5.0.0'\n",
@@ -897,7 +897,7 @@ def test_corresponding_source_is_deterministic_and_matches_tagged_git_tree(
     assert f"{root}/THIRD_PARTY_NOTICES.md" in names
     assert f"{root}/hscommon/LICENSE" in names
     assert f"{root}/requirements-release.txt" in names
-    assert f"{root}/README.ja.md" in names
+    assert f"{root}/README.en.md" in names
     assert f"{root}/scripts/desktop_bundle.py" in names
     assert f"{root}/scripts/portable_bundle.py" in names
     assert all("untracked-secret.txt" not in name for name in names)

@@ -13,7 +13,7 @@ from PyQt6.QtGui import QColor, QDesktopServices, QPalette
 from PyQt6.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QStyleFactory, QToolTip
 
 from hscommon.trans import trget
-from hscommon import desktop, plat
+from hscommon import desktop, plat, trans
 
 from qt.about_box import AboutBox
 from qt.recent import Recent
@@ -490,15 +490,18 @@ class DupeGuru(QObject):
         self._openHelpPage("index.html", "README.md")
 
     def showVideoWorkflowTriggered(self):
-        self._openHelpPage("video.html", "help/en/video.rst")
+        self._openHelpPage("video.html", "help/en/video.rst", "help/ja/video.rst")
 
     @staticmethod
-    def _openHelpPage(local_name, repository_name):
-        base_path = platform.HELP_PATH
+    def _openHelpPage(local_name, repository_name, japanese_repository_name=None):
+        language = trans.installed_lang
+        base_path = platform.localized_help_path(language)
         help_path = op.abspath(op.join(base_path, local_name))
         if op.exists(help_path):
             url = QUrl.fromLocalFile(help_path)
         else:
+            if language == "ja" and japanese_repository_name is not None:
+                repository_name = japanese_repository_name
             url = QUrl(
                 "{}/blob/master/{}".format(
                     __project_url__,

@@ -10,7 +10,7 @@ from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from setuptools.errors import CompileError, ExecError
 
-HELP_LANGUAGES = ("en", "de", "fr", "hy", "ru", "uk")
+HELP_LANGUAGES = ("en", "de", "fr", "hy", "ja", "ru", "uk")
 
 
 class BuildPyWithRuntimeData(build_py):

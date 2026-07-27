@@ -1,3 +1,9 @@
+=== 5.2.0 (2026-07-27)
+* Make the Japanese README the default GitHub landing page and move English
+  documentation to ``README.en.md``.
+* Add illustrated Japanese in-application help and select it with the Japanese
+  language preference.
+
 === 5.1.0 (2026-07-27)
 * Complete the Japanese desktop translation, including safety prompts,
   quarantine actions, folder pools, and visual review.

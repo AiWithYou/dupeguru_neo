@@ -58,7 +58,7 @@ Avoid unrelated automatic rewrites of existing translations.
 
 ### Code contributions
 
-Follow the development setup in [README.md](README.md). Build the native
+Follow the development setup in [README.en.md](README.en.md). Build the native
 modules, run the focused tests for the affected component, then run:
 
 ```console

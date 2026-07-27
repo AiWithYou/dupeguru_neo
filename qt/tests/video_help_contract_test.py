@@ -4,6 +4,8 @@
 
 from pathlib import Path
 
+from qt import platform
+
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
@@ -22,3 +24,14 @@ def test_qt_help_menu_explicitly_routes_to_the_cli_only_video_workflow():
     assert "does not currently run the video scanner" in help_source
     assert "documentation only" in help_source
     assert "dupeguru video scan" in help_source
+
+
+def test_japanese_ui_routes_to_bundled_japanese_help():
+    app_source = (REPOSITORY / "qt" / "app.py").read_text(encoding="utf-8")
+    japanese_video = (REPOSITORY / "help" / "ja" / "video.rst").read_text(encoding="utf-8")
+
+    assert platform.localized_help_path("ja").endswith(str(Path("help", "ja")))
+    assert platform.localized_help_path("en") == platform.HELP_PATH
+    assert '"help/ja/video.rst"' in app_source
+    assert "類似動画ワークフロー" in japanese_video
+    assert "dupeguru video scan" in japanese_video

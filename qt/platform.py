@@ -20,6 +20,15 @@ else:
         BASE_PATH = ""
 HELP_PATH = op.join(BASE_PATH, "help", "en")
 
+
+def localized_help_path(language):
+    """Return the bundled help root selected by the application language."""
+
+    if language == "ja":
+        return op.join(BASE_PATH, "help", "ja")
+    return HELP_PATH
+
+
 if ISWINDOWS:
     INITIAL_FOLDER_IN_DIALOGS = "C:\\"
 elif ISOSX:

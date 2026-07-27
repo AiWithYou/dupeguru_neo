@@ -15,10 +15,10 @@ def _workflow(name):
 
 def test_top_level_readme_exposes_a_complete_japanese_entry_point():
     readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
-    japanese = ROOT.joinpath("README.ja.md").read_text(encoding="utf-8")
+    english = ROOT.joinpath("README.en.md").read_text(encoding="utf-8")
 
-    assert "[日本語版 README](README.ja.md)" in "\n".join(readme.splitlines()[:8])
-    assert "[English README](README.md)" in "\n".join(japanese.splitlines()[:8])
+    assert "[English README](README.en.md)" in "\n".join(readme.splitlines()[:8])
+    assert "README（GitHub既定）" in "\n".join(english.splitlines()[:8])
     for required in (
         "Verified Exact",
         "安全性ラベル",
@@ -30,7 +30,29 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
         "CLI クイックスタート",
         "ライセンスと provenance",
     ):
-        assert required in japanese
+        assert required in readme
+    for screenshot in (
+        "docs/images/ja/main-window.png",
+        "docs/images/ja/preferences-language.png",
+        "docs/images/ja/preferences-general.png",
+        "docs/images/ja/preferences-advanced.png",
+    ):
+        assert f"]({screenshot})" in readme
+
+
+def test_japanese_help_is_built_and_selected_with_the_japanese_ui():
+    build_script = ROOT.joinpath("build.py").read_text(encoding="utf-8")
+    setup_script = ROOT.joinpath("setup.py").read_text(encoding="utf-8")
+    app_source = ROOT.joinpath("qt", "app.py").read_text(encoding="utf-8")
+    platform_source = ROOT.joinpath("qt", "platform.py").read_text(encoding="utf-8")
+    japanese_help = ROOT.joinpath("help", "ja")
+
+    assert '"ja"' in build_script
+    assert '"ja"' in setup_script
+    assert "localized_help_path(language)" in app_source
+    assert 'language == "ja"' in platform_source
+    assert len(list(japanese_help.glob("*.rst"))) >= 14
+    assert all(path.read_text(encoding="utf-8").strip() for path in japanese_help.glob("*.rst"))
 
 
 def test_debian_changelog_starts_with_the_application_version():
@@ -434,7 +456,7 @@ def test_release_artifacts_survive_protected_environment_approval_waits():
 
 def test_release_docs_match_the_multi_target_artifact_and_provenance_contract():
     release_doc = ROOT.joinpath("docs", "RELEASE.md").read_text(encoding="utf-8")
-    readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+    readme = ROOT.joinpath("README.en.md").read_text(encoding="utf-8")
     for text in (release_doc, readme):
         for required in (
             "CPython 3.13.14",

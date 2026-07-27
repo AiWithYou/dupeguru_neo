@@ -1,142 +1,169 @@
 # dupeGuru Neo
 
-[日本語版 README](README.ja.md) | English
+[English README](README.en.md) | **日本語**
 
-[Download the Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+[Windows / macOS デスクトップ版をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
 
-dupeGuru Neo is a safety-first duplicate detector and large media-library
-organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
-core and Qt desktop workflow while making the evidence behind every result and
-every file action explicit.
+dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
+重複検出・大規模メディアライブラリ整理ツールです。dupeGuru の成熟した
+Python コアと Qt デスクトップ操作を受け継ぎながら、すべての判定結果と
+ファイル操作について、その根拠を明示します。
 
-The central rule is simple: a fast or perceptual fingerprint may find
-candidates, but it can never authorize deletion.
+中心となる原則は単純です。高速ハッシュや知覚ハッシュは候補の絞り込みには
+使えますが、それだけで削除を許可することはありません。
 
-## What is different in Neo
+## Neo で変わったこと
 
-- **Verified Exact engine.** Files are bucketed by size and optional sample
-  hashes, streamed through a full-content hash, and finally compared byte for
-  byte. Exact groups are represented in linear space instead of materializing
-  every pair.
-- **Recoverable actions by default.** The desktop app and CLI re-open both the
-  target and keeper without following links, validate identity and SHA-256
-  proofs, then move the target into a same-volume quarantine with a durable
-  journal. Restore and permanent finalization are separate operations.
-- **Coverage-aware scans.** Unreadable, changing, skipped, cancelled, or
-  resource-limited input produces an incomplete receipt. Incomplete evidence
-  does not silently acquire destructive capability.
-- **Persistent library catalog.** A local SQLite catalog tracks stable file
-  identities, paths, content generations, derived exact artifacts, immutable
-  scan history, and resumable work. Image features, thumbnails, video
-  fingerprints, and file-action recovery journals are separate durable stores
-  with independent validation and lifecycle rules. Native identities preserve
-  move history, but a renamed file is analyzed again unless a trusted
-  filesystem event journal proves that its content did not change.
-- **Indexed image similarity.** EXIF orientation, ICC color, and alpha are
-  normalized before a deterministic perceptual hash narrows candidates.
-  Existing 15×15 block comparison remains the final visual test. Visual
-  similarity is always reported separately from byte equality.
-- **Media and dataset foundations.** The core includes explainable keeper
-  scoring, image-plus-sidecar dataset plans, leakage-safe cluster splits, and
-  FFmpeg/Chromaprint-based video fingerprinting with explicit capability and
-  partial-result reporting.
-- **Automation surface.** `dupeguru` is a Qt-free, versioned JSON/JSONL CLI.
-  Source-library action plans require an explicit `--execute`; validation is
-  the default. Read-only analyzers may still write an explicitly selected
-  cache or report destination.
+- **Verified Exact エンジン。** ファイルをサイズと任意のサンプルハッシュで
+  分類し、候補の全内容をストリーミングハッシュしたうえで、最後にバイト単位で
+  比較します。完全一致グループは全組み合わせを作らず、線形のメモリ量で表現
+  します。
+- **既定で復元可能なファイル操作。** デスクトップアプリと CLI は、リンクを
+  追跡せずに削除候補と保存側の両方を開き直し、ファイル識別情報と SHA-256 の
+  証拠を再検証してから、同一ボリューム上の隔離領域へ移動します。操作は耐久性の
+  あるジャーナルに記録され、復元と完全削除は別々の明示操作です。
+- **スキャン範囲を含む証拠。** 読み取り不能、スキャン中の変更、スキップ、
+  キャンセル、資源上限への到達があると、結果は「不完全」と記録されます。
+  不完全な証拠が暗黙に破壊的操作の権限を得ることはありません。
+- **永続ライブラリカタログ。** ローカル SQLite カタログが、安定したファイル
+  ID、パス、内容世代、完全一致の派生成果物、変更不能なスキャン履歴、再開可能な
+  作業を保持します。画像特徴、サムネイル、動画フィンガープリント、ファイル操作
+  の復旧ジャーナルは、検証規則とライフサイクルを分離した別ストアです。ネイティブ
+  のファイル ID により移動履歴を維持できますが、信頼できるファイルシステムの
+  イベントジャーナルが内容不変を証明しない限り、改名されたファイルは再解析します。
+- **索引付き類似画像検索。** EXIF の向き、ICC カラー、アルファを正規化し、
+  決定的な知覚ハッシュで候補を絞り込みます。最終的な視覚判定には既存の
+  15×15 ブロック比較を使います。視覚的な類似とバイト単位の一致は、常に別の
+  結果として表示します。
+- **メディア・学習データ整理の基盤。** 説明可能な「残すファイル」の採点、
+  画像と sidecar を一体で扱うデータセット計画、類似画像が train/validation/test
+  をまたがない分割、FFmpeg／Chromaprint を使う動画フィンガープリントを備えます。
+  利用可能な機能と部分結果は明示的に報告します。
+- **自動化用インターフェース。** `dupeguru` は Qt に依存しない、バージョン付き
+  JSON／JSONL CLI です。元ライブラリに作用する計画は `--execute` を明示しない
+  限り検証だけを行います。読み取り専用解析でも、明示されたキャッシュ先や
+  レポート先へは書き込む場合があります。
 
-The detailed guarantee and its limits are documented in
-[docs/SAFETY_MODEL.md](docs/SAFETY_MODEL.md).
+詳細な保証範囲と限界は
+[docs/SAFETY_MODEL.md](docs/SAFETY_MODEL.md) に記載しています。
 
-## Safety labels
+## 安全性ラベル
 
-| Label | Meaning | Duplicate removal / quarantine | Organizer copy / move |
+| ラベル | 意味 | 重複除去／隔離 | 整理目的のコピー／移動 |
 | --- | --- | --- | --- |
-| Green / `verified_exact` | Stable full-file proof plus final byte comparison | Eligible after live revalidation | Eligible under the destination and pool policy |
-| Yellow / `similar` | Decoded media is perceptually similar | Never eligible | Explicit operation only after a complete, current scan; Copy and Move are limited to Incoming Files |
-| Blue / `related` | Visually related below the similarity threshold, or temporally related media; not semantic without embedding evidence | Never eligible | Explicit operation only after a complete, current scan; Copy and Move are limited to Incoming Files |
-| Gray / incomplete | Coverage or evidence is missing, stale, or failed | Refused | Refused |
+| 緑／`verified_exact` | 安定した全ファイル証拠と最終バイト比較 | 実行直前の再検証に成功した場合だけ可能 | 保存先と比較プールのポリシー内で可能 |
+| 黄／`similar` | デコードしたメディアが知覚的に類似 | 常に不可 | 完全かつ最新のスキャン後に限り明示操作可能。Copy／Move は Incoming Files のみ |
+| 青／`related` | 類似しきい値未満の視覚的関連、または時間的に関連するメディア。埋め込み証拠がなければ意味的類似とは呼ばない | 常に不可 | 完全かつ最新のスキャン後に限り明示操作可能。Copy／Move は Incoming Files のみ |
+| 灰／不完全 | 範囲、証拠、鮮度のいずれかが不足・失敗 | 拒否 | 拒否 |
 
-An organizer move changes a source path, but it does not claim that the source
-is a duplicate. Copy and Move both require a scan-bound source generation,
-current Incoming Files policy, and no-replace destination publication; neither
-silently becomes quarantine, finalization, or deletion. Gray aggregate Folder
-results cannot enter this path. External commands form another explicit trust
-boundary and receive no duplicate-removal guarantee.
+整理目的の Move は元パスを変更しますが、「元ファイルが重複である」とは主張
+しません。Copy と Move はどちらも、スキャンに結び付いた内容世代、現在の
+Incoming Files ポリシー、既存ファイルを置換しない保存先公開を必要とします。
+いずれも隔離、完全削除、通常の削除へ暗黙に変化しません。灰色の集約 Folder
+結果からは実行できません。外部コマンドも別の明示的な信頼境界であり、
+重複除去の保証は与えられません。
 
-Byte equality describes the ordinary file payload. ACLs, extended attributes,
-alternate streams, resource forks, backup-retention rules, and legal-hold
-policy are separate concerns; see the safety model before automating removal.
+バイト一致が表すのは通常のファイル内容です。ACL、拡張属性、代替データ
+ストリーム、リソースフォーク、バックアップ保持規則、法的保全は別の問題です。
+削除を自動化する前に安全性モデルを確認してください。
 
-## Requirements
+## 必要環境
 
-- CPython 3.10–3.14
-- PyQt6 6.11 for the desktop application
-- Pillow 12 for image analysis
-- A supported C compiler when installing from source; the image comparison
-  modules are native extensions
-- FFmpeg/ffprobe for video analysis; `fpcalc` for audio fingerprints
+- CPython 3.10～3.14
+- デスクトップアプリ用 PyQt6 6.11
+- 画像解析用 Pillow 12
+- ソースからインストールする場合は対応 C コンパイラ
+  （画像比較モジュールはネイティブ拡張です）
+- 動画解析用 FFmpeg／ffprobe、音声フィンガープリント用 `fpcalc`
 
-The release workflow tests the source tree on every supported Python version
-and operating system. A tagged release builds one canonical sdist, then uses
-that same sdist to build and byte-for-byte reproduce three native wheels with
-CPython 3.13.14: Linux x86_64, Windows x86_64, and macOS arm64. Those are the
-only published wheel targets. Other supported Python versions or architectures
-install from the sdist and therefore need a compiler.
+リリースワークフローは、対応するすべての Python バージョンと OS でソースを
+テストします。タグ付きリリースでは canonical な sdist を一度だけ作成し、
+同じ sdist から CPython 3.13.14 用の Linux x86_64、Windows x86_64、
+macOS arm64 のネイティブ wheel を作成して、バイト単位で再現できることを
+検証します。公開 wheel の対象はこの 3 種類だけです。その他の Python
+バージョンやアーキテクチャは sdist からインストールするため、コンパイラが
+必要です。
 
-The packaged Windows desktop application supports 64-bit Windows 10 and
-Windows 11.
+パッケージ済み Windows デスクトップアプリは、64 ビット版 Windows 10 と
+Windows 11 に対応します。
 
-The live catalog must be stored on a local filesystem. Libraries on a NAS are
-supported only at the capability level reported by that filesystem, and
-SQLite WAL files must not be placed on the share. On Windows, every
-evidence-producing file observation additionally requires the source volume
-to expose a usable USN change journal. Filesystems or shares that do not
-support the required USN controls fail closed as incomplete; there is no
-timestamp fallback.
+稼働中のカタログはローカルファイルシステムへ保存してください。NAS 上の
+ライブラリは、そのファイルシステムが報告する機能の範囲でのみ対応します。
+SQLite の WAL ファイルを共有上へ置くことはできません。Windows では、証拠を
+生成するすべてのファイル観測について、元ボリュームに利用可能な USN 変更
+ジャーナルが必要です。必要な USN 制御を使えないファイルシステムや共有は、
+タイムスタンプへフォールバックせず、不完全として安全側に停止します。
 
-Version 5 stores its exact-hash cache in `hash_cache_v3.sqlite3`. The older
-`hash_cache.db` is deliberately not opened, imported, renamed, deleted, or
-overwritten. It remains in the application-data directory for manual recovery
-or removal, and the first Version 5 scan recalculates exact hashes into the new
-owned cache.
+Version 5 の完全ハッシュキャッシュは `hash_cache_v3.sqlite3` です。古い
+`hash_cache.db` は、開く、インポートする、改名する、削除する、上書きする、
+のいずれも行いません。手動で復旧または削除できるようアプリデータ領域に残し、
+Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッシュを再計算します。
 
-## Easy-launch desktop builds
+## 画面で見る基本操作
 
-A permanent public development pre-release is available from
-[dupeGuru Neo 5.0.0 — Windows / macOS Development Build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045):
+起動直後の画面です。左下の「+」またはドラッグ＆ドロップで対象フォルダーを
+追加し、フォルダープールとスキャンの種類を確認してから右下の「スキャン」を
+押します。緑の完全一致だけが隔離操作の対象になり、類似画像などの結果は
+確認専用です。
 
-- **Windows 10 / 11 x86_64:** [download the single-file EXE](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-windows-x86_64-unsigned.exe)
-  and double-click it. No installer, Python installation, or companion folder
-  is required.
-- **macOS Apple Silicon / arm64:** [download the APP ZIP](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip),
-  expand it, move `dupeguru-neo.app` to Applications, and open it.
+![日本語表示のメイン画面](docs/images/ja/main-window.png)
 
-The release page also provides SHA-256 sidecars, bilingual instructions, and a
-link to the exact source commit. This is an explicitly labeled development
-pre-release, not an officially signed stable release. The EXE is not
-Authenticode-signed; the APP is ad-hoc signed and is not Apple-notarized, so
-SmartScreen or Gatekeeper may show a warning. These GitHub Release downloads do
-not use the seven-day Actions artifact retention period.
+表示言語は `オプション` → `表示` → `言語` で変更できます。「日本語」を
+選択して設定を保存し、アプリを再起動すると、アプリ固有の画面とQt標準部品、
+アプリ内ヘルプが日本語になります。
 
-Every successful `master` CI run additionally keeps two checked, seven-day
-artifacts for the newest commit:
+![日本語を選択した表示設定](docs/images/ja/preferences-language.png)
 
-- **Windows:** download `dupeguru-neo-windows-exe-<commit>`, expand the GitHub
-  artifact once, and double-click the versioned `.exe`. It is a single GUI file;
-  Python and a separate support folder are not required.
-- **macOS:** download `dupeguru-neo-macos-app-<commit>`, expand the GitHub
-  artifact, then expand the included `.app.zip`. Move `dupeguru-neo.app` to
-  Applications and open it. The inner ZIP preserves executable permissions,
-  framework symlinks, and the application bundle.
+一般設定では、照合の厳しさ、対象サイズ、部分ハッシュ、移動後の空フォルダー
+処理などを設定できます。削除候補を扱う前に、設定内容と結果の根拠ラベルを
+確認してください。
 
-Use the Artifacts section of the
-[latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
-Each CI artifact includes the same kind of checksum, source link, and trust
-warning. It is a short-retention developer convenience rather than a stable
-release channel.
+![日本語の一般設定](docs/images/ja/preferences-general.png)
 
-## Install and run from source
+高度な設定では、異なるフォルダープール間だけを比較するモードや、直接探索の
+ファイル数・フォルダー数・問題数・時間の上限を設定できます。大規模な完全一致
+ライブラリには、再開可能な永続カタログを使う「内容」スキャンが適しています。
+
+![日本語の高度な設定](docs/images/ja/preferences-advanced.png)
+
+より詳しい手順は、アプリの `ヘルプ` → `dupeGuru Neo ヘルプ`、または
+[日本語ヘルプのソース](help/ja/index.rst)を参照してください。
+
+## すぐ使えるデスクトップ版
+
+[dupeGuru Neo 5.0.0 — Windows / macOS Development Build](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.0.0-dev-0d21045)
+から、恒久公開の開発用プレリリースをダウンロードできます。
+
+- **Windows 10 / 11 x86_64:** [単一ファイルの EXE をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-windows-x86_64-unsigned.exe)
+  してダブルクリックします。インストーラー、Python、別の補助フォルダーは
+  不要です。
+- **macOS Apple Silicon / arm64:** [APP ZIP をダウンロード](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.0.0-dev-0d21045/dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip)
+  して展開し、`dupeguru-neo.app` を Applications へ移動して開きます。
+
+リリースページには SHA-256 ファイル、日英の手順、対応する正確なソース
+コミットへのリンクもあります。これは明示的に開発用としたプレリリースであり、
+正式な署名済み安定版ではありません。EXE は Authenticode 未署名、APP は
+ad-hoc 署名のみで Apple の公証を受けていないため、SmartScreen または
+Gatekeeper が警告を表示する場合があります。GitHub Release 上のこの
+ダウンロードには、Actions 成果物の 7 日間の保存期限は適用されません。
+
+加えて、`master` の CI が成功するたびに、最新コミット用の検証済み
+デスクトップ成果物を 7 日間保存します。
+
+- **Windows:** `dupeguru-neo-windows-exe-<コミット>` をダウンロードして、
+  GitHub の成果物 ZIP を 1 回展開し、バージョン付き `.exe` をダブルクリック
+  します。GUI は単一ファイルで、Python や別の補助フォルダは不要です。
+- **macOS:** `dupeguru-neo-macos-app-<コミット>` をダウンロードし、GitHub の
+  成果物を展開してから、中にある `.app.zip` を展開します。
+  `dupeguru-neo.app` を Applications へ移動して開いてください。内側の ZIP は
+  実行権限、フレームワークのシンボリックリンク、アプリバンドル構造を保持します。
+
+[最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
+の Artifacts 欄から取得できます。各 CI 成果物にも同種のチェックサム、
+ソースリンク、信頼状態の注意書きが含まれます。これは安定版の配布経路ではなく、
+短期保存の開発用成果物です。
+
+## ソースからインストールして起動
 
 Windows PowerShell:
 
@@ -149,7 +176,7 @@ python build.py --modules
 dupeguru-gui
 ```
 
-macOS or Linux:
+macOS／Linux:
 
 ```sh
 python3.12 -m venv .venv
@@ -160,43 +187,43 @@ python build.py --modules
 dupeguru-gui
 ```
 
-Packaged image resources are ordinary Python package data; Qt 5, `pyrcc5`, and
-system-wide PyQt installations are not used.
+パッケージ済み画像リソースは通常の Python package data です。Qt 5、`pyrcc5`、
+システム全体へインストールした PyQt は使いません。
 
-## CLI quick start
+## CLI クイックスタート
 
-Scan two roots and keep the versioned JSONL report:
+2 つのルートをスキャンし、バージョン付き JSONL レポートを保存します。
 
 ```sh
 dupeguru scan Pictures Archive --format jsonl > scan.jsonl
 ```
 
-Direct exact scans are bounded during discovery and verification. Defaults are
-1,000,000 files, 100,000 issues, 250,000 verified groups, and four hours;
-`--max-files`, `--max-issues`, `--max-groups`, and `--max-seconds`
-make each budget explicit. Reaching a limit emits a valid incomplete report
-and a partial-result exit status. Such a report can be reviewed, but it cannot
-be converted into a file-action plan.
+直接完全一致スキャンには、探索と検証の上限があります。既定値は 1,000,000
+ファイル、100,000 問題、250,000 検証済みグループ、4 時間です。
+`--max-files`、`--max-issues`、`--max-groups`、`--max-seconds` で各上限を
+明示できます。上限へ達すると、有効だが不完全なレポートを出力し、部分結果を
+示す終了コードを返します。レビューはできますが、ファイル操作計画には変換
+できません。
 
-Create a recoverable plan:
+復元可能な隔離計画を作成します。
 
 ```sh
 dupeguru plan scan.jsonl --operation quarantine > plan.jsonl
 ```
 
-Validate it without changing files:
+ファイルを変更せずに検証します。
 
 ```sh
 dupeguru apply plan.jsonl --dry-run
 ```
 
-Execute the already reviewed plan:
+レビュー済みの計画を実行します。
 
 ```sh
 dupeguru apply plan.jsonl --execute
 ```
 
-Inspect and recover staged operations:
+隔離済み操作の確認と復元:
 
 ```sh
 dupeguru quarantine list Pictures Archive
@@ -204,16 +231,15 @@ dupeguru quarantine restore path/to/operation-plan.json --dry-run
 dupeguru quarantine restore path/to/operation-plan.json --execute
 ```
 
-Permanent removal is never part of an exact plan or `apply --execute`.
-After reviewing the staged file, finalize that one persisted operation
-explicitly:
+完全削除は、完全一致計画にも `apply --execute` にも含まれません。隔離した
+ファイルを確認したあと、保存済みの 1 操作だけを明示的に確定します。
 
 ```sh
 dupeguru quarantine finalize path/to/operation-plan.json --dry-run
 dupeguru quarantine finalize path/to/operation-plan.json --execute
 ```
 
-Maintain and query a durable local catalog:
+永続ローカルカタログの作成・照会:
 
 ```sh
 dupeguru catalog scan catalog.sqlite3 Pictures Archive
@@ -222,42 +248,39 @@ dupeguru catalog changes catalog.sqlite3 --from 12 --to 13 > changes.jsonl
 dupeguru catalog backup catalog.sqlite3 catalog-backup.sqlite3
 ```
 
-The two scan IDs for `catalog changes` must name complete immutable snapshots
-with the same root set. Catalog reports are evidence and never execute file
-actions. Change records use the `dupeguru.catalog-change-record` schema at
-version 2. Without trusted event-journal evidence, a one-to-one stable native
-identity observed at two paths is reported as a `relocation_candidate`, not a
-proven `moved` event. The candidate classification states whether continuity
-comes from one catalog content generation or matching canonical full SHA-256
-artifacts; neither grants destructive authority.
+`catalog changes` に渡す 2 つのスキャン ID は、同じルート集合を持つ、完全で
+変更不能なスナップショットでなければなりません。カタログレポートは証拠であり、
+ファイル操作を実行しません。変更レコードは version 2 の
+`dupeguru.catalog-change-record` スキーマを使います。信頼できるイベント
+ジャーナル証拠がない場合、2 つのパスで観測された 1 対 1 の安定ネイティブ ID は、
+証明済み `moved` ではなく `relocation_candidate` として報告します。候補の分類は、
+継続性の根拠が同じカタログ内容世代か、一致する canonical な完全 SHA-256
+成果物かを明示します。どちらも破壊的操作の権限にはなりません。
 
-Catalog exact groups use the reconstructable
-`dupeguru.catalog-group-record-v2` JSONL contract: `header`, then
-`group_header` + one or more byte-bounded `member_chunk` records + `group_end`
-per group, and a final `summary`. Catalog output is staged and fully validated
-before publication. Its limits are 8 MiB per strict UTF-8 physical line
-(newline included), 40,000 members per structural chunk, 2 GiB total, and
-4,000,000 records; group output allows at most 1,000,000 groups and 1,000,000
-members per group, while change output allows at most 3,999,998 changes.
-Aggregate projection counts reject oversize groups before their rows are
-loaded, and accepted SQL pages have explicit 1,000,000-row and
-1,000,000-member caps. A pre-publication limit, encoding, temporary storage,
-schema, ordering, or count failure leaves standard output empty. A failure in
-the final standard-output copy is the sole case that can leave a validated
-prefix and returns a failed status. Normal process output is copied through
-the binary stream so Windows code pages and newline translation cannot alter
-the validated UTF-8/LF bytes.
+カタログの完全一致グループは、再構築可能な
+`dupeguru.catalog-group-record-v2` JSONL 契約を使います。最初に `header`、
+各グループに `group_header`、1 個以上のバイト上限付き `member_chunk`、
+`group_end`、最後に `summary` を出力します。カタログ出力は一時領域へ作成し、
+完全に検証してから公開します。厳密 UTF-8 の物理行は改行を含め 8 MiB、
+構造チャンクは 40,000 メンバー、総量 2 GiB、4,000,000 レコードが上限です。
+グループ出力は最大 1,000,000 グループ、各グループ最大 1,000,000 メンバー、
+変更出力は最大 3,999,998 変更です。集約投影は行を読み込む前に過大なグループを
+拒否し、受理する SQL ページにも 1,000,000 行・1,000,000 メンバーの上限が
+あります。公開前の上限、エンコード、一時記憶域、スキーマ、順序、件数の失敗では
+標準出力を空のままにします。最後の標準出力コピーそのものが失敗した場合だけ、
+検証済みの先頭部分が残る可能性があり、失敗終了になります。通常出力はバイナリ
+ストリーム経由でコピーし、Windows のコードページや改行変換が検証済み
+UTF-8／LF バイトを変更しないようにします。
 
-`catalog groups` is a read-only live projection. If its byte comparison finds
-that a stored digest bucket no longer describes the current bytes, it returns a
-structured repair-required error and publishes no partial group stream. Run
-`dupeguru catalog scan` again with the same database and roots: the writable
-scan command retires every derived artifact and old work lease for that content
-generation, creates fresh generations, reruns all configured analysis stages,
-and performs one bounded verification retry. A second mismatch still fails
-closed instead of looping.
+`catalog groups` は読み取り専用のライブ投影です。バイト比較によって、保存済み
+ダイジェストのバケットが現在のバイトを表していないと判明した場合、構造化された
+「再スキャンが必要」エラーを返し、部分的なグループ出力は公開しません。同じ
+データベースとルートで `dupeguru catalog scan` を再実行してください。書き込み
+可能な scan コマンドは、その内容世代のすべての派生成果物と古い作業リースを
+廃止し、新しい世代を作成して、設定済みの解析段階を再実行し、上限付きの検証を
+1 回だけ再試行します。2 回目も不一致なら、ループせず安全側に失敗します。
 
-Inspect the read-only video workflow or prepare an image dataset plan:
+読み取り専用動画ワークフローの確認、または画像データセット計画の準備:
 
 ```sh
 dupeguru visual scan Pictures --cache ~/.cache/dupeguru/visual.sqlite3 --max-images 250000
@@ -267,50 +290,47 @@ dupeguru video scan Videos --max-files 10000 --format jsonl > video-groups.jsonl
 dupeguru dataset prepare-root Incoming --destination-root Organized
 ```
 
-Dataset recovery metadata is always isolated below the reserved
-`.dupeguru-neo-dataset-executor` directory and is pruned from later scans.
-When supplied, `--state-root` names a base directory; the executor uses its
-reserved child rather than treating arbitrary files in that base as state.
+データセット復旧メタデータは、常に予約済み
+`.dupeguru-neo-dataset-executor` ディレクトリ以下へ隔離し、後続スキャンから
+除外します。`--state-root` を指定すると、それを状態ファイルそのものではなく
+基底ディレクトリとして扱い、その予約済み子ディレクトリを使います。
 
-Visual reports contain only `similar` and `related` evidence and never grant a
-destructive capability. Their file, candidate, match, decode-pixel, and time
-limits are explicit CLI options; a reached limit produces a valid partial
-report and nonzero partial-result exit status. A persistent visual cache must
-be outside every scanned root.
+Visual レポートに含まれる証拠は `similar` と `related` だけで、破壊的操作の
+権限を与えません。ファイル数、候補数、一致数、デコード画素数、時間の上限は
+CLI オプションで明示できます。上限へ達すると、有効な部分レポートと 0 以外の
+部分結果終了コードを返します。永続 visual キャッシュは、スキャン対象ルートの
+外に置かなければなりません。
 
-Every machine-readable document carries a schema name and version. Use
-`dupeguru schema --help` and `dupeguru doctor` to inspect the installed
-contracts and local capabilities.
+すべての機械可読ドキュメントは、スキーマ名とバージョンを持ちます。
+`dupeguru schema --help` と `dupeguru doctor` で、インストール済みの契約と
+ローカル機能を確認できます。
 
-Exact report and plan input is bounded: one JSON document is at most 64 MiB,
-while JSONL permits at most 8 MiB per physical line, 2 GiB total, 1,100,000
-physical lines, and 1,000,000 records. Scan reports additionally permit at
-most 250,000 groups and 1,000,000 total group file records; deletion plans
-permit at most 250,000 actions. Exact scans and plan creation therefore emit
-JSONL by default. Both JSON and JSONL output are fully preflighted against
-these same loader limits before the first byte is written, so an over-limit
-failure cannot leave a partial report on standard output. Use
-`--format json` only when the complete document fits the single-document
-limit. Video-library reports use the same JSON/JSONL output limits. Other
-single-JSON service outputs—including apply, query, doctor, quarantine, and
-schema reports—use the same 64 MiB and structural preflight before their first
-byte is written. Dataset prepare-input and plan files accept
-strict JSON only and are capped at 128 MiB for both files and standard input,
-with at most 250,000 actions and 250,000 file records. JSON/CSV plan exports
-are streamed with a 128 MiB publication cap. These are interchange limits:
-one crash-recoverable dataset apply transaction accepts at most 10,000 file
-records. Plans above that execution limit must be split; unusually long paths
-can lower the practical transaction size because the full recovery journal is
-reserved before mutation. Limits count UTF-8 bytes, and
-over-limit input or output fails without
-publishing or replacing a destination and before any dataset mutation. Raw
-CSV preserves untrusted paths and IDs and must not be opened as a spreadsheet;
-API callers can explicitly request the non-lossless `spreadsheet_safe=True`
-view. Large exact reports should use JSONL. See
-[the automation guide](help/en/automation.rst) for every default cap and its
-exported API constant.
+完全一致レポートと計画の入力には上限があります。単一 JSON は最大 64 MiB、
+JSONL は物理行ごとに最大 8 MiB、総量 2 GiB、1,100,000 物理行、
+1,000,000 レコードです。スキャンレポートは最大 250,000 グループかつ
+グループ内ファイル総数 1,000,000、削除計画は最大 250,000 操作です。そのため
+完全一致スキャンと計画作成は、既定で JSONL を出力します。JSON／JSONL 出力は
+最初の 1 バイトを書く前に同じ読み込み上限で全体を事前検証するため、上限超過で
+標準出力に部分レポートを残しません。完全な文書が単一文書上限に収まる場合だけ
+`--format json` を使ってください。動画ライブラリレポートも同じ JSON／JSONL
+上限です。apply、query、doctor、quarantine、schema などのその他の単一 JSON
+サービス出力も、最初の 1 バイトより前に同じ 64 MiB・構造上限で検証します。
 
-## Development and verification
+データセットの prepare 入力と plan ファイルは厳密 JSON のみで、ファイルと
+標準入力の双方が最大 128 MiB、最大 250,000 操作、250,000 ファイルレコード
+です。JSON／CSV の plan export は 128 MiB の公開上限付きでストリーミング
+します。これらは交換形式の上限です。クラッシュ復旧可能な 1 回の dataset apply
+トランザクションは最大 10,000 ファイルレコードです。それを超える計画は分割が
+必要です。完全な復旧ジャーナルを変更前に予約するため、非常に長いパスが多い場合は
+実用上の件数上限が下がることがあります。上限は UTF-8 バイトで数え、超過入力・
+出力は保存先を公開または置換せず、データセットを変更する前に失敗します。Raw
+CSV は信頼できないパスと ID をそのまま保持するため、表計算ソフトで開かないで
+ください。API 利用者は、損失の可能性を承知したうえで
+`spreadsheet_safe=True` ビューを明示できます。大きな完全一致レポートには
+JSONL を使ってください。すべての既定上限と公開 API 定数は
+[自動化ガイド](help/en/automation.rst) を参照してください。
+
+## 開発と検証
 
 ```sh
 python -m pytest core hscommon qt/tests
@@ -320,47 +340,47 @@ python build.py --modules
 python run.py --self-test
 ```
 
-Release artifacts are built from immutable tags, installed in clean
-environments, checked for dependency consistency, inventoried with SHA-256, and
-accompanied by GitHub attestations plus per-file Sigstore bundles bound to the
-tagged workflow identity and GitHub Actions OIDC issuer. The aggregate
-CycloneDX SBOM unions installed runtime dependency snapshots from Linux,
-Windows, and macOS, so Windows-only `pywin32` is not lost when metadata is
-assembled on Linux.
+リリース成果物は変更不能なタグから構築し、クリーン環境へインストールして、
+依存関係の整合性、SHA-256 インベントリを検証します。GitHub attestation と、
+タグ付きワークフローの identity および GitHub Actions OIDC issuer に結び付いた
+ファイルごとの Sigstore bundle も生成します。集約 CycloneDX SBOM は Linux、
+Windows、macOS の実行時依存スナップショットの和集合であるため、Windows 専用
+`pywin32` も失われません。
 
-The release is verified by `SHA256SUMS`. `requirements-release.txt` pins exact
-versions but is not a pip `--require-hashes` lock: installed `RECORD` files and
-independent installed-file manifests provide post-install provenance, not
-hash-before-install authentication of package-index downloads.
+リリースは `SHA256SUMS` で検証します。`requirements-release.txt` は正確な
+バージョンを固定しますが、pip の `--require-hashes` ロックではありません。
+インストール済み `RECORD` と独立したファイル manifest はインストール後の
+provenance であり、パッケージインデックスから取得する wheel をインストール前に
+認証するものではありません。
 
-Portable builds remain available for local development and are smoke-tested on
-all three operating systems. The official `v*` tagged-release workflow uploads
-the checked Windows EXE and macOS APP only as short-retention CI artifacts and
-excludes them from its signed official payload. For easier installation, one
-exact, already-verified pair may also be mirrored in a separately named
-`desktop-*` development pre-release. That mirror remains unsigned/ad-hoc and
-does not become an official release asset of the signed stable `v*` channel.
-Binary wheels can embed native codec, rendering, and runtime libraries below
-the Python-distribution level; the current source lock, license inventory, and
-SBOM do not yet prove that complete native component closure. The exact
-official-release allowlist rejects non-contract assets, and an independent
-bounded archive scanner rejects portable or source-companion content even when
-it is renamed or nested inside an otherwise allowed archive. See
-[docs/RELEASE.md](docs/RELEASE.md).
+ローカル開発用 portable は 3 OS すべてでビルド・スモークテストします。
+公式の `v*` タグ付きリリースワークフローでは、検証済み Windows EXE と
+macOS APP を短期保存の CI 成果物としてのみアップロードし、署名付き公式
+payload から除外します。利用しやすくするため、正確に同一で検証済みの 1 組を、
+別名の `desktop-*` 開発用プレリリースへ複製する場合があります。この複製版も
+未署名／ad-hoc のままで、正式な署名済み安定版にはなりません。Binary wheel
+には、Python distribution より下位のネイティブ codec、描画ライブラリ、
+runtime が組み込まれる場合があります。現在の source lock、license inventory、
+SBOM は、その完全なネイティブコンポーネント閉包まではまだ証明していません。
+公式リリースの厳密なトップレベル allowlist は契約外の資産を拒否し、独立した
+上限付き archive scanner は、名前を変えたり別 archive に入れたりした
+portable／source companion も拒否します。詳細は
+[docs/RELEASE.md](docs/RELEASE.md) を参照してください。
 
-## Source layout
+## ソース構成
 
-- `core/`: evidence, scanners, catalog, quarantine, services, dataset, and video
-- `qt/`: PyQt6 desktop interface
-- `images/`: packaged UI assets
-- `help/`: Sphinx user manual
-- `scripts/`: CI, artifact smoke tests, and release metadata
-- `pkg/`: native packaging skeletons
+- `core/`: 証拠、スキャナー、カタログ、隔離、サービス、データセット、動画
+- `qt/`: PyQt6 デスクトップ UI
+- `images/`: UI 画像
+- `help/`: Sphinx ユーザーマニュアル
+- `scripts/`: CI、成果物スモークテスト、リリースメタデータ
+- `pkg/`: ネイティブパッケージの雛形
 
-## License and provenance
+## ライセンスと provenance
 
-dupeGuru Neo is distributed under GPLv3. If you distribute a modified binary,
-the corresponding source and GPL notices must be available under the license
-terms. The project preserves the history and attribution of the original
-dupeGuru contributors; Neo-specific maintenance is hosted at
-[AiWithYou/dupeguru_neo](https://github.com/AiWithYou/dupeguru_neo).
+dupeGuru Neo は GPLv3 で配布されます。改造したバイナリを配布する場合は、
+ライセンス条件に従い、対応ソースと GPL 表示を利用可能にする必要があります。
+このプロジェクトは、元の dupeGuru contributors の履歴と attribution を保持
+します。Neo 固有の保守は
+[AiWithYou/dupeguru_neo](https://github.com/AiWithYou/dupeguru_neo)
+で行っています。
