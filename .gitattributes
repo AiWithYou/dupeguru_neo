@@ -1,0 +1,7 @@
+/.gitattributes text eol=lf
+/LICENSE text eol=lf
+/THIRD_PARTY_NOTICES.md text eol=lf
+/docs/PORTABLE-NOTICE.txt text eol=lf
+/hscommon/LICENSE text eol=lf
+/release-sources.json text eol=lf
+/requirements-release.txt text eol=lf

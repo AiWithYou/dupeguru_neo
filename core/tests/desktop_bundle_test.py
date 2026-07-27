@@ -237,6 +237,30 @@ def test_desktop_source_identity_rejects_a_dirty_tree(tmp_path, monkeypatch):
         desktop_bundle._verified_source_commit(tmp_path)
 
 
+def test_desktop_source_identity_rejects_checkout_normalized_legal_bytes(tmp_path, monkeypatch):
+    source = tmp_path / "docs" / "PORTABLE-NOTICE.txt"
+    _write(source, b"working tree\r\n")
+    commit = "1" * 40
+    monkeypatch.setattr(
+        desktop_bundle,
+        "_LEGAL_FILES",
+        {"PORTABLE-NOTICE.txt": Path("docs", "PORTABLE-NOTICE.txt")},
+    )
+    monkeypatch.setattr(
+        desktop_bundle.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=b"committed tree\n",
+            stderr=b"",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="differs byte-for-byte from its committed Git blob"):
+        desktop_bundle._verify_committed_legal_source_bytes(tmp_path, commit)
+
+
 def test_desktop_artifact_verification_rejects_a_foreign_host(tmp_path, monkeypatch):
     artifact = tmp_path / "dupeguru-neo-5.0.0-macos-arm64-adhoc.app.zip"
     artifact.write_bytes(b"placeholder")

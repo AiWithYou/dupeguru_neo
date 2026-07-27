@@ -613,6 +613,27 @@ def _copy_without_overwrite(source: Path, destination: Path) -> Path:
     return destination
 
 
+def _verify_committed_legal_source_bytes(project_root: Path, commit: str) -> None:
+    for source_name in sorted(set(_LEGAL_FILES.values()), key=lambda path: path.as_posix()):
+        source = project_root.joinpath(source_name)
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError(f"desktop legal source is not a regular file: {source_name.as_posix()}")
+        result = subprocess.run(
+            ["git", "cat-file", "blob", f"{commit}:{source_name.as_posix()}"],
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            error = result.stderr[-1000:].decode("utf-8", errors="replace")
+            raise RuntimeError(f"cannot read committed desktop legal source: {source_name.as_posix()}: {error}")
+        if result.stdout != source.read_bytes():
+            raise RuntimeError(
+                "desktop legal source differs byte-for-byte from its committed Git blob: " f"{source_name.as_posix()}"
+            )
+
+
 def _verified_source_commit(project_root: Path) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -638,6 +659,7 @@ def _verified_source_commit(project_root: Path) -> str:
     )
     if status.returncode != 0 or status.stdout:
         raise RuntimeError("desktop artifacts require a clean tracked and untracked source tree")
+    _verify_committed_legal_source_bytes(project_root, commit)
     epoch = subprocess.run(
         ["git", "show", "-s", "--format=%ct", commit],
         cwd=project_root,
