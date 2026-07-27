@@ -4,146 +4,130 @@
 #
 msgid ""
 msgstr ""
-"Last-Translator: Fuan <jcfrt@posteo.net>, 2022\n"
+"Last-Translator: AiWithYou contributors, 2026\n"
 "Language-Team: Japanese (https://app.transifex.com/voltaicideas/teams/116153/ja/)\n"
 "Language: ja\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: utf-8\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: core\app.py:44
+#: core\app.py:77
 msgid "There are no marked duplicates. Nothing has been done."
 msgstr "チェックを入れた重複はありません。 何も行われませんでした。"
 
-#: core\app.py:45
+#: core\app.py:78
 msgid "There are no selected duplicates. Nothing has been done."
 msgstr "選択された重複はありません。 何も行われていません。"
 
-#: core\app.py:46
+#: core\app.py:106
 msgid ""
 "You're about to open many files at once. Depending on what those files are "
 "opened with, doing so can create quite a mess. Continue?"
 msgstr "一度に多くのファイルを開こうとしています。 これらのファイルを開く対象によっては、これを行うとかなり混乱する可能性があります。 継続する？"
 
-#: core\app.py:73
+#: core\app.py:134
 msgid "Scanning for duplicates"
 msgstr "重複のスキャン"
 
-#: core\app.py:74
+#: core\app.py:135
 msgid "Loading"
 msgstr "読み込み中"
 
-#: core\app.py:75
+#: core\app.py:136
 msgid "Moving"
 msgstr "移動します"
 
-#: core\app.py:76
+#: core\app.py:137
 msgid "Copying"
 msgstr "コピー中"
 
-#: core\app.py:77
-msgid "Sending to Trash"
-msgstr "ごみ箱に送信します"
-
-#: core\app.py:289
+#: core\app.py:451
 msgid ""
 "A previous action is still hanging in there. You can't start a new one yet. "
 "Wait a few seconds, then try again."
 msgstr "前のアクションはまだそこにぶら下がっています。 まだ新しいものを始めることはできません。 数秒待ってから、再試行してください。"
 
-#: core\app.py:300
+#: core\app.py:487
 msgid "No duplicates found."
 msgstr "重複は見つかりませんでした。"
 
-#: core\app.py:315
+#: core\app.py:502
 msgid "All marked files were copied successfully."
 msgstr "チェックを入れたファイルをすべてコピーしました。"
 
-#: core\app.py:317
+#: core\app.py:504
 msgid "All marked files were moved successfully."
 msgstr "チェックを入れたファイルをすべて移動しました。"
 
-#: core\app.py:319
-msgid "All marked files were deleted successfully."
-msgstr "チェックを入れたファイルをすべて削除しました。"
-
-#: core\app.py:321
-msgid "All marked files were successfully sent to Trash."
-msgstr "チェックを入れたファイルをすべてごみ箱に移動しました。"
-
-#: core\app.py:326
+#: core\app.py:526
 msgid "Could not load file: {}"
 msgstr "ファイルを読み込めませんでした：{}"
 
-#: core\app.py:382
+#: core\app.py:603
 msgid "'{}' already is in the list."
 msgstr "「{}」既にリストに含まれています。"
 
-#: core\app.py:384
+#: core\app.py:605
 msgid "'{}' does not exist."
 msgstr "'{}' 存在しません。"
 
-#: core\app.py:392
+#: core\app.py:613
 msgid ""
 "All selected %d matches are going to be ignored in all subsequent scans. "
 "Continue?"
 msgstr "選択した%d個の一致は、以降のすべてのスキャンで無視されます。 継続する？"
 
-#: core\app.py:469
+#: core\app.py:845
 msgid "Select a directory to copy marked files to"
 msgstr "マークされたファイルをコピーするディレクトリを選択してください"
 
-#: core\app.py:471
+#: core\app.py:847
 msgid "Select a directory to move marked files to"
 msgstr "マークされたファイルを移動するディレクトリを選択してください"
 
-#: core\app.py:510
+#: core\app.py:929
 msgid "Select a destination for your exported CSV"
 msgstr "エクスポートしたCSVの宛先を選択します。"
 
-#: core\app.py:516 core\app.py:777 core\app.py:787
+#: core\app.py:935 core\app.py:1311 core\app.py:1321
 msgid "Couldn't write to file: {}"
 msgstr "ファイルに書き込めませんでした：{}"
 
-#: core\app.py:539
+#: core\app.py:958
 msgid "You have no custom command set up. Set it up in your preferences."
 msgstr "カスタムコマンドは設定されていません。 お好みで設定してください。"
 
-#: core\app.py:701 core\app.py:713
+#: core\app.py:1164 core\app.py:1176
 msgid "You are about to remove %d files from results. Continue?"
 msgstr "結果から%d個のファイルを削除しようとしています。 継続する？"
 
-#: core\app.py:749
+#: core\app.py:1236
 msgid "{} duplicate groups were changed by the re-prioritization."
 msgstr "{}重複するグループは、再優先順位付けによって変更されました。"
 
-#: core\app.py:797
+#: core\app.py:1785
 msgid "The selected directories contain no scannable file."
 msgstr "選択したディレクトリにはスキャン可能なファイルが含まれていません。"
 
-#: core\app.py:813
+#: core\app.py:1795
 msgid "Collecting files to scan"
 msgstr "スキャンするファイルを収集しています"
 
-#: core\app.py:863
+#: core\app.py:1935
 msgid "%s (%d discarded)"
 msgstr "%s (%d 廃棄)"
 
-#: core\directories.py:191
+#: core\directories.py:516
 msgid "Collected {} files to scan"
-msgstr ""
+msgstr "スキャン対象として {} 個のファイルを収集しました"
 
-#: core\directories.py:207
+#: core\directories.py:579
 msgid "Collected {} folders to scan"
-msgstr ""
+msgstr "スキャン対象として {} 個のフォルダーを収集しました"
 
-#: core\engine.py:27
+#: core\engine.py:30
 msgid "%d matches found from %d groups"
-msgstr ""
-
-#: core\gui\deletion_options.py:71
-msgid "You are sending {} file(s) to the Trash."
-msgstr "{}個のファイルをゴミ箱に送信しています"
+msgstr "%d 件の一致が %d グループで見つかりました"
 
 #: core\gui\exclude_list_table.py:14
 msgid "Regular Expressions"
@@ -169,31 +153,19 @@ msgstr "ファイル名 - フィールド（順序なし）"
 msgid "Tags"
 msgstr "タグ"
 
-#: core\me\scanner.py:24 core\pe\scanner.py:22 core\se\scanner.py:17
+#: core\me\scanner.py:24 core\pe\scanner.py:30 core\se\scanner.py:17
 msgid "Contents"
 msgstr "内容"
 
-#: core\pe\matchblock.py:66
+#: core\pe\matchblock.py:170
 msgid "Analyzed %d/%d pictures"
 msgstr "%d/%d 枚の写真を分析しました"
-
-#: core\pe\matchblock.py:183
-msgid "Performed %d/%d chunk matches"
-msgstr "チャンクマッチを%d/%d回実行しました"
-
-#: core\pe\matchblock.py:191
-msgid "Preparing for matching"
-msgstr "マッチングの準備"
-
-#: core\pe\matchblock.py:240
-msgid "Verified %d/%d matches"
-msgstr "%d/%d件の一致を確認"
 
 #: core\pe\matchexif.py:19
 msgid "Read EXIF of %d/%d pictures"
 msgstr "%d/%d枚の写真のEXIFを読みました"
 
-#: core\pe\scanner.py:23
+#: core\pe\scanner.py:31
 msgid "EXIF Timestamp"
 msgstr "EXIFタイムスタンプ"
 
@@ -201,54 +173,319 @@ msgstr "EXIFタイムスタンプ"
 msgid "None"
 msgstr "無し"
 
-#: core\prioritize.py:102
+#: core\prioritize.py:104
 msgid "Ends with number"
 msgstr "番号で終わっている"
 
-#: core\prioritize.py:103
+#: core\prioritize.py:105
 msgid "Doesn't end with number"
 msgstr "数字で終わっていない"
 
-#: core\prioritize.py:104
+#: core\prioritize.py:106
 msgid "Longest"
 msgstr "最長"
 
-#: core\prioritize.py:105
+#: core\prioritize.py:107
 msgid "Shortest"
 msgstr "最短"
 
-#: core\prioritize.py:142
+#: core\prioritize.py:152
 msgid "Highest"
 msgstr "最高"
 
-#: core\prioritize.py:142
+#: core\prioritize.py:152
 msgid "Lowest"
 msgstr "最低"
 
-#: core\prioritize.py:171
+#: core\prioritize.py:181
 msgid "Newest"
 msgstr "最新"
 
-#: core\prioritize.py:171
+#: core\prioritize.py:181
 msgid "Oldest"
 msgstr "最古"
 
-#: core\results.py:135
+#: core\results.py:863
 msgid "%d / %d (%s / %s) duplicates marked."
 msgstr "%d / %d (%s / %s)マークされた重複。"
 
-#: core\results.py:142
+#: core\results.py:870
 msgid " filter: %s"
 msgstr "フィルタ: %s"
 
-#: core\scanner.py:114
+#: core\scanner.py:135
 msgid "Read metadata of %d/%d files"
 msgstr "%d/%dファイルのメタデータを読み取った"
 
-#: core\scanner.py:152
+#: core\scanner.py:206 core\scanner.py:282 core\scanner.py:388
 msgid "Almost done! Fiddling with results..."
 msgstr "ほぼ完了しました！ 結果をいじっています..."
 
 #: core\se\scanner.py:18
 msgid "Folders"
 msgstr "フォルダー"
+
+#: core\app.py:79
+msgid ""
+"Run the configured external command for {} selected file(s)?\n"
+"\n"
+"External commands run outside dupeGuru's safety model. They can modify or permanently delete files, including protected or perceptually similar files. dupeGuru cannot verify or undo those changes."
+msgstr ""
+"選択した {} 個のファイルに設定済みの外部コマンドを実行しますか？\n"
+"\n"
+"外部コマンドはdupeGuruの安全モデルの外で実行されます。保護対象や知覚的に類似したファイルを含め、ファイルを変更または完全削除する可能性があります。dupeGuruでは、その変更を検証したり元に戻したりできません。"
+
+#: core\app.py:138
+msgid "Moving verified duplicates to quarantine"
+msgstr "検証済みの重複を隔離領域へ移動しています"
+
+#: core\app.py:139
+msgid "Restoring quarantined files"
+msgstr "隔離したファイルを復元しています"
+
+#: core\app.py:340
+msgid "No files were changed because another batch preflight failed."
+msgstr "別のバッチの事前検査に失敗したため、ファイルは変更されませんでした。"
+
+#: core\app.py:469
+msgid ""
+"The scan stopped before matching because direct folder discovery reached a safety limit. No partial results were analyzed, and bulk file actions are disabled.\n"
+"\n"
+"{}\n"
+"\n"
+"For a very large exact-match library, select the Contents scan so the Persistent Catalog can process it in bounded resumable batches."
+msgstr ""
+"フォルダーの直接探索が安全上限に達したため、照合前にスキャンを停止しました。部分結果は解析されておらず、一括ファイル操作は無効です。\n"
+"\n"
+"{}\n"
+"\n"
+"非常に大きな完全一致ライブラリでは、「内容」スキャンを選択し、永続カタログで上限付きの再開可能なバッチとして処理してください。"
+
+#: core\app.py:479
+msgid ""
+"The scan is incomplete. Results are shown for review, but bulk file actions "
+"are disabled until a complete rescan succeeds."
+msgstr "スキャンは未完了です。結果は確認用に表示されますが、完全な再スキャンに成功するまで一括ファイル操作は無効です。"
+
+#: core\app.py:506
+msgid "All selected byte-verified files were moved to recoverable quarantine."
+msgstr "選択したバイト検証済みファイルをすべて復元可能な隔離領域へ移動しました。"
+
+#: core\app.py:515
+msgid ""
+"{} file(s) were restored; {} could not be restored.\n"
+"\n"
+"{}"
+msgstr ""
+"{} 個のファイルを復元しました。{} 個は復元できませんでした。\n"
+"\n"
+"{}"
+
+#: core\app.py:519
+msgid ""
+"{} file(s) were restored to their original paths. Run a new scan to refresh "
+"the results."
+msgstr "{} 個のファイルを元のパスへ復元しました。結果を更新するには新しいスキャンを実行してください。"
+
+#: core\app.py:645
+msgid ""
+"The selected matches were not added because the persistent ignore list would exceed its safety limits. No ignore relationships were changed.\n"
+"\n"
+"{}"
+msgstr ""
+"永続無視リストが安全上限を超えるため、選択した一致は追加されませんでした。無視の関係は変更されていません。\n"
+"\n"
+"{}"
+
+#: core\app.py:768
+msgid ""
+"Verifying keeper: {}/{} organizer actions completed, {} bytes read for '{}'"
+msgstr "保存対象を検証中: 整理操作 {}/{} 件完了、{} バイトを '{}' から読み取り"
+
+#: core\app.py:811
+msgid "Organizer action complete"
+msgstr "整理操作が完了しました"
+
+#: core\app.py:813
+msgid "Organizer action failed safely"
+msgstr "整理操作は安全に失敗しました"
+
+#: core\app.py:816
+msgid "{}: {}/{} files"
+msgstr "{}: {}/{} ファイル"
+
+#: core\app.py:836
+msgid "copied"
+msgstr "コピー"
+
+#: core\app.py:836
+msgid "moved"
+msgstr "移動"
+
+#: core\app.py:838
+msgid ""
+"No files were {}. Organizer operations require a complete current scan and an Incoming Files target.\n"
+"\n"
+"{}"
+msgstr ""
+"ファイルは{}されませんでした。整理操作には、現在の完全なスキャンと受信ファイルの対象が必要です。\n"
+"\n"
+"{}"
+
+#: core\app.py:867
+msgid ""
+"No files were changed. Bulk actions require a complete current scan and byte-verified exact duplicates.\n"
+"\n"
+"{}"
+msgstr ""
+"ファイルは変更されませんでした。一括操作には、現在の完全なスキャンとバイト検証済みの完全一致重複が必要です。\n"
+"\n"
+"{}"
+
+#: core\app.py:884
+msgid ""
+"No files were changed because a safe action plan could not be built:\n"
+"\n"
+"{}"
+msgstr ""
+"安全な操作計画を作成できなかったため、ファイルは変更されませんでした:\n"
+"\n"
+"{}"
+
+#: core\app.py:899
+msgid ""
+"There is no restorable quarantine batch in this session. Use the quarantine "
+"CLI list command to inspect older batches."
+msgstr "このセッションには復元可能な隔離バッチがありません。以前のバッチはquarantine CLIのlistコマンドで確認してください。"
+
+#: core\app.py:905
+msgid ""
+"Restore {} quarantined file(s) to their original paths? Existing paths will "
+"never be overwritten."
+msgstr "隔離した {} 個のファイルを元のパスへ復元しますか？既存のパスは上書きされません。"
+
+#: core\app.py:979
+msgid "The custom command could not be started."
+msgstr "カスタムコマンドを開始できませんでした。"
+
+#: core\app.py:999
+msgid ""
+"The folder list could not be loaded because it is invalid or exceeds the supported safety limits. The current folder list was kept and the invalid source will not be replaced unless the folder selection is changed.\n"
+"\n"
+"{}"
+msgstr ""
+"フォルダーリストが無効、または対応する安全上限を超えているため読み込めませんでした。現在のフォルダーリストを維持し、フォルダー選択を変更しない限り無効な読み込み元は置換されません。\n"
+"\n"
+"{}"
+
+#: core\app.py:1014
+msgid ""
+"The ignore list could not be loaded because it is invalid or exceeds the supported safety limits. The current ignore list was kept.\n"
+"\n"
+"{}"
+msgstr ""
+"無視リストが無効、または対応する安全上限を超えているため読み込めませんでした。現在の無視リストを維持しました。\n"
+"\n"
+"{}"
+
+#: core\app.py:1028
+msgid ""
+"The exclusion list could not be loaded because it is invalid or exceeds the supported safety limits. The current exclusion list was kept.\n"
+"\n"
+"{}"
+msgstr ""
+"除外リストが無効、または対応する安全上限を超えているため読み込めませんでした。現在の除外リストを維持しました。\n"
+"\n"
+"{}"
+
+#: core\app.py:1042
+msgid ""
+"The folder list could not be loaded because it is invalid or exceeds the "
+"supported safety limits. The current folder list was kept."
+msgstr "フォルダーリストが無効、または対応する安全上限を超えているため読み込めませんでした。現在のフォルダーリストを維持しました。"
+
+#: core\app.py:1196
+msgid "The file was not renamed. {}"
+msgstr "ファイル名は変更されませんでした。{}"
+
+#: core\app.py:1260
+msgid ""
+"The folder list was not saved because it is invalid or exceeds the supported safety limits. Any existing folder-list file was kept unchanged.\n"
+"\n"
+"{}"
+msgstr ""
+"フォルダーリストが無効、または対応する安全上限を超えているため保存されませんでした。既存のフォルダーリストファイルは変更されていません。\n"
+"\n"
+"{}"
+
+#: core\app.py:1290
+msgid ""
+"The exclusion list was not saved because it is invalid or exceeds the supported safety limits. Any existing exclusion-list file was kept unchanged.\n"
+"\n"
+"{}"
+msgstr ""
+"除外リストが無効、または対応する安全上限を超えているため保存されませんでした。既存の除外リストファイルは変更されていません。\n"
+"\n"
+"{}"
+
+#: core\app.py:1380
+msgid "Hashing scan-start proofs: {}/{} files, {}/{} bytes"
+msgstr "スキャン開始時の根拠をハッシュ中: {}/{} ファイル、{}/{} バイト"
+
+#: core\app.py:1433
+msgid "Confirming scan-end proofs: {}/{} files, {}/{} bytes"
+msgstr "スキャン終了時の根拠を確認中: {}/{} ファイル、{}/{} バイト"
+
+#: core\app.py:1833
+msgid "Preparing scan-start content proofs"
+msgstr "スキャン開始時の内容根拠を準備しています"
+
+#: core\app.py:1846
+msgid "Matching files"
+msgstr "ファイルを照合しています"
+
+#: core\gui\deletion_options.py:44
+msgid ""
+"{} byte-verified file(s) will be moved to a recoverable quarantine. Every "
+"file and its keeper will be revalidated before anything moves. Permanent "
+"finalization is always a separate explicit operation."
+msgstr ""
+"{} "
+"個のバイト検証済みファイルを復元可能な隔離領域へ移動します。移動を始める前に、すべてのファイルと保存対象を再検証します。完全削除は必ず別の明示的な操作として行います。"
+
+#: core\pe\matchblock.py:330
+msgid "Indexing picture fingerprints"
+msgstr "画像フィンガープリントを索引化しています"
+
+#: core\pe\matchblock.py:352
+msgid "Finding and verifying picture candidates"
+msgstr "画像候補を検索して検証しています"
+
+#: core\prioritize.py:108
+msgid "Longest Path"
+msgstr "最も長いパス"
+
+#: core\prioritize.py:109
+msgid "Shortest Path"
+msgstr "最も短いパス"
+
+#~ msgid "Sending to Trash"
+#~ msgstr "ごみ箱に送信します"
+
+#~ msgid "All marked files were deleted successfully."
+#~ msgstr "チェックを入れたファイルをすべて削除しました。"
+
+#~ msgid "All marked files were successfully sent to Trash."
+#~ msgstr "チェックを入れたファイルをすべてごみ箱に移動しました。"
+
+#~ msgid "You are sending {} file(s) to the Trash."
+#~ msgstr "{}個のファイルをゴミ箱に送信しています"
+
+#~ msgid "Performed %d/%d chunk matches"
+#~ msgstr "チャンクマッチを%d/%d回実行しました"
+
+#~ msgid "Preparing for matching"
+#~ msgstr "マッチングの準備"
+
+#~ msgid "Verified %d/%d matches"
+#~ msgstr "%d/%d件の一致を確認"

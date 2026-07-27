@@ -1,4 +1,4 @@
-__version__ = "5.0.0"
+__version__ = "5.1.0"
 __appname__ = "dupeGuru Neo"
 __organization__ = "AiWithYou"
 __application_id__ = "io.github.AiWithYou.dupeguru_neo"

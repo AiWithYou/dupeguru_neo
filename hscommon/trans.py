@@ -154,17 +154,25 @@ def install_gettext_trans_under_qt(base_folder: os.PathLike, lang: str = None) -
         locale.setlocale(locale.LC_ALL, localename)
     except locale.Error:
         logging.warning("Couldn't set locale %s", localename)
-    qmname = "qt_%s" % lang
-    if ISLINUX:
-        # Under linux, a full Qt installation is already available in the system, we didn't bundle
-        # up the qm files in our package, so we have to load translations from the system.
-        qmpath = op.join(
-            QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
-            qmname,
-        )
-    else:
-        qmpath = op.join(base_folder, qmname)
-    qtr = QTranslator(QCoreApplication.instance())
-    qtr.load(qmpath)
-    QCoreApplication.installTranslator(qtr)
+    # Qt 6 split the widget translations (including standard dialog buttons)
+    # into qtbase_*.qm. Loading only the tiny qt_*.qm compatibility catalog
+    # leaves those controls in English. Prefer the active Qt runtime's
+    # translation directory, while retaining the application locale directory
+    # for frozen layouts that place the catalogs there.
+    translation_roots = (
+        QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath),
+        os.fspath(base_folder),
+    )
+    loaded_paths = set()
+    for catalog in ("qtbase_%s" % lang, "qt_%s" % lang):
+        for root in translation_roots:
+            qmpath = op.join(root, catalog)
+            normalized = op.normcase(op.abspath(qmpath))
+            if normalized in loaded_paths:
+                continue
+            translator = QTranslator(QCoreApplication.instance())
+            if translator.load(qmpath):
+                QCoreApplication.installTranslator(translator)
+                loaded_paths.add(normalized)
+                break
     install_gettext_trans(base_folder, lang)

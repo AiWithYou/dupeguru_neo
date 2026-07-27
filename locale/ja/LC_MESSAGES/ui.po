@@ -4,7 +4,7 @@
 #
 msgid ""
 msgstr ""
-"Last-Translator: Andrew Senetar <arsenetar@gmail.com>, 2023\n"
+"Last-Translator: AiWithYou contributors, 2026\n"
 "Language-Team: Japanese (https://app.transifex.com/voltaicideas/teams/116153/ja/)\n"
 "Language: ja\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -349,7 +349,7 @@ msgstr "絶対パスを再作成"
 
 #: qt/preferences_dialog.py:99
 msgid "Custom Command (arguments: %d for dupe, %r for ref):"
-msgstr "カスタムコマンド (引数: ％dは重複・％rは参照）:"
+msgstr "カスタムコマンド（引数: 重複は%d、参照は%r）:"
 
 #: qt/preferences_dialog.py:174
 msgid "dupeGuru has to restart for language changes to take effect."
@@ -551,7 +551,7 @@ msgstr "コピー"
 
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "Custom command (arguments: %d for dupe, %r for ref):"
-msgstr "カスタムコマンド (引数：重複の場合は％d、参照の場合は％r）:"
+msgstr "カスタムコマンド（引数: 重複は%d、参照は%r）:"
 
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "Cut"
@@ -929,59 +929,61 @@ msgstr "表示"
 
 #: qt\se\preferences_dialog.py:70
 msgid "Partially hash files bigger than"
-msgstr ""
+msgstr "次のサイズを超えるファイルは部分ハッシュを使用"
 
 #: qt\se\preferences_dialog.py:80
 msgid "MB"
-msgstr ""
+msgstr "MB"
 
 #: qt\preferences_dialog.py:163
 msgid "Use native OS dialogs"
-msgstr ""
+msgstr "OS標準のダイアログを使用"
 
 #: qt\preferences_dialog.py:166
 msgid ""
 "For actions such as file/folder selection use the OS native dialogs.\n"
 "Some native dialogs have limited functionality."
 msgstr ""
+"ファイルやフォルダーの選択などにOS標準のダイアログを使用します。\n"
+"一部の標準ダイアログでは機能が制限される場合があります。"
 
 #: qt\se\preferences_dialog.py:68
 msgid "Ignore files larger than"
-msgstr ""
+msgstr "次のサイズを超えるファイルを無視"
 
 #: qt\app.py:135 qt\app.py:293
 msgid "Clear Cache"
-msgstr ""
+msgstr "キャッシュを消去"
 
 #: qt\app.py:294
 msgid ""
 "Do you really want to clear the cache? This will remove all cached file "
 "hashes and picture analysis."
-msgstr ""
+msgstr "キャッシュを消去しますか？保存されているファイルハッシュと画像解析結果がすべて削除されます。"
 
 #: qt\app.py:299
 msgid "Cache cleared."
-msgstr ""
+msgstr "キャッシュを消去しました。"
 
 #: qt\preferences_dialog.py:173
 msgid "Use dark style"
-msgstr ""
+msgstr "ダークスタイルを使用"
 
 #: qt\preferences_dialog.py:241
 msgid "Profile scan operation"
-msgstr ""
+msgstr "スキャン処理をプロファイル"
 
 #: qt\preferences_dialog.py:242
 msgid "Profile the scan operation and save logs for optimization."
-msgstr ""
+msgstr "スキャン処理をプロファイルし、最適化用のログを保存します。"
 
 #: qt\preferences_dialog.py:246
 msgid "Logs located in: <a href=\"{}\">{}</a>"
-msgstr ""
+msgstr "ログの保存場所: <a href=\"{}\">{}</a>"
 
 #: qt\preferences_dialog.py:291
 msgid "Debug"
-msgstr ""
+msgstr "デバッグ"
 
 #: qt\about_box.py:31
 msgid "About {}"
@@ -993,7 +995,7 @@ msgstr "バージョン {}"
 
 #: qt\about_box.py:49 qt\about_box.py:75
 msgid "Checking for updates..."
-msgstr ""
+msgstr "更新を確認しています…"
 
 #: qt\about_box.py:54
 msgid "Licensed under GPLv3"
@@ -1001,11 +1003,11 @@ msgstr "GPLv3のもとでライセンスされています"
 
 #: qt\about_box.py:68
 msgid "No update available."
-msgstr ""
+msgstr "利用できる更新はありません。"
 
 #: qt\about_box.py:71
 msgid "New version {} available, download <a href=\"{}\">here</a>."
-msgstr ""
+msgstr "新しいバージョン {} を利用できます。<a href=\"{}\">こちら</a>からダウンロードしてください。"
 
 #: qt\error_report_dialog.py:50
 msgid "Error Report"
@@ -1125,23 +1127,23 @@ msgstr "探索..."
 msgid ""
 "These options are for advanced users or for very specific situations, most "
 "users should not have to modify these."
-msgstr ""
+msgstr "これらは上級者向け、または特殊な状況で使用する設定です。通常は変更する必要はありません。"
 
 #: qt\preferences_dialog.py:225
 msgid "Include existence check after scan completion"
-msgstr ""
+msgstr "スキャン完了後にファイルの存在を確認"
 
 #: qt\preferences_dialog.py:227
 msgid "Ignore difference in mtime when loading cached digests"
-msgstr ""
+msgstr "キャッシュ済みダイジェストの読み込み時に更新日時の違いを無視"
 
 #: qt\progress_window.py:64
 msgid "Cancel?"
-msgstr ""
+msgstr "キャンセルしますか？"
 
 #: qt\progress_window.py:65
 msgid "Are you sure you want to cancel? All progress will be lost."
-msgstr ""
+msgstr "キャンセルしますか？これまでの進行状況はすべて失われます。"
 
 #: qt\exclude_list_dialog.py:161
 msgid ""
@@ -1149,7 +1151,391 @@ msgid ""
 "<li>2. Regular expressions with at least one path separator in them will be compared to the full path to the file.</li><br>Example: if you want to filter out .PNG files from the \"My Pictures\" directory only:<br><code>.*My\\sPictures\\\\.*\\.png</code><br><br>You can test the regular expression with the \"test string\" button after pasting a fake path in the test field:<br><code>C:\\\\User\\My Pictures\\test.png</code><br><br>\n"
 "Matching regular expressions will be highlighted.<br>If there is at least one highlight, the path or filename tested will be ignored during scans.<br><br>Directories and files starting with a period '.' are filtered out by default.<br><br>"
 msgstr ""
+"これらの（大文字と小文字を区別する）Python正規表現は、スキャン中にファイルを除外します。<br>フォルダー名が選択した正規表現に一致すると、「フォルダー」タブでそのフォルダーの<strong>既定状態</strong>も「除外」に設定されます。<br>収集した各ファイルについて、完全に無視するかを決めるため次の2つを確認します。<br><li>1. パス区切り文字を含まない正規表現は、ファイル名だけと比較します。</li>\n"
+"<li>2. パス区切り文字を1つ以上含む正規表現は、ファイルのフルパスと比較します。</li><br>例: 「My Pictures」フォルダー内の.PNGファイルだけを除外する場合:<br><code>.*My\\sPictures\\\\.*\\.png</code><br><br>テスト欄に仮のパスを貼り付け、「テスト文字列」ボタンで正規表現を確認できます:<br><code>C:\\\\User\\My Pictures\\test.png</code><br><br>\n"
+"一致する正規表現は強調表示されます。<br>1つでも強調表示されると、テストしたパスまたはファイル名はスキャンで無視されます。<br><br>ピリオド「.」で始まるフォルダーとファイルは既定で除外されます。<br><br>"
 
 #: qt\pe\preferences_dialog.py:24
 msgid "Match pictures of different rotations"
+msgstr "回転方向が異なる画像も一致させる"
+
+#: qt\app.py:164
+msgid "dupeGuru Neo Help"
+msgstr "dupeGuru Neo ヘルプ"
+
+#: qt\app.py:169
+msgid "Similar Video CLI Workflow…"
+msgstr "類似動画のCLIワークフロー…"
+
+#: qt\app.py:172
+msgid "About dupeGuru Neo"
+msgstr "dupeGuru Neo について"
+
+#: qt\app.py:184
+msgid "Find Similar Image…"
+msgstr "類似画像を検索…"
+
+#: qt\app.py:394
+msgid "Choose an image to find visually similar files"
+msgstr "視覚的に類似するファイルを検索する基準画像を選択"
+
+#: qt\app.py:396
+msgid "Images ({})"
+msgstr "画像 ({})"
+
+#: qt\app.py:410
+msgid "Choose a readable image file."
+msgstr "読み込み可能な画像ファイルを選択してください。"
+
+#: qt\app.py:415
+msgid "Add at least one non-excluded picture folder before searching."
+msgstr "検索する前に、除外されていない画像フォルダーを1つ以上追加してください。"
+
+#: qt\app.py:435
+msgid "A visual search is already running."
+msgstr "類似画像検索は既に実行中です。"
+
+#: qt\deletion_options.py:35
+msgid ""
+"This action only moves files into recoverable quarantine. Permanent "
+"finalization is always a separate explicit operation."
+msgstr "この操作では、ファイルを復元可能な隔離領域へ移動するだけです。完全削除は必ず別の明示的な操作として行います。"
+
+#: qt\directories_dialog.py:202
+msgid ""
+"Choose each folder pool (Incoming, Protected, Compare Only, or Excluded), "
+"then press \"Scan\"."
+msgstr "各フォルダープール（受信ファイル、保護ライブラリ、比較のみ、除外）を選び、「スキャン」を押してください。"
+
+#: qt\directories_model.py:27
+msgid "Incoming Files"
+msgstr "受信ファイル"
+
+#: qt\directories_model.py:28
+msgid "Protected Library"
+msgstr "保護ライブラリ"
+
+#: qt\directories_model.py:29
+msgid "Compare Only"
+msgstr "比較のみ"
+
+#: qt\exclude_list_dialog.py:171
+msgid ""
+"These (case sensitive) python regular expressions will filter out files during scans.<br>Directories will also have their <strong>default state</strong> set to Excluded in the Directories tab if their name happens to match one of the selected regular expressions.<br>For each file collected, two tests are performed to determine whether or not to completely ignore it:<br><li>1. Regular expressions with no path separator in them will be compared to the file name only.</li>\n"
+"<li>2. Regular expressions with at least one path separator in them will be compared to the full path to the file.</li><br>Example: if you want to filter out .PNG files from the \"My Pictures\" directory only:<br><code>.*My\\sPictures\\\\.*\\.png</code><br><br>You can test the regular expression with the \"test string\" button after pasting a fake path in the test field:<br><code>C:\\\\User\\My Pictures\\test.png</code><br><br>\n"
+"Matching regular expressions will be highlighted.<br>If there is at least one highlight, the path or filename tested will be ignored during scans.<br><br>Directories and files starting with a period '.' are filtered out by default.<br><br>"
 msgstr ""
+"これらの（大文字と小文字を区別する）Python正規表現は、スキャン中にファイルを除外します。<br>フォルダー名が選択した正規表現に一致すると、「フォルダー」タブでそのフォルダーの<strong>既定状態</strong>も「除外」に設定されます。<br>収集した各ファイルについて、完全に無視するかを決めるため次の2つを確認します。<br><li>1. パス区切り文字を含まない正規表現は、ファイル名だけと比較します。</li>\n"
+"<li>2. パス区切り文字を1つ以上含む正規表現は、ファイルのフルパスと比較します。</li><br>例: 「My Pictures」フォルダー内の.PNGファイルだけを除外する場合:<br><code>.*My\\sPictures\\\\.*\\.png</code><br><br>テスト欄に仮のパスを貼り付け、「テスト文字列」ボタンで正規表現を確認できます:<br><code>C:\\\\User\\My Pictures\\test.png</code><br><br>\n"
+"一致する正規表現は強調表示されます。<br>1つでも強調表示されると、テストしたパスまたはファイル名はスキャンで無視されます。<br><br>ピリオド「.」で始まるフォルダーとファイルは既定で除外されます。<br><br>"
+
+#: qt\me\preferences_dialog.py:69 qt\pe\preferences_dialog.py:30
+#: qt\se\preferences_dialog.py:45
+msgid "Remove empty folders after move"
+msgstr "移動後に空のフォルダーを削除"
+
+#: qt\pe\details_dialog.py:81 qt\pe\details_dialog.py:106
+msgid "Side-by-side comparison"
+msgstr "左右に並べて比較"
+
+#: qt\pe\details_dialog.py:211
+msgid "The selected image is not available in the current results."
+msgstr "選択した画像は現在の結果にありません。"
+
+#: qt\pe\details_dialog.py:216
+msgid "The keeper could not be updated in the current results."
+msgstr "現在の結果で保存対象を更新できませんでした。"
+
+#: qt\pe\details_dialog.py:228
+msgid "The current results cannot be marked."
+msgstr "現在の結果にはマークを付けられません。"
+
+#: qt\pe\details_dialog.py:240
+msgid "The deletion proof could not be revalidated."
+msgstr "削除根拠を再検証できませんでした。"
+
+#: qt\pe\details_dialog.py:258
+msgid "The deletion candidate could not be updated."
+msgstr "削除候補を更新できませんでした。"
+
+#: qt\pe\image_viewer.py:178
+msgid "Side-by-side comparison (Alt+1)"
+msgstr "左右に並べて比較 (Alt+1)"
+
+#: qt\pe\image_viewer.py:186
+msgid "Alpha overlay comparison (Alt+2)"
+msgstr "アルファ重ね合わせ比較 (Alt+2)"
+
+#: qt\pe\image_viewer.py:194
+msgid "Blink comparison (Alt+3)"
+msgstr "点滅比較 (Alt+3)"
+
+#: qt\pe\image_viewer.py:202
+msgid "Absolute difference heatmap (Alt+4)"
+msgstr "絶対差ヒートマップ (Alt+4)"
+
+#: qt\pe\image_viewer.py:358
+msgid "A second readable image is required."
+msgstr "読み込み可能な2枚目の画像が必要です。"
+
+#: qt\pe\image_viewer.py:359
+msgid "%s unavailable: %s"
+msgstr "%s は利用できません: %s"
+
+#: qt\pe\image_viewer.py:363
+msgid "Side-by-side fallback: %s"
+msgstr "左右比較へ切り替えました: %s"
+
+#: qt\pe\image_viewer.py:367
+msgid "No readable image is selected."
+msgstr "読み込み可能な画像が選択されていません。"
+
+#: qt\pe\image_viewer.py:370
+msgid "Side-by-side · select another image to compare."
+msgstr "左右比較 · 比較する別の画像を選択してください。"
+
+#: qt\pe\image_viewer.py:388
+msgid "%s failed: %s"
+msgstr "%s に失敗しました: %s"
+
+#: qt\pe\image_viewer.py:415
+msgid "Side-by-side"
+msgstr "左右比較"
+
+#: qt\pe\image_viewer.py:416
+msgid "Alpha overlay"
+msgstr "アルファ重ね合わせ"
+
+#: qt\pe\image_viewer.py:417
+msgid "Blink"
+msgstr "点滅"
+
+#: qt\pe\image_viewer.py:418
+msgid "Difference heatmap"
+msgstr "差分ヒートマップ"
+
+#: qt\pe\image_viewer.py:424
+msgid " · display-bounded"
+msgstr " · 表示範囲に制限"
+
+#: qt\pe\image_viewer.py:425
+msgid "%s · normalized to %d×%d%s · originals unchanged"
+msgstr "%s · %d×%d に正規化%s · 元画像は変更されません"
+
+#: qt\pe\image_viewer.py:588 qt\pe\image_viewer.py:1012
+msgid "No image is selected for comparison."
+msgstr "比較する画像が選択されていません。"
+
+#: qt\pe\review_gallery.py:90
+msgid "Byte-verified exact"
+msgstr "バイト検証済み完全一致"
+
+#: qt\pe\review_gallery.py:91
+msgid "Visual approximate"
+msgstr "視覚的類似"
+
+#: qt\pe\review_gallery.py:92
+msgid "Visually related"
+msgstr "視覚的関連"
+
+#: qt\pe\review_gallery.py:93
+msgid "Unverified"
+msgstr "未検証"
+
+#: qt\pe\review_gallery.py:194
+msgid "Unknown image"
+msgstr "不明な画像"
+
+#: qt\pe\review_gallery.py:201 qt\pe\review_gallery.py:208
+msgid "unknown size"
+msgstr "サイズ不明"
+
+#: qt\pe\review_gallery.py:688 qt\pe\review_gallery.py:1097
+msgid "Select an image to review."
+msgstr "確認する画像を選択してください。"
+
+#: qt\pe\review_gallery.py:831
+msgid "dimensions unknown"
+msgstr "寸法不明"
+
+#: qt\pe\review_gallery.py:856
+msgid "No live, complete scan proof is attached to this review."
+msgstr "このレビューには、現在有効な完全スキャンの根拠が添付されていません。"
+
+#: qt\pe\review_gallery.py:864
+msgid "The safety gate could not verify this candidate."
+msgstr "安全性チェックでこの候補を検証できませんでした。"
+
+#: qt\pe\review_gallery.py:954
+msgid "KEEP"
+msgstr "残す"
+
+#: qt\pe\review_gallery.py:966
+msgid "DELETE"
+msgstr "削除候補"
+
+#: qt\pe\review_gallery.py:1101
+msgid "1 Keep"
+msgstr "1 残す"
+
+#: qt\pe\review_gallery.py:1102
+msgid "Choose the selected image as the keeper."
+msgstr "選択した画像を保存対象にします。"
+
+#: qt\pe\review_gallery.py:1103
+msgid "2 Mark delete"
+msgstr "2 削除候補にする"
+
+#: qt\pe\review_gallery.py:1104
+msgid "Space Next"
+msgstr "Space 次へ"
+
+#: qt\pe\review_gallery.py:1105
+msgid "Review the next duplicate group."
+msgstr "次の重複グループを確認します。"
+
+#: qt\pe\review_gallery.py:1159
+msgid "%s · %d"
+msgstr "%s · %d"
+
+#: qt\pe\review_gallery.py:1173
+msgid ""
+"Mark this image as a deletion candidate; this button does not delete the "
+"file."
+msgstr "この画像を削除候補としてマークします。このボタンではファイルは削除されません。"
+
+#: qt\pe\visual_query.py:239
+msgid "QUERY REFERENCE"
+msgstr "検索基準"
+
+#: qt\pe\visual_query.py:240
+msgid "REFERENCE"
+msgstr "参照"
+
+#: qt\pe\visual_query.py:253
+msgid "SIMILAR"
+msgstr "類似"
+
+#: qt\pe\visual_query.py:254
+msgid "TRANSFORMED (REVIEW ONLY)"
+msgstr "変形あり（確認のみ）"
+
+#: qt\pe\visual_query.py:255
+msgid "CROP CANDIDATE (REVIEW ONLY)"
+msgstr "切り抜き候補（確認のみ）"
+
+#: qt\pe\visual_query.py:256
+msgid "VISUALLY RELATED"
+msgstr "視覚的関連"
+
+#: qt\pe\visual_query.py:259
+msgid ""
+"{relation} · {score:.1f}% · blocks {blocks}% · pHash {phash} · dHash {dhash}"
+" · color {color:.3f}"
+msgstr ""
+"{relation} · {score:.1f}% · ブロック {blocks}% · pHash {phash} · dHash {dhash} ·"
+" 色 {color:.3f}"
+
+#: qt\pe\visual_query.py:454
+msgid "Find Similar Image"
+msgstr "類似画像を検索"
+
+#: qt\pe\visual_query.py:494
+msgid "Reference: {}"
+msgstr "基準画像: {}"
+
+#: qt\pe\visual_query.py:495
+msgid "Searching selected picture roots. Source files remain read-only."
+msgstr "選択した画像ルートを検索しています。元ファイルは読み取り専用のままです。"
+
+#: qt\pe\visual_query.py:515
+msgid ""
+"{matches} visual matches · {analyzed}/{discovered} analyzed · {status}. "
+"Read-only evidence; never exact or deletion-enabled."
+msgstr ""
+"視覚的一致 {matches} 件 · {analyzed}/{discovered} 件を解析 · "
+"{status}。読み取り専用の根拠であり、完全一致や削除可能状態にはなりません。"
+
+#: qt\pe\visual_query.py:548
+msgid "Visual search failed: {}"
+msgstr "類似画像検索に失敗しました: {}"
+
+#: qt\pe\visual_query.py:555
+msgid ""
+"Cancelling… The current image decode will finish before the worker stops."
+msgstr "キャンセルしています…現在の画像のデコード完了後に処理を停止します。"
+
+#: qt\pe\visual_query.py:559
+msgid "Visual search cancelled; no result was applied."
+msgstr "類似画像検索をキャンセルしました。結果は適用されていません。"
+
+#: qt\pe\visual_query.py:572
+msgid "Drop an image here or choose Find Similar Image."
+msgstr "ここに画像をドロップするか、「類似画像を検索」を選択してください。"
+
+#: qt\pe\visual_query.py:573
+msgid "Visual matches are read-only and never promoted to exact duplicates."
+msgstr "視覚的一致は読み取り専用であり、完全一致の重複へ昇格することはありません。"
+
+#: qt\preferences_dialog.py:233
+msgid "Compare files only between different folder pools"
+msgstr "異なるフォルダープール間のファイルだけを比較"
+
+#: qt\preferences_dialog.py:236
+msgid ""
+"Ignore duplicates contained entirely within one pool. Use this to compare "
+"Incoming Files against a Protected Library without reporting duplicates "
+"internal to either pool."
+msgstr "1つのプール内だけに存在する重複を無視します。受信ファイルと保護ライブラリを比較し、各プール内部の重複を表示したくない場合に使用します。"
+
+#: qt\preferences_dialog.py:246
+msgid "Direct scan resource limits"
+msgstr "直接スキャンのリソース上限"
+
+#: qt\preferences_dialog.py:256
+msgid "Maximum files:"
+msgstr "最大ファイル数:"
+
+#: qt\preferences_dialog.py:257
+msgid "Maximum folders:"
+msgstr "最大フォルダー数:"
+
+#: qt\preferences_dialog.py:258
+msgid "Maximum filesystem issues:"
+msgstr "ファイルシステム問題の最大数:"
+
+#: qt\preferences_dialog.py:259
+msgid "Maximum discovery seconds:"
+msgstr "探索の最大秒数:"
+
+#: qt\preferences_dialog.py:261
+msgid ""
+"These limits apply to filename, folder, tag, and picture scans that discover"
+" files directly. For a very large exact-match library, use the Contents scan"
+" and its Persistent Catalog."
+msgstr ""
+"これらの上限は、ファイルを直接探索するファイル名、フォルダー、タグ、画像の各スキャンに適用されます。非常に大きな完全一致ライブラリには、「内容」スキャンと永続カタログを使用してください。"
+
+#: qt\result_window.py:83
+msgid "Quarantine Verified Marked Files..."
+msgstr "検証済みのマーク済みファイルを隔離…"
+
+#: qt\result_window.py:90
+msgid "Restore Last Quarantine Batch..."
+msgstr "直前の隔離バッチを復元…"
+
+#: qt\result_window.py:210
+msgid "Invoke External Custom Command..."
+msgstr "外部カスタムコマンドを実行…"
+
+#: qt\file_formats.py:19
+msgid "dupeGuru Neo Results (*.dupeguru)"
+msgstr "dupeGuru Neo 結果 (*.dupeguru)"
+
+#: qt\file_formats.py:25
+msgid "dupeGuru Neo Directories (*.dupegurudirs)"
+msgstr "dupeGuru Neo フォルダー (*.dupegurudirs)"
+
+#: qt\pe\image_viewer.py:139 qt\pe\image_viewer.py:140
+msgid "Swap images"
+msgstr "画像を入れ替え"

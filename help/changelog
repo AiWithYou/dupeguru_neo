@@ -1,3 +1,8 @@
+=== 5.1.0 (2026-07-27)
+* Complete the Japanese desktop translation, including safety prompts,
+  quarantine actions, folder pools, and visual review.
+* Keep Japanese available through the persistent language setting.
+
 === 5.0.0 (2026-07-26)
 * Introduce the Verified Exact engine: sample hashes only filter candidates; full hashes and final stable-handle byte comparisons establish exact groups.
 * Separate duplicate-removal authority from explicit organizer Copy/Move: only green Verified Exact results can enter quarantine, while green, yellow, or blue Incoming Files from a complete current scan may be copied or moved with no-replace publication.

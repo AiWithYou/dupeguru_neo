@@ -1,3 +1,10 @@
+dupeguru (5.1.0-1) unstable; urgency=medium
+
+  * Complete the Japanese desktop translation, including Neo workflows.
+  * Keep Japanese selectable from the persisted language preference.
+
+ -- AiWithYou contributors <noreply@github.com>  Mon, 27 Jul 2026 00:00:00 +0000
+
 dupeguru (5.0.0-1) unstable; urgency=medium
 
   * Add byte-verified exact matching and recoverable file operations.

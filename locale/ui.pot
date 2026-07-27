@@ -1494,3 +1494,7 @@ msgstr ""
 #: qt\file_formats.py:25
 msgid "dupeGuru Neo Directories (*.dupegurudirs)"
 msgstr ""
+
+#: qt\pe\image_viewer.py:139 qt\pe\image_viewer.py:140
+msgid "Swap images"
+msgstr ""

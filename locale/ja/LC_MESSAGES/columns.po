@@ -3,7 +3,7 @@
 #
 msgid ""
 msgstr ""
-"Last-Translator: Fuan <jcfrt@posteo.net>, 2021\n"
+"Last-Translator: AiWithYou contributors, 2026\n"
 "Language-Team: Japanese (https://www.transifex.com/voltaicideas/teams/116153/ja/)\n"
 "Language: ja\n"
 "Content-Type: text/plain; charset=UTF-8\n"
@@ -31,7 +31,7 @@ msgstr "ビットレート"
 msgid "Samplerate"
 msgstr "サンプルレート"
 
-#: core\me\result_table.py:19 core\pe\result_table.py:19 core\prioritize.py:92
+#: core\me\result_table.py:19 core\pe\result_table.py:19 core\prioritize.py:94
 #: core\se\result_table.py:19
 msgid "Filename"
 msgstr "ファイル名"
@@ -59,7 +59,7 @@ msgid "Kind"
 msgstr "種類"
 
 #: core\me\result_table.py:26 core\pe\result_table.py:25
-#: core\prioritize.py:163 core\se\result_table.py:23
+#: core\prioritize.py:175 core\se\result_table.py:23
 msgid "Modification"
 msgstr "変更"
 
@@ -117,6 +117,6 @@ msgstr "サイズ（KB）"
 msgid "EXIF Timestamp"
 msgstr "EXIFタイムスタンプ"
 
-#: core\prioritize.py:156
+#: core\prioritize.py:168
 msgid "Size"
 msgstr "サイズ"
