@@ -76,13 +76,34 @@ jobs:
           "setuptools==83.0.0"
           "wheel==0.47.0"
           "pytest==9.1.1"
+          "pytest-timeout==2.4.0"
           --editable .
       - name: Build native modules
         run: python build.py --modules
       - name: Check installed dependency consistency
         run: python -m pip check
-      - name: Run tests with pytest 9
-        run: python -m pytest core hscommon qt/tests
+      - name: Run compatibility tests with bounded per-test time
+        run: >-
+          python -m pytest
+          --timeout=120
+          --timeout-method=thread
+          -m "not scale"
+          --ignore=qt/tests/thumbnail_cache_test.py
+          core hscommon qt/tests
+      - name: Run isolated thumbnail worker tests
+        run: >-
+          python -m pytest
+          --timeout=120
+          --timeout-method=thread
+          qt/tests/thumbnail_cache_test.py
+      - name: Run the high-cardinality scale profile once
+        if: runner.os == 'Linux' && matrix.python-version == '3.13'
+        run: >-
+          python -m pytest
+          --timeout=300
+          --timeout-method=thread
+          -m scale
+          core/tests/catalog_test.py
 
   package:
     name: Package smoke / ${{ matrix.os }}

@@ -1196,6 +1196,7 @@ def test_page_paths_uses_stable_keyset_cursor(tmp_path):
     catalog.close()
 
 
+@pytest.mark.scale
 def test_100k_snapshot_changes_remain_keyset_page_bounded(tmp_path):
     catalog, _database_path, root_id, root_path = create_catalog(tmp_path)
     first_scan, first_directory = begin_root_scan(catalog, root_id, now=10)
@@ -1355,6 +1356,7 @@ def test_100k_snapshot_changes_remain_keyset_page_bounded(tmp_path):
     catalog.close()
 
 
+@pytest.mark.scale
 def test_100k_change_iterator_executes_once_and_fetches_bounded_batches(
     tmp_path,
     monkeypatch,

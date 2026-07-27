@@ -19,3 +19,6 @@ skip_gitignore = true
 minversion = "9.0"
 addopts = "--strict-config --strict-markers"
 xfail_strict = true
+markers = [
+    "scale: bounded high-cardinality tests run once on the designated CI platform",
+]

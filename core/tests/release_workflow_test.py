@@ -136,7 +136,7 @@ def test_ci_covers_every_supported_python_on_every_platform_with_pytest_9():
         assert runner in ci
     assert "macos-14" not in ci
     assert '"pytest==9.1.1"' in ci
-    assert "python -m pytest core hscommon qt/tests" in ci
+    assert "core hscommon qt/tests" in ci
     assert "python -m pytest core hscommon qt/tests" in _workflow("release.yml")
     assert ci.count("--constraint requirements-release.txt") >= 4
 
@@ -244,6 +244,26 @@ def test_package_ci_has_build_validation_and_clean_install_smokes():
     ):
         assert required in ci
     assert 'PYTHONHASHSEED: "0"' in ci
+
+
+def test_ci_bounds_each_test_and_runs_high_cardinality_scale_tests_once():
+    ci = _workflow("default.yml")
+
+    for required in (
+        '"pytest-timeout==2.4.0"',
+        "--timeout=120",
+        "--timeout-method=thread",
+        '-m "not scale"',
+        "--ignore=qt/tests/thumbnail_cache_test.py",
+        "Run isolated thumbnail worker tests",
+        "qt/tests/thumbnail_cache_test.py",
+        "Run the high-cardinality scale profile once",
+        "runner.os == 'Linux' && matrix.python-version == '3.13'",
+        "--timeout=300",
+        "-m scale",
+        "core/tests/catalog_test.py",
+    ):
+        assert required in ci
 
 
 def test_ci_builds_checked_easy_launch_windows_exe_and_macos_app_artifacts():
