@@ -3,6 +3,7 @@
 [**日本語版 README（GitHub既定）**](README.md) | English
 
 [**Download 5.3.0 for Windows 10 / 11 (ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip) |
+[**Download 5.3.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip) |
 [Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
@@ -114,15 +115,21 @@ The current source version is **5.3.0**.
   Keep the `_internal` folder beside the executable.
 - **Checksum:**
   [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip.sha256)
-- **macOS:** download `dupeguru-neo-macos-app-<commit>`, expand the GitHub
-  artifact, then expand the included `.app.zip`. Move `dupeguru-neo.app` to
-  Applications and open it. The inner ZIP preserves executable permissions,
-  framework symlinks, and the application bundle.
+- **macOS (Apple Silicon / arm64):**
+  [**Download the 5.3.0 APP ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip).
+  Expand the ZIP and move `dupeguru-neo.app` to Applications. On first launch,
+  Control-click the app and choose Open. Depending on the macOS configuration,
+  you may also need to allow it under Privacy & Security. Python and an
+  installer are not required. This build does not support Intel Macs (x86_64).
+- **macOS checksum:**
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip.sha256)
 
-The Windows ZIP is permanently available from the
+The Windows ZIP and macOS APP ZIP are permanently available from the
 [5.3.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-dev)
-without a GitHub login. For macOS and newer short-retention builds, use the
-Artifacts section of the
+and the
+[macOS 5.3.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-macos-dev)
+without a GitHub login. For newer short-retention builds, use the Artifacts
+section of the
 [latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
 A GitHub login is required for Actions artifacts, which are retained for seven
 days.

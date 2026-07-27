@@ -3,6 +3,7 @@
 [English README](README.en.md) | **日本語**
 
 [**Windows 10 / 11版 5.3.0 をダウンロード（ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip) |
+[**macOS Apple Silicon版 5.3.0 をダウンロード（APP ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip) |
 [ほかのリリース](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
@@ -143,15 +144,22 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
   EXE だけを別の場所へ移動しないでください。
 - **チェックサム:**
   [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip.sha256)
-- **macOS:** `dupeguru-neo-macos-app-<コミット>` をダウンロードし、GitHub の
-  成果物を展開してから、中にある `.app.zip` を展開します。
-  `dupeguru-neo.app` を Applications へ移動して開いてください。内側の ZIP は
-  実行権限、フレームワークのシンボリックリンク、アプリバンドル構造を保持します。
+- **macOS（Apple Silicon／arm64）:**
+  [**5.3.0 APP ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip)
+  します。ZIP を展開し、`dupeguru-neo.app` を `Applications` フォルダーへ
+  移動してください。初回はアプリを Control キーを押しながらクリックして
+  「開く」を選びます。macOS の設定によっては「プライバシーとセキュリティ」
+  から実行許可が必要です。Python やインストーラーは不要です。Intel Mac
+  （x86_64）向けではありません。
+- **macOS チェックサム:**
+  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip.sha256)
 
-Windows ZIP は恒久公開の
+Windows ZIP と macOS APP ZIP は、それぞれ恒久公開の
 [5.3.0 開発用プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-dev)
-から、GitHub へのログインなしで取得できます。macOS 版や、さらに新しいコミットの
-短期保存ビルドは、
+と
+[macOS 5.3.0 開発用プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-macos-dev)
+から、GitHub へのログインなしで取得できます。さらに新しいコミットの短期保存
+ビルドは、
 [最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 の Artifacts 欄から取得できます。Actions 成果物の取得には GitHub へのログインが
 必要で、保存期間は 7 日間です。
