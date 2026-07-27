@@ -6,8 +6,10 @@
 # http://www.gnu.org/licenses/gpl-3.0.html
 
 import gc
+import gettext
 import os.path as op
 import sys
+from pathlib import Path
 
 from PyQt6.QtCore import QCoreApplication, QObject, Qt
 from PyQt6.QtGui import QGuiApplication, QIcon, QPixmap
@@ -67,6 +69,7 @@ def _run_self_test(qt_arguments):
 
     _configure_high_dpi()
     app = QApplication(["dupeguru-neo-self-test", "-platform", "offscreen", *qt_arguments])
+    _validate_frozen_localizations()
     pixmap = QPixmap(resource_path("logo_se"))
     if pixmap.isNull():
         raise RuntimeError("The packaged application icon could not be decoded")
@@ -76,6 +79,20 @@ def _run_self_test(qt_arguments):
         raise RuntimeError("The packaged Qt application class is invalid")
     app.quit()
     return 0
+
+
+def _validate_frozen_localizations():
+    """Fail packaged smoke tests when application translations are unreachable."""
+
+    if not getattr(sys, "frozen", False):
+        return
+    data_root = Path(BASE_PATH)
+    locale_root = data_root / "locale"
+    japanese_ui = gettext.translation("ui", localedir=locale_root, languages=["ja"])
+    if japanese_ui.gettext("File") == "File":
+        raise RuntimeError("the packaged Japanese UI catalog did not translate a known message")
+    if not (data_root / "help" / "ja" / "index.html").is_file():
+        raise RuntimeError("the packaged Japanese help entry point is missing")
 
 
 def main(argv=None):

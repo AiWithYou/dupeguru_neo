@@ -1,3 +1,9 @@
+=== 5.3.0 (2026-07-27)
+* Load gettext catalogs from PyInstaller's frozen data root so the selected
+  Japanese language applies to application menus, labels, dialogs, and help.
+* Make the packaged self-test fail when the Japanese UI catalog or help entry
+  point cannot be reached.
+
 === 5.2.0 (2026-07-27)
 * Make the Japanese README the default GitHub landing page and move English
   documentation to ``README.en.md``.

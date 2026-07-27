@@ -1,3 +1,10 @@
+dupeguru (5.3.0-1) unstable; urgency=medium
+
+  * Fix application gettext lookup in frozen desktop bundles.
+  * Verify packaged Japanese UI and help during the frozen self-test.
+
+ -- AiWithYou contributors <noreply@github.com>  Mon, 27 Jul 2026 00:00:00 +0000
+
 dupeguru (5.2.0-1) unstable; urgency=medium
 
   * Make Japanese the default GitHub README with an English companion.

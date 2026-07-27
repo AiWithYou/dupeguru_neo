@@ -2,7 +2,7 @@
 
 [**日本語版 README（GitHub既定）**](README.md) | English
 
-[**Download 5.2.0 for Windows 10 / 11 (ZIP, about 68 MB)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip) |
+[**Download 5.3.0 for Windows 10 / 11 (ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip) |
 [Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
@@ -105,23 +105,22 @@ owned cache.
 
 ## Easy-launch desktop builds
 
-The current source version is **5.2.0**.
+The current source version is **5.3.0**.
 
 - **64-bit Windows 10 / 11:**
-  [**Download the 5.2.0 portable ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip).
+  [**Download the 5.3.0 portable ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip).
   Fully extract the ZIP, then double-click `dupeguru-neo.exe` inside the
   extracted `dupeguru-neo` folder. Python and an installer are not required.
   Keep the `_internal` folder beside the executable.
 - **Checksum:**
-  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip.sha256)
-  (`b8e3e513c2d47ad7d2c70ca32d1eac223ba9f6d146ee665d01c60a9a5d598613`)
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip.sha256)
 - **macOS:** download `dupeguru-neo-macos-app-<commit>`, expand the GitHub
   artifact, then expand the included `.app.zip`. Move `dupeguru-neo.app` to
   Applications and open it. The inner ZIP preserves executable permissions,
   framework symlinks, and the application bundle.
 
 The Windows ZIP is permanently available from the
-[5.2.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.2.0-dev-1041a64)
+[5.3.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-dev)
 without a GitHub login. For macOS and newer short-retention builds, use the
 Artifacts section of the
 [latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).

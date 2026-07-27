@@ -5,19 +5,26 @@
 # http://www.gnu.org/licenses/gpl-3.0.html
 
 import os.path as op
+import sys
+
 from hscommon.plat import ISWINDOWS, ISOSX, ISLINUX
 
-if op.exists(__file__):
-    # We want to get the absolute path or our root folder. We know that in that folder we're
-    # inside qt/, so we just go back one level.
-    BASE_PATH = op.abspath(op.join(op.dirname(__file__), ".."))
-else:
-    # Should be a frozen environment
-    if ISOSX:
-        BASE_PATH = op.abspath(op.join(op.dirname(__file__), "..", "..", "Resources"))
-    else:
-        # For others our base path is ''.
-        BASE_PATH = ""
+
+def _application_base_path(module_file, frozen_base):
+    """Return the directory that contains bundled locale and help data."""
+
+    if frozen_base is not None:
+        return op.abspath(frozen_base)
+    # In a source or installed Python layout, qt/ is directly below the
+    # application data root.
+    return op.abspath(op.join(op.dirname(module_file), ".."))
+
+
+# PyInstaller exposes its data root through ``sys._MEIPASS``. Frozen Python
+# modules live in the embedded PYZ, so their synthetic ``__file__`` path need
+# not exist on disk. Testing ``exists(__file__)`` therefore selected the
+# process working directory and left application gettext catalogs unloaded.
+BASE_PATH = _application_base_path(__file__, getattr(sys, "_MEIPASS", None))
 HELP_PATH = op.join(BASE_PATH, "help", "en")
 
 

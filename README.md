@@ -2,7 +2,7 @@
 
 [English README](README.en.md) | **日本語**
 
-[**Windows 10 / 11版 5.2.0 をダウンロード（ZIP・約68 MB）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip) |
+[**Windows 10 / 11版 5.3.0 をダウンロード（ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip) |
 [ほかのリリース](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
@@ -133,24 +133,23 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-現在のソース版は **5.2.0** です。
+現在のソース版は **5.3.0** です。
 
 - **Windows 10 / 11（64ビット）:**
-  [**5.2.0 ポータブル ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip)
+  [**5.3.0 ポータブル ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip)
   します。ダウンロード後に ZIP を右クリックして「すべて展開」を選び、展開した
   `dupeguru-neo` フォルダー内の `dupeguru-neo.exe` をダブルクリックしてください。
   Python やインストーラーは不要です。`_internal` フォルダーは実行に必要なので、
   EXE だけを別の場所へ移動しないでください。
 - **チェックサム:**
-  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.2.0-dev-1041a64/dupeguru-neo-5.2.0-windows-x86_64-unsigned-portable.zip.sha256)
-  （`b8e3e513c2d47ad7d2c70ca32d1eac223ba9f6d146ee665d01c60a9a5d598613`）
+  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip.sha256)
 - **macOS:** `dupeguru-neo-macos-app-<コミット>` をダウンロードし、GitHub の
   成果物を展開してから、中にある `.app.zip` を展開します。
   `dupeguru-neo.app` を Applications へ移動して開いてください。内側の ZIP は
   実行権限、フレームワークのシンボリックリンク、アプリバンドル構造を保持します。
 
 Windows ZIP は恒久公開の
-[5.2.0 開発用プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.2.0-dev-1041a64)
+[5.3.0 開発用プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-dev)
 から、GitHub へのログインなしで取得できます。macOS 版や、さらに新しいコミットの
 短期保存ビルドは、
 [最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
