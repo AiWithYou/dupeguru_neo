@@ -10,7 +10,7 @@ from qt.results_model import ResultsModel as ResultsModelBase
 
 class ResultsModel(ResultsModelBase):
     COLUMNS = [
-        Column("marked", default_width=30),
+        Column("marked", default_width=64),
         Column("name", default_width=200),
         Column("folder_path", default_width=180),
         Column("size", default_width=60),

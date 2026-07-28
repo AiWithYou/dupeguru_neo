@@ -4,7 +4,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt6.QtCore import QRect, Qt
+from PyQt6.QtCore import QRect
 from PyQt6.QtWidgets import (
     QListView,
     QWidget,
@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QLabel,
     QComboBox,
+    QFrame,
 )
 from PyQt6.QtGui import QPixmap, QIcon
 
@@ -63,6 +64,7 @@ class DirectoriesDialog(QMainWindow):
         self._updateAddButton()
         self._updateRemoveButton()
         self._updateLoadResultsButton()
+        self._updateScanButton()
         self._updateActionsState()
         self._setupBindings()
 
@@ -78,6 +80,7 @@ class DirectoriesDialog(QMainWindow):
         self.recentFolders.itemsChanged.connect(self._updateAddButton)
         self.recentFolders.mustOpenItem.connect(self.app.model.add_directory)
         self.directoriesModel.foldersAdded.connect(self.directoriesModelAddedFolders)
+        self.directoriesModel.contentsChanged.connect(self._updateScanButton)
         self.app.willSavePrefs.connect(self.appWillSavePrefs)
 
     def _setupActions(self):
@@ -173,37 +176,77 @@ class DirectoriesDialog(QMainWindow):
 
     def _setupUi(self):
         self.setWindowTitle(self.app.NAME)
-        self.resize(420, 338)
+        self.resize(780, 560)
         self.centralwidget = QWidget(self)
         self.verticalLayout = QVBoxLayout(self.centralwidget)
-        self.verticalLayout.setContentsMargins(4, 0, 4, 0)
-        self.verticalLayout.setSpacing(0)
+        self.verticalLayout.setContentsMargins(18, 14, 18, 16)
+        self.verticalLayout.setSpacing(10)
+
+        self.introFrame = QFrame(self.centralwidget)
+        self.introFrame.setFrameShape(QFrame.Shape.StyledPanel)
+        intro_layout = QVBoxLayout(self.introFrame)
+        intro_layout.setContentsMargins(14, 10, 14, 10)
+        intro_layout.setSpacing(3)
+        self.titleLabel = QLabel(tr("Find duplicate files"), self.introFrame)
+        title_font = self.titleLabel.font()
+        title_font.setBold(True)
+        title_font.setPointSize(title_font.pointSize() + 3)
+        self.titleLabel.setFont(title_font)
+        intro_layout.addWidget(self.titleLabel)
+        self.subtitleLabel = QLabel(
+            tr(
+                "Choose the file type and comparison method, then add the folders you want to check. "
+                "Scanning never moves or deletes files."
+            ),
+            self.introFrame,
+        )
+        self.subtitleLabel.setWordWrap(True)
+        intro_layout.addWidget(self.subtitleLabel)
+        self.verticalLayout.addWidget(self.introFrame)
+
         hl = QHBoxLayout()
+        hl.setSpacing(8)
         label = QLabel(tr("Application Mode:"), self)
         label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(label)
         self.appModeRadioBox = RadioBox(self, items=[tr("Standard"), tr("Music"), tr("Picture")], spread=False)
         hl.addWidget(self.appModeRadioBox)
+        hl.addStretch()
         self.verticalLayout.addLayout(hl)
+
         hl = QHBoxLayout()
-        hl.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        hl.setSpacing(8)
         label = QLabel(tr("Scan Type:"), self)
         label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(label)
         self.scanTypeComboBox = QComboBox(self)
         self.scanTypeComboBox.setSizePolicy(QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed))
-        self.scanTypeComboBox.setMaximumWidth(400)
+        self.scanTypeComboBox.setMinimumWidth(180)
+        self.scanTypeComboBox.setMaximumWidth(420)
+        self.scanTypeComboBox.setAccessibleName(tr("Scan Type:"))
         hl.addWidget(self.scanTypeComboBox)
         self.showPreferencesButton = QPushButton(tr("More Options"), self.centralwidget)
         self.showPreferencesButton.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         hl.addWidget(self.showPreferencesButton)
+        hl.addStretch()
         self.verticalLayout.addLayout(hl)
+
+        self.foldersTitleLabel = QLabel(tr("1. Choose folders"), self.centralwidget)
+        folder_title_font = self.foldersTitleLabel.font()
+        folder_title_font.setBold(True)
+        self.foldersTitleLabel.setFont(folder_title_font)
+        self.verticalLayout.addWidget(self.foldersTitleLabel)
         self.promptLabel = QLabel(
-            tr("Choose each folder pool (Incoming, Protected, Compare Only, or Excluded), " 'then press "Scan".'),
+            tr(
+                'Most people can leave "Handling" set to "Organize". '
+                "Change it only for folders that must be kept or skipped."
+            ),
             self.centralwidget,
         )
+        self.promptLabel.setWordWrap(True)
         self.verticalLayout.addWidget(self.promptLabel)
         self.treeView = QTreeView(self.centralwidget)
+        self.treeView.setAccessibleName(tr("1. Choose folders"))
         self.treeView.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.treeView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.treeView.setAcceptDrops(True)
@@ -216,14 +259,20 @@ class DirectoriesDialog(QMainWindow):
         self.treeView.setDragDropOverwriteMode(True)
         self.treeView.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.treeView.setUniformRowHeights(True)
+        self.treeView.setMinimumHeight(260)
         self.verticalLayout.addWidget(self.treeView)
+
         self.horizontalLayout = QHBoxLayout()
+        self.horizontalLayout.setSpacing(8)
         self.removeFolderButton = QPushButton(self.centralwidget)
         self.removeFolderButton.setIcon(QIcon(QPixmap(resource_path("minus"))))
+        self.removeFolderButton.setText(tr("Remove Folder"))
         self.removeFolderButton.setShortcut("Del")
+        self.removeFolderButton.setToolTip(tr("Remove the selected folder from this scan. Files are not deleted."))
         self.horizontalLayout.addWidget(self.removeFolderButton)
         self.addFolderButton = QPushButton(self.centralwidget)
         self.addFolderButton.setIcon(QIcon(QPixmap(resource_path("plus"))))
+        self.addFolderButton.setText(tr("Add Folder..."))
         self.horizontalLayout.addWidget(self.addFolderButton)
         spacer_item = QSpacerItem(
             40,
@@ -233,11 +282,15 @@ class DirectoriesDialog(QMainWindow):
         )
         self.horizontalLayout.addItem(spacer_item)
         self.loadResultsButton = QPushButton(self.centralwidget)
-        self.loadResultsButton.setText(tr("Load Results"))
+        self.loadResultsButton.setText(tr("Open Saved Results"))
         self.horizontalLayout.addWidget(self.loadResultsButton)
         self.scanButton = QPushButton(self.centralwidget)
-        self.scanButton.setText(tr("Scan"))
+        self.scanButton.setText(tr("2. Scan for duplicates"))
         self.scanButton.setDefault(True)
+        self.scanButton.setMinimumHeight(36)
+        scan_font = self.scanButton.font()
+        scan_font.setBold(True)
+        self.scanButton.setFont(scan_font)
         self.horizontalLayout.addWidget(self.scanButton)
         self.verticalLayout.addLayout(self.horizontalLayout)
         self.setCentralWidget(self.centralwidget)
@@ -255,7 +308,7 @@ class DirectoriesDialog(QMainWindow):
         header.setStretchLastSection(False)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(1, 150)
+        header.resizeSection(1, 220)
 
     def _updateActionsState(self):
         self.actionShowResultsWindow.setEnabled(self.app.resultWindow is not None)
@@ -278,6 +331,11 @@ class DirectoriesDialog(QMainWindow):
             self.loadResultsButton.setMenu(None)
         else:
             self.loadResultsButton.setMenu(self.menuRecentResults)
+
+    def _updateScanButton(self):
+        has_folders = len(self.app.model.directories) > 0
+        self.scanButton.setEnabled(has_folders)
+        self.scanButton.setToolTip("" if has_folders else tr("Add at least one folder before scanning."))
 
     def _updateScanTypeList(self):
         try:

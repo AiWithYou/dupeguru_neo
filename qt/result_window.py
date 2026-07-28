@@ -20,6 +20,8 @@ from PyQt6.QtWidgets import (
     QDialog,
     QPushButton,
     QCheckBox,
+    QHBoxLayout,
+    QFrame,
 )
 
 from hscommon.trans import trget
@@ -27,6 +29,7 @@ from qt.util import move_to_screen_center, horizontal_wrap, create_actions
 from qt.search_edit import SearchEdit
 
 from core.app import AppMode
+from core.destructive_eligibility import evaluate_batch
 from qt.results_model import ResultsView
 from qt.stats_label import StatsLabel
 from qt.prioritize_dialog import PrioritizeDialog
@@ -51,13 +54,22 @@ class ResultWindow(QMainWindow):
         else:
             MODEL_CLASS = ResultsModelStandard
         self.resultsModel = MODEL_CLASS(self.app, self.resultsView)
-        self.stats = StatsLabel(app.model.stats_label, self.statusLabel)
+        self.resultsView.setColumnWidth(0, max(64, self.resultsView.columnWidth(0)))
+        self.stats = StatsLabel(
+            app.model.stats_label,
+            self.statusLabel,
+            on_refresh=self._refresh_results_summary,
+        )
+        self._refresh_results_summary(app.model.stat_line)
         self._update_column_actions_status()
 
         self.menuColumns.triggered.connect(self.columnToggled)
         self.resultsView.doubleClicked.connect(self.resultsDoubleClicked)
         self.resultsView.spacePressed.connect(self.resultsSpacePressed)
-        self.detailsButton.clicked.connect(self.actionDetails.triggered)
+        self.detailsButton.clicked.connect(self.actionDetails.trigger)
+        self.markAllButton.clicked.connect(self.actionMarkAll.trigger)
+        self.markNoneButton.clicked.connect(self.actionMarkNone.trigger)
+        self.quarantineButton.clicked.connect(self.actionDeleteMarked.trigger)
         self.dupesOnlyCheckBox.stateChanged.connect(self.powerMarkerTriggered)
         self.deltaValuesCheckBox.stateChanged.connect(self.deltaTriggered)
         self.searchEdit.searchChanged.connect(self.searchChanged)
@@ -340,11 +352,55 @@ class ResultWindow(QMainWindow):
 
     def _setupUi(self):
         self.setWindowTitle(tr("{} Results").format(self.app.NAME))
-        self.resize(630, 514)
+        self.resize(900, 620)
+        self.setMinimumSize(760, 520)
         self.centralwidget = QWidget(self)
         self.verticalLayout = QVBoxLayout(self.centralwidget)
-        self.verticalLayout.setContentsMargins(0, 0, 0, 0)
-        self.verticalLayout.setSpacing(0)
+        self.verticalLayout.setContentsMargins(16, 12, 16, 0)
+        self.verticalLayout.setSpacing(8)
+
+        self.reviewFrame = QFrame(self.centralwidget)
+        self.reviewFrame.setFrameShape(QFrame.Shape.StyledPanel)
+        review_layout = QVBoxLayout(self.reviewFrame)
+        review_layout.setContentsMargins(14, 10, 14, 10)
+        review_layout.setSpacing(4)
+        self.reviewTitleLabel = QLabel(tr("Review duplicate files"), self.reviewFrame)
+        review_title_font = self.reviewTitleLabel.font()
+        review_title_font.setBold(True)
+        review_title_font.setPointSize(review_title_font.pointSize() + 2)
+        self.reviewTitleLabel.setFont(review_title_font)
+        review_layout.addWidget(self.reviewTitleLabel)
+        self.reviewHelpLabel = QLabel(
+            tr("The first row in each group is kept. " "Check only the extra copies you want to quarantine."),
+            self.reviewFrame,
+        )
+        self.reviewHelpLabel.setWordWrap(True)
+        review_layout.addWidget(self.reviewHelpLabel)
+        self.resultsSummaryLabel = QLabel(self.reviewFrame)
+        summary_font = self.resultsSummaryLabel.font()
+        summary_font.setBold(True)
+        self.resultsSummaryLabel.setFont(summary_font)
+        review_layout.addWidget(self.resultsSummaryLabel)
+
+        review_actions = QHBoxLayout()
+        review_actions.setSpacing(8)
+        self.markAllButton = QPushButton(tr("Mark All"), self.reviewFrame)
+        self.markNoneButton = QPushButton(tr("Mark None"), self.reviewFrame)
+        review_actions.addWidget(self.markAllButton)
+        review_actions.addWidget(self.markNoneButton)
+        review_actions.addStretch()
+        self.quarantineButton = QPushButton(
+            tr("Quarantine Verified Marked Files..."),
+            self.reviewFrame,
+        )
+        self.quarantineButton.setMinimumHeight(34)
+        quarantine_font = self.quarantineButton.font()
+        quarantine_font.setBold(True)
+        self.quarantineButton.setFont(quarantine_font)
+        review_actions.addWidget(self.quarantineButton)
+        review_layout.addLayout(review_actions)
+        self.verticalLayout.addWidget(self.reviewFrame)
+
         self.actionsButton = QPushButton(tr("Actions"))
         self.detailsButton = QPushButton(tr("Details"))
         self.dupesOnlyCheckBox = QCheckBox(tr("Dupes Only"))
@@ -365,6 +421,7 @@ class ResultWindow(QMainWindow):
         self.horizontalLayout.setSpacing(8)
         self.verticalLayout.addLayout(self.horizontalLayout)
         self.resultsView = ResultsView(self.centralwidget)
+        self.resultsView.setAccessibleName(tr("Review duplicate files"))
         self.resultsView.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.resultsView.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.resultsView.setSortingEnabled(True)
@@ -402,6 +459,34 @@ class ResultWindow(QMainWindow):
         menu_items = self.app.model.result_table._columns.menu_items()
         for action, (display, visible) in zip(self._column_actions, menu_items):
             action.setChecked(visible)
+
+    def _refresh_results_summary(self, display=None):
+        if display is None:
+            display = self.app.model.stat_line
+        self.resultsSummaryLabel.setText(display)
+
+        results = self.app.model.results
+        mark_count = results.mark_count
+        self.markNoneButton.setEnabled(mark_count > 0)
+
+        if not mark_count:
+            can_quarantine = False
+            quarantine_tooltip = tr("Check at least one duplicate first.")
+        else:
+            marked = tuple(dupe for dupe in results.dupes if results.is_marked(dupe))
+            eligibility = evaluate_batch(
+                results,
+                marked,
+                self.app.model.directories.current_file_pool,
+            )
+            can_quarantine = eligibility.ok
+            quarantine_tooltip = (
+                ""
+                if can_quarantine
+                else tr("Only checked byte-for-byte duplicates from a complete current scan " "can be quarantined.")
+            )
+        self.quarantineButton.setEnabled(can_quarantine)
+        self.quarantineButton.setToolTip(quarantine_tooltip)
 
     # --- Actions
     def actionsTriggered(self):

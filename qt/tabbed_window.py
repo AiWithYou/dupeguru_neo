@@ -52,7 +52,8 @@ class TabWindow(QMainWindow):
 
     def _setupUi(self):
         self.setWindowTitle(self.app.NAME)
-        self.resize(640, 480)
+        self.resize(900, 620)
+        self.setMinimumSize(760, 520)
         self.tabWidget = QTabWidget()
         # self.tabWidget.setTabPosition(QTabWidget.TabPosition.South)
         self.tabWidget.setContentsMargins(0, 0, 0, 0)
@@ -270,7 +271,8 @@ class TabBarWindow(TabWindow):
 
     def _setupUi(self):
         self.setWindowTitle(self.app.NAME)
-        self.resize(640, 480)
+        self.resize(900, 620)
+        self.setMinimumSize(760, 520)
         self.tabBar = QTabBar()
         self.verticalLayout = QVBoxLayout()
         self.verticalLayout.setContentsMargins(0, 0, 0, 0)

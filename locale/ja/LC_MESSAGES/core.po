@@ -207,7 +207,7 @@ msgstr "最古"
 
 #: core\results.py:863
 msgid "%d / %d (%s / %s) duplicates marked."
-msgstr "%d / %d (%s / %s)マークされた重複。"
+msgstr "%d / %d 件をチェック済み（%s / %s）"
 
 #: core\results.py:870
 msgid " filter: %s"

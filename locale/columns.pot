@@ -25,6 +25,11 @@ msgstr ""
 msgid "Samplerate"
 msgstr ""
 
+#: core\me\result_table.py:18 core\pe\result_table.py:18
+#: core\se\result_table.py:18
+msgid "Check"
+msgstr ""
+
 #: core\me\result_table.py:19 core\pe\result_table.py:19 core\prioritize.py:94
 #: core\se\result_table.py:19
 msgid "Filename"

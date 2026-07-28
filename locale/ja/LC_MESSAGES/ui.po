@@ -109,7 +109,7 @@ msgstr "選択した"
 #: qt/details_table.py:16 qt/directories_model.py:24
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "Reference"
-msgstr "参照"
+msgstr "基準ファイル"
 
 #: qt/directories_dialog.py:64 cocoa/en.lproj/Localizable.strings:0
 msgid "Load Results..."
@@ -121,7 +121,7 @@ msgstr "結果ウィンドウ"
 
 #: qt/directories_dialog.py:66
 msgid "Add Folder..."
-msgstr "フォルダーを追加"
+msgstr "フォルダーを追加…"
 
 #: qt/directories_dialog.py:74 qt/result_window.py:100
 #: cocoa/en.lproj/Localizable.strings:0
@@ -143,7 +143,7 @@ msgstr "最近の結果を読み込む"
 
 #: qt/directories_dialog.py:116 cocoa/en.lproj/Localizable.strings:0
 msgid "Application Mode:"
-msgstr "アプリケーションモード："
+msgstr "対象ファイル："
 
 #: qt/directories_dialog.py:121 cocoa/en.lproj/Localizable.strings:0
 msgid "Music"
@@ -155,11 +155,11 @@ msgstr "画像"
 
 #: qt/directories_dialog.py:121 cocoa/en.lproj/Localizable.strings:0
 msgid "Standard"
-msgstr "標準"
+msgstr "すべて"
 
 #: qt/directories_dialog.py:128 cocoa/en.lproj/Localizable.strings:0
 msgid "Scan Type:"
-msgstr "スキャンの種類："
+msgstr "比較方法："
 
 #: qt/directories_dialog.py:135
 msgid "More Options"
@@ -171,11 +171,11 @@ msgstr "スキャンするフォルダを選択し、「スキャン」を押し
 
 #: qt/directories_dialog.py:163 cocoa/en.lproj/Localizable.strings:0
 msgid "Load Results"
-msgstr "結果を読み込む"
+msgstr "保存した結果を開く"
 
 #: qt/directories_dialog.py:166 cocoa/en.lproj/Localizable.strings:0
 msgid "Scan"
-msgstr "スキャン"
+msgstr "重複を検索"
 
 #: qt/directories_dialog.py:230
 msgid "Unsaved results"
@@ -211,11 +211,11 @@ msgstr "保存されていない結果がありますが、本当に続行しま
 
 #: qt/directories_model.py:23 cocoa/en.lproj/Localizable.strings:0
 msgid "Name"
-msgstr "名"
+msgstr "名前"
 
 #: qt/directories_model.py:23 cocoa/en.lproj/Localizable.strings:0
 msgid "State"
-msgstr "状態"
+msgstr "扱い"
 
 #: qt/directories_model.py:24 cocoa/en.lproj/Localizable.strings:0
 msgid "Excluded"
@@ -242,7 +242,7 @@ msgstr "閉じる"
 #: qt/result_window.py:56 qt/result_window.py:192 qt/se/details_dialog.py:18
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "Details"
-msgstr "詳細"
+msgstr "詳細を見る"
 
 #: qt/me/preferences_dialog.py:30 cocoa/en.lproj/Localizable.strings:0
 msgid "Tags to scan:"
@@ -387,15 +387,15 @@ msgstr "選択したものを明らかにする"
 #: qt/result_window.py:57 qt/result_window.py:104 qt/result_window.py:167
 #: qt/result_window.py:191 cocoa/en.lproj/Localizable.strings:0
 msgid "Actions"
-msgstr "作用"
+msgstr "その他の操作"
 
 #: qt/result_window.py:58 cocoa/en.lproj/Localizable.strings:0
 msgid "Show Dupes Only"
-msgstr "複製のみを表示"
+msgstr "基準ファイルを隠す"
 
 #: qt/result_window.py:59 cocoa/en.lproj/Localizable.strings:0
 msgid "Show Delta Values"
-msgstr "デルタ値を表示"
+msgstr "差分を表示"
 
 #: qt/result_window.py:60
 msgid "Send Marked to Recycle Bin..."
@@ -443,11 +443,11 @@ msgstr "選択したアイテムの名前を変更する"
 
 #: qt/result_window.py:83 cocoa/en.lproj/Localizable.strings:0
 msgid "Mark All"
-msgstr "すべてのアイテムをマークする"
+msgstr "すべての重複をチェック"
 
 #: qt/result_window.py:84 cocoa/en.lproj/Localizable.strings:0
 msgid "Mark None"
-msgstr "何もマークしない"
+msgstr "チェックをすべて外す"
 
 #: qt/result_window.py:85 cocoa/en.lproj/Localizable.strings:0
 msgid "Invert Marking"
@@ -475,11 +475,11 @@ msgstr "カスタムコマンドを呼び出す"
 
 #: qt/result_window.py:102
 msgid "Mark"
-msgstr "マーク"
+msgstr "チェック"
 
 #: qt/result_window.py:106 cocoa/en.lproj/Localizable.strings:0
 msgid "Columns"
-msgstr "コラム"
+msgstr "表示項目"
 
 #: qt/result_window.py:163
 msgid "Reset to Defaults"
@@ -491,11 +491,11 @@ msgstr "{}結果"
 
 #: qt/result_window.py:193 cocoa/en.lproj/Localizable.strings:0
 msgid "Dupes Only"
-msgstr "複製のみ"
+msgstr "基準ファイルを隠す"
 
 #: qt/result_window.py:194
 msgid "Delta Values"
-msgstr "デルタ値"
+msgstr "差分を表示"
 
 #: qt/result_window.py:310 cocoa/en.lproj/Localizable.strings:0
 msgid "Select a file to save your results to"
@@ -571,7 +571,7 @@ msgstr "詳細パネル"
 
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "Directories"
-msgstr "ディレクトリ"
+msgstr "フォルダー"
 
 #: cocoa/en.lproj/Localizable.strings:0
 msgid "dupeGuru"
@@ -1121,7 +1121,7 @@ msgstr "リストをクリア"
 
 #: qt\search_edit.py:78
 msgid "Search..."
-msgstr "探索..."
+msgstr "結果を絞り込む..."
 
 #: qt\preferences_dialog.py:219
 msgid ""
@@ -1518,7 +1518,7 @@ msgstr ""
 
 #: qt\result_window.py:83
 msgid "Quarantine Verified Marked Files..."
-msgstr "検証済みのマーク済みファイルを隔離…"
+msgstr "チェックした完全一致ファイルを隔離…"
 
 #: qt\result_window.py:90
 msgid "Restore Last Quarantine Batch..."
@@ -1539,3 +1539,103 @@ msgstr "dupeGuru Neo フォルダー (*.dupegurudirs)"
 #: qt\pe\image_viewer.py:139 qt\pe\image_viewer.py:140
 msgid "Swap images"
 msgstr "画像を入れ替え"
+
+#: qt\directories_dialog.py:190
+msgid "Find duplicate files"
+msgstr "重複ファイルを探す"
+
+#: qt\directories_dialog.py:197
+msgid ""
+"Choose the file type and comparison method, then add the folders you want to"
+" check. Scanning never moves or deletes files."
+msgstr ""
+"対象の種類と比較方法を選び、調べたいフォルダーを追加してください。"
+"スキャンだけではファイルを移動・削除しません。"
+
+#: qt\directories_dialog.py:234 qt\directories_dialog.py:249
+msgid "1. Choose folders"
+msgstr "1. 調べるフォルダーを選ぶ"
+
+#: qt\directories_dialog.py:240
+msgid ""
+"Most people can leave \"Handling\" set to \"Organize\". Change it only for "
+"folders that must be kept or skipped."
+msgstr ""
+"通常は「扱い」を「整理する」のままで大丈夫です。必ず残したい、または"
+"対象外にしたいフォルダーだけ変更してください。"
+
+#: qt\directories_dialog.py:269
+msgid "Remove Folder"
+msgstr "選択したフォルダーを外す"
+
+#: qt\directories_dialog.py:271
+msgid "Remove the selected folder from this scan. Files are not deleted."
+msgstr "選択したフォルダーを一覧から外します。ファイル自体は削除しません。"
+
+#: qt\directories_dialog.py:285
+msgid "Open Saved Results"
+msgstr "保存した結果を開く"
+
+#: qt\directories_dialog.py:288
+msgid "2. Scan for duplicates"
+msgstr "2. 重複を検索"
+
+#: qt\directories_dialog.py:338
+msgid "Add at least one folder before scanning."
+msgstr "先にフォルダーを1つ以上追加してください。"
+
+#: qt\directories_model.py:27
+msgid "Organize"
+msgstr "整理する"
+
+#: qt\directories_model.py:28
+msgid "Keep all files"
+msgstr "すべて残す"
+
+#: qt\directories_model.py:29
+msgid "Compare only"
+msgstr "比較だけ"
+
+#: qt\directories_model.py:30
+msgid "Skip"
+msgstr "対象外"
+
+#: qt\directories_model.py:33
+msgid "Duplicates in this folder can be checked and quarantined."
+msgstr "このフォルダーの重複はチェックして隔離できます。"
+
+#: qt\directories_model.py:34
+msgid "Files in this folder are always kept and used as references."
+msgstr "このフォルダーのファイルは必ず残し、比較の基準にします。"
+
+#: qt\directories_model.py:35
+msgid "Files in this folder are compared, but never changed."
+msgstr "このフォルダーは比較しますが、ファイルは変更しません。"
+
+#: qt\directories_model.py:36
+msgid "This folder is not scanned."
+msgstr "このフォルダーはスキャンしません。"
+
+#: qt\result_window.py:367 qt\result_window.py:424
+msgid "Review duplicate files"
+msgstr "重複ファイルを確認する"
+
+#: qt\result_window.py:374
+msgid ""
+"The first row in each group is kept. Check only the extra copies you want to"
+" quarantine."
+msgstr ""
+"各グループの先頭行は残すファイルです。隔離したい余分なコピーだけを"
+"チェックしてください。"
+
+#: qt\result_window.py:474
+msgid "Check at least one duplicate first."
+msgstr "先に重複ファイルを1件以上チェックしてください。"
+
+#: qt\result_window.py:486
+msgid ""
+"Only checked byte-for-byte duplicates from a complete current scan can be "
+"quarantined."
+msgstr ""
+"現在の完全なスキャンで内容が完全一致した、チェック済みファイルだけを"
+"隔離できます。"

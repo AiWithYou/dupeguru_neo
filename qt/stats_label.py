@@ -8,10 +8,14 @@
 
 
 class StatsLabel:
-    def __init__(self, model, view):
+    def __init__(self, model, view, on_refresh=None):
         self.view = view
         self.model = model
+        self.on_refresh = on_refresh
         self.model.view = self
 
     def refresh(self):
-        self.view.setText(self.model.display)
+        display = self.model.display
+        self.view.setText(display)
+        if self.on_refresh is not None:
+            self.on_refresh(display)

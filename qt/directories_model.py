@@ -6,7 +6,7 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt6.QtCore import pyqtSignal, Qt, QRect, QUrl, QModelIndex, QItemSelection
+from PyQt6.QtCore import pyqtSignal, Qt, QUrl, QModelIndex, QItemSelection
 from PyQt6.QtWidgets import (
     QComboBox,
     QStyledItemDelegate,
@@ -24,10 +24,16 @@ tr = trget("ui")
 
 HEADERS = [tr("Name"), tr("State")]
 STATES = [
-    tr("Incoming Files"),
-    tr("Protected Library"),
-    tr("Compare Only"),
-    tr("Excluded"),
+    tr("Organize"),
+    tr("Keep all files"),
+    tr("Compare only"),
+    tr("Skip"),
+]
+STATE_DESCRIPTIONS = [
+    tr("Duplicates in this folder can be checked and quarantined."),
+    tr("Files in this folder are always kept and used as references."),
+    tr("Files in this folder are compared, but never changed."),
+    tr("This folder is not scanned."),
 ]
 
 
@@ -39,19 +45,19 @@ class DirectoriesDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         self.initStyleOption(option, index)
-        # No idea why, but this cast is required if we want to have access to the V4 valuess
+        # Draw every handling cell as a combo box so that its editability is
+        # visible before the row is selected.
         option = QStyleOptionViewItem(option)
-        if (index.column() == 1) and (option.state & QStyle.StateFlag.State_Selected):
+        if index.column() == 1:
             cboption = QStyleOptionComboBox()
             cboption.rect = option.rect
-            # On OS X (with Qt4.6.0), adding State_Enabled to the flags causes the whole drawing to
-            # fail (draw nothing), but it's an OS X only glitch. On Windows, it works alright.
-            cboption.state |= QStyle.StateFlag.State_Enabled
-            QApplication.style().drawComplexControl(QStyle.ComplexControl.CC_ComboBox, cboption, painter)
-            painter.setBrush(option.palette.text())
-            rect = QRect(option.rect)
-            rect.setLeft(rect.left() + 4)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignLeft, option.text)
+            cboption.palette = option.palette
+            cboption.state = option.state | QStyle.StateFlag.State_Enabled
+            cboption.currentText = option.text
+            cboption.frame = True
+            style = option.widget.style() if option.widget is not None else QApplication.style()
+            style.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, cboption, painter)
+            style.drawControl(QStyle.ControlElement.CE_ComboBoxLabel, cboption, painter)
         else:
             super().paint(painter, option, index)
 
@@ -101,6 +107,10 @@ class DirectoriesModel(TreeModel):
                 return STATES[ref.state]
         elif role == Qt.ItemDataRole.EditRole and index.column() == 1:
             return ref.state
+        elif role == Qt.ItemDataRole.ToolTipRole:
+            if index.column() == 0:
+                return ref.name
+            return STATE_DESCRIPTIONS[ref.state]
         elif role == Qt.ItemDataRole.ForegroundRole:
             state = ref.state
             if state == 1:
@@ -121,7 +131,7 @@ class DirectoriesModel(TreeModel):
         for path in paths:
             self.model.add_directory(path)
         self.foldersAdded.emit(paths)
-        self.reset()
+        self.refresh()
         return True
 
     def flags(self, index):
@@ -160,10 +170,13 @@ class DirectoriesModel(TreeModel):
 
     # --- Signals
     foldersAdded = pyqtSignal(list)
+    contentsChanged = pyqtSignal()
 
     # --- model --> view
     def refresh(self):
         self.reset()
+        self.contentsChanged.emit()
 
     def refresh_states(self):
         self.refreshData()
+        self.contentsChanged.emit()

@@ -1498,3 +1498,95 @@ msgstr ""
 #: qt\pe\image_viewer.py:139 qt\pe\image_viewer.py:140
 msgid "Swap images"
 msgstr ""
+
+#: qt\directories_dialog.py:190
+msgid "Find duplicate files"
+msgstr ""
+
+#: qt\directories_dialog.py:197
+msgid ""
+"Choose the file type and comparison method, then add the folders you want to"
+" check. Scanning never moves or deletes files."
+msgstr ""
+
+#: qt\directories_dialog.py:234 qt\directories_dialog.py:249
+msgid "1. Choose folders"
+msgstr ""
+
+#: qt\directories_dialog.py:240
+msgid ""
+"Most people can leave \"Handling\" set to \"Organize\". Change it only for "
+"folders that must be kept or skipped."
+msgstr ""
+
+#: qt\directories_dialog.py:269
+msgid "Remove Folder"
+msgstr ""
+
+#: qt\directories_dialog.py:271
+msgid "Remove the selected folder from this scan. Files are not deleted."
+msgstr ""
+
+#: qt\directories_dialog.py:285
+msgid "Open Saved Results"
+msgstr ""
+
+#: qt\directories_dialog.py:288
+msgid "2. Scan for duplicates"
+msgstr ""
+
+#: qt\directories_dialog.py:338
+msgid "Add at least one folder before scanning."
+msgstr ""
+
+#: qt\directories_model.py:27
+msgid "Organize"
+msgstr ""
+
+#: qt\directories_model.py:28
+msgid "Keep all files"
+msgstr ""
+
+#: qt\directories_model.py:29
+msgid "Compare only"
+msgstr ""
+
+#: qt\directories_model.py:30
+msgid "Skip"
+msgstr ""
+
+#: qt\directories_model.py:33
+msgid "Duplicates in this folder can be checked and quarantined."
+msgstr ""
+
+#: qt\directories_model.py:34
+msgid "Files in this folder are always kept and used as references."
+msgstr ""
+
+#: qt\directories_model.py:35
+msgid "Files in this folder are compared, but never changed."
+msgstr ""
+
+#: qt\directories_model.py:36
+msgid "This folder is not scanned."
+msgstr ""
+
+#: qt\result_window.py:367 qt\result_window.py:424
+msgid "Review duplicate files"
+msgstr ""
+
+#: qt\result_window.py:374
+msgid ""
+"The first row in each group is kept. Check only the extra copies you want to"
+" quarantine."
+msgstr ""
+
+#: qt\result_window.py:474
+msgid "Check at least one duplicate first."
+msgstr ""
+
+#: qt\result_window.py:486
+msgid ""
+"Only checked byte-for-byte duplicates from a complete current scan can be "
+"quarantined."
+msgstr ""

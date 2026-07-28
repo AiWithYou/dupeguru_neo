@@ -15,7 +15,7 @@ coltr = trget("columns")
 
 class ResultTable(ResultTableBase):
     COLUMNS = [
-        Column("marked", ""),
+        Column("marked", coltr("Check")),
         Column("name", coltr("Filename")),
         Column("folder_path", coltr("Folder"), visible=False, optional=True),
         Column("size", coltr("Size (MB)"), optional=True),

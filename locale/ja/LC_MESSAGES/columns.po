@@ -120,3 +120,8 @@ msgstr "EXIFタイムスタンプ"
 #: core\prioritize.py:168
 msgid "Size"
 msgstr "サイズ"
+
+#: core\me\result_table.py:18 core\pe\result_table.py:18
+#: core\se\result_table.py:18
+msgid "Check"
+msgstr "チェック"
