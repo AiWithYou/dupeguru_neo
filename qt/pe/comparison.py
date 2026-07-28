@@ -30,7 +30,9 @@ DEFAULT_MAX_ENCODED_BYTES = 128 * 1024 * 1024
 DEFAULT_MAX_SOURCE_SIZE = QSize(32_768, 32_768)
 DEFAULT_MAX_SOURCE_PIXELS = 64_000_000
 DEFAULT_ALLOCATION_LIMIT_MB = 64
-_QIMAGE_READER_ALLOCATION_LOCK = threading.RLock()
+# QImageReader's allocation limit is process-wide. Comparison and thumbnail
+# workers must serialize every temporary change through this shared lock.
+QIMAGE_READER_ALLOCATION_LOCK = threading.RLock()
 
 
 class ComparisonMode(str, Enum):
@@ -169,7 +171,7 @@ def load_bounded_image(
         raise ComparisonError(f"Could not open a bounded decoder buffer for {path_text}.")
     reader = None
     try:
-        with _QIMAGE_READER_ALLOCATION_LOCK:
+        with QIMAGE_READER_ALLOCATION_LOCK:
             previous_allocation_limit = QImageReader.allocationLimit()
             try:
                 effective_allocation_limit = allocation_limit_mb

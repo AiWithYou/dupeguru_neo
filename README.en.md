@@ -7,6 +7,11 @@
 [Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
+> [!NOTE]
+> The screenshots below show the simpler UI currently on `master` for the next
+> desktop build. The permanently published 5.3.0 downloads above do not yet
+> include these UI changes. Use the latest development build to try them now.
+
 dupeGuru Neo is a safety-first duplicate detector and large media-library
 organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
 core and Qt desktop workflow while making the evidence behind every result and
@@ -103,6 +108,32 @@ Version 5 stores its exact-hash cache in `hash_cache_v3.sqlite3`. The older
 overwritten. It remains in the application-data directory for manual recovery
 or removal, and the first Version 5 scan recalculates exact hashes into the new
 owned cache.
+
+## Desktop workflow
+
+The normal workflow has two steps: choose folders, then scan for duplicates.
+
+1. Choose Standard, Music, or Picture under Application Mode.
+2. Leave Scan Type set to Contents for ordinary byte-exact duplicate checks.
+3. Add folders with **Add Folder…** or drag and drop. Most folders can keep the
+   **Organize** handling state. Use **Keep all files** for protected originals,
+   **Compare only** for a read-only comparison source, and **Skip** for folders
+   that must not be scanned.
+4. Select **2. Scan for duplicates**. Scanning alone never moves or deletes a
+   file.
+
+![The simplified folder-selection screen](docs/images/en/main-window.png)
+
+In each result group, the first row is the file that will be kept. Only the
+extra copies have checkboxes. **Mark All** and **Mark None** make the review
+state explicit, while the summary shows the selected count and size.
+
+**Quarantine Verified Marked Files…** is enabled only for checked byte-exact
+files from the current complete scan. Similar, incomplete, and saved results
+remain review-only. Quarantine stages files in a recoverable location; it is
+not immediate permanent deletion.
+
+![The explicit duplicate-review screen](docs/images/en/results-window.png)
 
 ## Easy-launch desktop builds
 

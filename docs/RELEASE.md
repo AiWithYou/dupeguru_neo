@@ -94,6 +94,12 @@ marked as a pre-release. This convenience channel does not weaken the `v*`
 official-release allowlist and does not turn a frozen desktop artifact into an
 official release asset of the signed stable `v*` channel.
 
+The bilingual GitHub release body, X post, platform warnings, and publication
+checklist are prepared in
+[`docs/DESKTOP_RELEASE_ANNOUNCEMENT.md`](DESKTOP_RELEASE_ANNOUNCEMENT.md).
+Every placeholder in that template must be replaced from the exact successful
+CI run before the development pre-release is made public.
+
 This is a source-completeness boundary, not a naming preference. Binary Python
 wheels may contain native libraries below the Python-distribution level. For
 example, a Pillow wheel can contain codecs and rendering libraries such as

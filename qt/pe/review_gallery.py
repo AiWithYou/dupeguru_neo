@@ -59,6 +59,7 @@ from core.file_identity import FileIdentityError, get_file_identity
 from core.fs import _open_readonly_no_follow
 from core.safe_walk import is_reparse_point
 from hscommon.trans import trget
+from qt.pe.comparison import QIMAGE_READER_ALLOCATION_LOCK
 from qt.pe.thumbnail_cache import ThumbnailDiskCache, thumbnail_cache_key
 
 tr = trget("ui")
@@ -295,24 +296,36 @@ def _decode_stable_thumbnail_source(
         if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
             raise OSError("thumbnail source buffer could not be opened")
         try:
-            reader = QImageReader(buffer)
-            reader.setDecideFormatFromContent(True)
-            reader.setAutoTransform(True)
-            QImageReader.setAllocationLimit(allocation_limit_mb)
-            source_size = reader.size()
-            if not source_size.isValid() or source_size.isEmpty():
-                raise OSError("thumbnail source dimensions are unavailable")
-            width = int(source_size.width())
-            height = int(source_size.height())
-            if width <= 0 or height <= 0 or width * height > max_source_pixels:
-                raise OSError("thumbnail source exceeds its decoded-pixel limit")
-            reader.setScaledSize(
-                source_size.scaled(
-                    target_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                )
-            )
-            image = reader.read()
+            with QIMAGE_READER_ALLOCATION_LOCK:
+                previous_allocation_limit = QImageReader.allocationLimit()
+                try:
+                    effective_allocation_limit = allocation_limit_mb
+                    if previous_allocation_limit > 0:
+                        effective_allocation_limit = min(
+                            effective_allocation_limit,
+                            previous_allocation_limit,
+                        )
+                    QImageReader.setAllocationLimit(effective_allocation_limit)
+                    reader = QImageReader(buffer)
+                    reader.setDecideFormatFromContent(True)
+                    reader.setAutoTransform(True)
+                    source_size = reader.size()
+                    if not source_size.isValid() or source_size.isEmpty():
+                        raise OSError("thumbnail source dimensions are unavailable")
+                    width = int(source_size.width())
+                    height = int(source_size.height())
+                    if width <= 0 or height <= 0 or width * height > max_source_pixels:
+                        raise OSError("thumbnail source exceeds its decoded-pixel limit")
+                    reader.setScaledSize(
+                        source_size.scaled(
+                            target_size,
+                            Qt.AspectRatioMode.KeepAspectRatio,
+                        )
+                    )
+                    image = reader.read()
+                finally:
+                    reader = None
+                    QImageReader.setAllocationLimit(previous_allocation_limit)
         finally:
             buffer.close()
         if image.isNull():

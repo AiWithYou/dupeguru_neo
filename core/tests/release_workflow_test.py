@@ -42,11 +42,47 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
         assert required in readme
     for screenshot in (
         "docs/images/ja/main-window.png",
+        "docs/images/ja/results-window.png",
         "docs/images/ja/preferences-language.png",
         "docs/images/ja/preferences-general.png",
         "docs/images/ja/preferences-advanced.png",
     ):
         assert f"]({screenshot})" in readme
+        assert ROOT.joinpath(screenshot).is_file()
+    for screenshot in (
+        "docs/images/en/main-window.png",
+        "docs/images/en/results-window.png",
+    ):
+        assert f"]({screenshot})" in english
+        assert ROOT.joinpath(screenshot).is_file()
+
+
+def test_desktop_release_announcement_is_an_explicit_unpublished_template():
+    announcement = ROOT.joinpath("docs", "DESKTOP_RELEASE_ANNOUNCEMENT.md").read_text(encoding="utf-8")
+    release_policy = ROOT.joinpath("docs", "RELEASE.md").read_text(encoding="utf-8")
+
+    assert "DESKTOP_RELEASE_ANNOUNCEMENT.md" in release_policy
+    for required in (
+        "下書き（未公開）",
+        "{VERSION}",
+        "{DESKTOP_TAG}",
+        "{COMMIT_SHA}",
+        "{RELEASE_URL}",
+        "{WINDOWS_ASSET}",
+        "{WINDOWS_SHA256}",
+        "{MACOS_ASSET}",
+        "{MACOS_SHA256}",
+        "Windows 10 / 11",
+        "Apple Silicon",
+        "Intel Mac",
+        "Authenticode未署名",
+        "ad-hoc署名",
+        "Mac実機での手動デバッグは行っていません",
+        "docs/images/ja/main-window.png",
+        "docs/images/ja/results-window.png",
+        "#dupeGuruNeo",
+    ):
+        assert required in announcement
 
 
 def test_japanese_help_is_built_and_selected_with_the_japanese_ui():

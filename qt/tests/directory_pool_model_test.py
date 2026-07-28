@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings
+from PyQt6.QtCore import QSettings, QUrl
 
 from core.directories import Directories, DirectoryState
 from core.gui.directory_tree import STATE_ORDER, DirectoryTree
@@ -154,9 +154,10 @@ def test_dropping_a_folder_refreshes_workflow_controls():
         refresh = DirectoriesModel.refresh
 
     adapter = Adapter()
+    expected_path = QUrl("file:///C:/scan-target").toLocalFile()
 
     assert DirectoriesModel.dropMimeData(adapter, MimeData(), None, 0, 0, None)
-    assert adapter.model.added
-    assert adapter.foldersAdded.emitted == (["C:/scan-target"],)
+    assert adapter.model.added == expected_path
+    assert adapter.foldersAdded.emitted == ([expected_path],)
     assert adapter.reset_called is True
     assert adapter.contentsChanged.emitted == ()

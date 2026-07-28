@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 from PyQt6.QtCore import QSize, QStandardPaths, QThreadPool  # noqa: E402
-from PyQt6.QtGui import QColor, QImage, QPixmap  # noqa: E402
+from PyQt6.QtGui import QColor, QImage, QImageReader, QPixmap  # noqa: E402
 from PyQt6.QtTest import QSignalSpy  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
@@ -60,6 +60,40 @@ def solid_image(size=QSize(40, 30), color="#336699"):
     image = QImage(size, QImage.Format.Format_RGB32)
     image.fill(QColor(color))
     return image
+
+
+@pytest.mark.parametrize("valid_image", (True, False))
+def test_thumbnail_decode_restores_process_allocation_limit(qapp, tmp_path, valid_image):
+    source_path = tmp_path / "source.png"
+    if valid_image:
+        assert solid_image(QSize(80, 40), "#AA3355").save(str(source_path))
+    else:
+        source_path.write_bytes(b"not an image")
+    source_stat = source_path.stat()
+    previous_limit = QImageReader.allocationLimit()
+    QImageReader.setAllocationLimit(96)
+    try:
+
+        def decode():
+            return review_gallery._decode_stable_thumbnail_source(
+                source_path,
+                QSize(40, 30),
+                expected_size=source_stat.st_size,
+                expected_mtime_ns=source_stat.st_mtime_ns,
+                expected_generation_token=source_generation_token(source_path),
+                max_source_bytes=1024 * 1024,
+                max_source_pixels=1_000_000,
+                allocation_limit_mb=32,
+            )
+
+        if valid_image:
+            assert not decode().isNull()
+        else:
+            with pytest.raises(OSError, match="dimensions are unavailable"):
+                decode()
+        assert QImageReader.allocationLimit() == 96
+    finally:
+        QImageReader.setAllocationLimit(previous_limit)
 
 
 def test_cache_key_uses_absolute_path_file_state_and_thumbnail_size(tmp_path, monkeypatch):
