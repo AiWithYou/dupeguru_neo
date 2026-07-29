@@ -24,10 +24,17 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
     for text in (readme, english):
         assert "https://github.com/AiWithYou/dupeguru_neo/releases" in text
         assert "actions/workflows/default.yml?query=branch%3Amaster+event%3Apush" in text
-        assert "releases/download/desktop-" in text
-        assert f"dupeguru-neo-{__version__}-windows-x86_64-unsigned-portable.zip" in text
+        assert f"releases/tag/desktop-{__version__}" in text
+        assert (
+            f"releases/download/desktop-{__version__}/" f"dupeguru-neo-{__version__}-windows-x86_64-unsigned.exe"
+        ) in text
+        assert (
+            f"releases/download/desktop-{__version__}/" f"dupeguru-neo-{__version__}-macos-arm64-adhoc.app.zip"
+        ) in text
         assert "desktop-5.0.0-dev-0d21045" not in text
         assert "dupeguru-neo-5.0.0-" not in text
+        assert "desktop-5.3.0-dev" not in text
+        assert "desktop-5.3.0-macos-dev" not in text
     for required in (
         "Verified Exact",
         "安全性ラベル",

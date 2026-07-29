@@ -1,3 +1,13 @@
+=== 5.4.0 (2026-07-29)
+* Simplify the desktop duplicate workflow into two clear steps: choose folders,
+  then scan.
+* Mark keeper rows and extra copies explicitly, with select-all/select-none
+  controls and live quarantine totals.
+* Keep quarantine limited to current complete byte-verified scans, and make
+  similar, incomplete, and saved results review-only.
+* Fix result details, folder drag-and-drop refresh, cross-platform path tests,
+  and process-global QImageReader allocation races.
+
 === 5.3.0 (2026-07-27)
 * Load gettext catalogs from PyInstaller's frozen data root so the selected
   Japanese language applies to application menus, labels, dialogs, and help.

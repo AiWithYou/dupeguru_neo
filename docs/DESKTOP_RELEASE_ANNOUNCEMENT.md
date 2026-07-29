@@ -15,7 +15,7 @@ X投稿文です。`{...}` のプレースホルダーをすべて置き換え�
 | 対象コミット（40桁） | `{COMMIT_SHA}` |
 | 公開日 | `{RELEASE_DATE}` |
 | GitHubリリースURL | `{RELEASE_URL}` |
-| Windows ZIP | `{WINDOWS_ASSET}` |
+| Windows EXE | `{WINDOWS_ASSET}` |
 | Windows SHA-256 | `{WINDOWS_SHA256}` |
 | macOS APP ZIP | `{MACOS_ASSET}` |
 | macOS SHA-256 | `{MACOS_SHA256}` |
@@ -64,8 +64,8 @@ dupeGuru Neoのデスクトップ操作を、初めてでも流れが分かる2�
 - macOS Apple Silicon arm64: `{MACOS_ASSET}`
   - SHA-256: `{MACOS_SHA256}`
 
-WindowsはZIPを完全に展開し、`dupeguru-neo.exe`を実行してください。`_internal`
-フォルダーはEXEと同じ場所に必要です。
+Windowsはダウンロードした`dupeguru-neo-...-unsigned.exe`をダブルクリックして
+実行してください。ZIPの展開やインストールは不要です。
 
 macOSはAPP ZIPを展開し、`dupeguru-neo.app`をApplicationsへ移動してください。
 初回はControlキーを押しながらアプリをクリックして「開く」を選びます。
@@ -77,9 +77,9 @@ Intel Mac向けではありません。
 macOS APPはad-hoc署名のみでAppleの公証を受けていないため、SmartScreenまたは
 Gatekeeperが警告を表示する場合があります。
 
-Windows版は実画面で基本操作と完全一致スキャンを確認しています。macOS版は
-macOS 15のGitHub ActionsでAPP生成、パッケージ検証、オフスクリーン起動確認まで
-成功していますが、Mac実機での手動デバッグは行っていません。
+Windows版はWindows 11でUI表示、テスト、配布EXEの生成・起動確認を行っています。
+macOS版はmacOS 15のGitHub ActionsでAPP生成、パッケージ検証、オフスクリーン
+起動確認まで成功していますが、Mac実機での手動デバッグは行っていません。
 
 Built from `{COMMIT_SHA}`.
 
@@ -129,8 +129,8 @@ dupeGuru NeoのWindows画面。フォルダーを選んで重複を検索する2
 - [ ] `{COMMIT_SHA}` が40桁で、`master` 上の公開対象コミットと一致している
 - [ ] 対象コミットのGitHub Actions全体が成功している
 - [ ] Windows EXEとmacOS APPの生成・起動確認ジョブが成功している
-- [ ] 公開するZIPが、成功したCIで検証されたものとバイト単位で同一である
-- [ ] 各ZIPのSHA-256 sidecarを再確認した
+- [ ] 公開するEXEとAPP ZIPが、成功したCIで検証されたものとバイト単位で同一である
+- [ ] 各配布物のSHA-256 sidecarを再確認した
 - [ ] Windows 10 / 11 x86_64とmacOS arm64以外を対応対象として記載していない
 - [ ] 未署名、未公証、Intel Mac非対応の注意書きを残した
 - [ ] `rg -n "\{[A-Z0-9_]+\}" docs/DESKTOP_RELEASE_ANNOUNCEMENT.md` の結果が空である

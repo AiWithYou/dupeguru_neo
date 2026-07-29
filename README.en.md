@@ -2,15 +2,14 @@
 
 [**日本語版 README（GitHub既定）**](README.md) | English
 
-[**Download 5.3.0 for Windows 10 / 11 (ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip) |
-[**Download 5.3.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip) |
+[**Download 5.4.0 for Windows 10 / 11 (EXE)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
+[**Download 5.4.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
 [Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
 
 > [!NOTE]
-> The screenshots below show the simpler UI currently on `master` for the next
-> desktop build. The permanently published 5.3.0 downloads above do not yet
-> include these UI changes. Use the latest development build to try them now.
+> The 5.4.0 desktop pre-release includes the same simplified UI shown in the
+> screenshots below. The Windows and macOS builds are unsigned.
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
 organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
@@ -137,28 +136,26 @@ not immediate permanent deletion.
 
 ## Easy-launch desktop builds
 
-The current source version is **5.3.0**.
+The current source version is **5.4.0**.
 
 - **64-bit Windows 10 / 11:**
-  [**Download the 5.3.0 portable ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip).
-  Fully extract the ZIP, then double-click `dupeguru-neo.exe` inside the
-  extracted `dupeguru-neo` folder. Python and an installer are not required.
-  Keep the `_internal` folder beside the executable.
+  [**Download the 5.4.0 EXE directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe).
+  Double-click the downloaded EXE. No ZIP extraction, Python installation, or
+  installer is required. If SmartScreen appears, review the unsigned-publisher
+  warning before deciding whether to run it.
 - **Checksum:**
-  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-dev/dupeguru-neo-5.3.0-windows-x86_64-unsigned-portable.zip.sha256)
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe.sha256)
 - **macOS (Apple Silicon / arm64):**
-  [**Download the 5.3.0 APP ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip).
+  [**Download the 5.4.0 APP ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip).
   Expand the ZIP and move `dupeguru-neo.app` to Applications. On first launch,
   Control-click the app and choose Open. Depending on the macOS configuration,
   you may also need to allow it under Privacy & Security. Python and an
   installer are not required. This build does not support Intel Macs (x86_64).
 - **macOS checksum:**
-  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.3.0-macos-dev/dupeguru-neo-5.3.0-macos-arm64-adhoc.app.zip.sha256)
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip.sha256)
 
-The Windows ZIP and macOS APP ZIP are permanently available from the
-[5.3.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-dev)
-and the
-[macOS 5.3.0 development pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.3.0-macos-dev)
+The Windows EXE and macOS APP ZIP are permanently available from the unified
+[5.4.0 desktop pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.0)
 without a GitHub login. For newer short-retention builds, use the Artifacts
 section of the
 [latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
