@@ -1548,9 +1548,7 @@ msgstr "重複ファイルを探す"
 msgid ""
 "Choose the file type and comparison method, then add the folders you want to"
 " check. Scanning never moves or deletes files."
-msgstr ""
-"対象の種類と比較方法を選び、調べたいフォルダーを追加してください。"
-"スキャンだけではファイルを移動・削除しません。"
+msgstr "対象の種類と比較方法を選び、調べたいフォルダーを追加してください。スキャンだけではファイルを移動・削除しません。"
 
 #: qt\directories_dialog.py:234 qt\directories_dialog.py:249
 msgid "1. Choose folders"
@@ -1560,9 +1558,7 @@ msgstr "1. 調べるフォルダーを選ぶ"
 msgid ""
 "Most people can leave \"Handling\" set to \"Organize\". Change it only for "
 "folders that must be kept or skipped."
-msgstr ""
-"通常は「扱い」を「整理する」のままで大丈夫です。必ず残したい、または"
-"対象外にしたいフォルダーだけ変更してください。"
+msgstr "通常は「扱い」を「整理する」のままで大丈夫です。必ず残したい、または対象外にしたいフォルダーだけ変更してください。"
 
 #: qt\directories_dialog.py:269
 msgid "Remove Folder"
@@ -1624,9 +1620,7 @@ msgstr "重複ファイルを確認する"
 msgid ""
 "The first row in each group is kept. Check only the extra copies you want to"
 " quarantine."
-msgstr ""
-"各グループの先頭行は残すファイルです。隔離したい余分なコピーだけを"
-"チェックしてください。"
+msgstr "各グループの先頭行は残すファイルです。隔離したい余分なコピーだけをチェックしてください。"
 
 #: qt\result_window.py:474
 msgid "Check at least one duplicate first."
@@ -1636,6 +1630,50 @@ msgstr "先に重複ファイルを1件以上チェックしてください。"
 msgid ""
 "Only checked byte-for-byte duplicates from a complete current scan can be "
 "quarantined."
+msgstr "現在の完全なスキャンで内容が完全一致した、チェック済みファイルだけを隔離できます。"
+
+#: qt\app.py:381
+msgid ""
+"Cache information could not be read. Nothing was cleared.\n"
+"\n"
+"{}"
 msgstr ""
-"現在の完全なスキャンで内容が完全一致した、チェック済みファイルだけを"
-"隔離できます。"
+"キャッシュ情報を読み取れませんでした。何も消去していません。\n"
+"\n"
+"{}"
+
+#: qt\app.py:384
+msgid "not created"
+msgstr "未作成"
+
+#: qt\app.py:385
+msgid ""
+"Clear all rebuildable scan data?\n"
+"\n"
+"This removes cached file hashes, picture analysis, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
+"\n"
+"Persistent Catalog: {}"
+msgstr ""
+"再生成可能なスキャンデータをすべて消去しますか？\n"
+"\n"
+"キャッシュされたファイルハッシュ、画像解析、永続カタログ（スキャン履歴と未完了のスキャンを含む）を削除します。ファイル、設定、除外条件、保存済みの結果ファイルは削除されません。\n"
+"\n"
+"永続カタログ: {}"
+
+#: qt\app.py:401
+msgid ""
+"Cache cleanup stopped. Some rebuildable data may already have been cleared.\n"
+"\n"
+"{}"
+msgstr ""
+"キャッシュの消去を停止しました。再生成可能なデータの一部はすでに消去されている可能性があります。\n"
+"\n"
+"{}"
+
+#: qt\app.py:406
+msgid "Rebuildable scan data cleared."
+msgstr "再生成可能なスキャンデータを消去しました。"
+
+#: qt\progress_window.py:65
+msgid "Are you sure you want to stop the current operation?"
+msgstr "現在の処理を停止しますか？"

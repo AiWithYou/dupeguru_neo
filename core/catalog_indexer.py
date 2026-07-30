@@ -13,6 +13,7 @@ before and after reading. A scan remains ``running``/``partial`` until those wor
 items reach a terminal state and :meth:`CatalogIndexer.finalize_scan` succeeds.
 """
 
+import logging
 import os
 import stat
 import sys
@@ -112,6 +113,19 @@ class IndexRunResult:
 
 
 @dataclass(frozen=True)
+class CatalogIndexProgress:
+    """Bounded, best-effort progress from one root enumeration."""
+
+    scan_id: int
+    root_path: Path
+    files_seen: int
+    files_observed: int
+    directories_seen: int
+    changed_content: int
+    work_enqueued: int
+
+
+@dataclass(frozen=True)
 class CatalogFilePage:
     files: Tuple[fs.File, ...]
     rows: Tuple[Any, ...]
@@ -125,6 +139,7 @@ StatGetter = Callable[..., os.stat_result]
 GenerationGetter = Callable[..., FileGenerationToken]
 DirectoryPruner = Callable[[Path], Optional[Union[bool, str]]]
 FileFilter = Callable[[Path], Optional[Union[bool, str]]]
+ProgressCallback = Callable[[CatalogIndexProgress], None]
 
 
 class CatalogIndexer:
@@ -146,7 +161,11 @@ class CatalogIndexer:
         clock: Callable[[], float] = time.time,
         directory_pruner: Optional[DirectoryPruner] = None,
         file_filter: Optional[FileFilter] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        progress_interval: int = 512,
     ):
+        if progress_interval < 1:
+            raise ValueError("progress_interval must be at least one")
         self.catalog = catalog
         self.root_path = Path(os.path.abspath(os.fspath(root_path)))
         if is_within_reserved_internal_directory(self.root_path):
@@ -176,6 +195,35 @@ class CatalogIndexer:
         self.clock = clock
         self.directory_pruner = directory_pruner
         self.file_filter = file_filter
+        self.progress_callback = progress_callback
+        self.progress_interval = progress_interval
+
+    def _report_progress(
+        self,
+        scan_id: int,
+        files_seen: int,
+        files_observed: int,
+        directories_seen: int,
+        changed_content: int,
+        work_enqueued: int,
+    ) -> None:
+        """Notify UI observers without allowing presentation failures to alter a scan."""
+
+        if self.progress_callback is None:
+            return
+        progress = CatalogIndexProgress(
+            scan_id=scan_id,
+            root_path=self.root_path,
+            files_seen=files_seen,
+            files_observed=files_observed,
+            directories_seen=directories_seen,
+            changed_content=changed_content,
+            work_enqueued=work_enqueued,
+        )
+        try:
+            self.progress_callback(progress)
+        except Exception:
+            logging.debug("Catalog index progress callback failed", exc_info=True)
 
     @staticmethod
     def _identity_confidence(identity: FileIdentity) -> str:
@@ -332,12 +380,22 @@ class CatalogIndexer:
 
         directory_ids = {path_key: row["id"] for path_key, row in active_directories.items()}
         seen_directories = set()
+        files_seen = 0
+        directories_seen = 0
         files_observed = 0
         changed_content = 0
         work_enqueued = 0
         errors_recorded = 0
         walk_issues_recorded = 0
         coverage = None
+        self._report_progress(
+            scan_id,
+            files_seen,
+            files_observed,
+            directories_seen,
+            changed_content,
+            work_enqueued,
+        )
 
         try:
             for event in self.walker(
@@ -348,6 +406,14 @@ class CatalogIndexer:
                 directory_pruner=self._directory_prune_reason,
             ):
                 if cancel_check is not None and cancel_check():
+                    self._report_progress(
+                        scan_id,
+                        files_seen,
+                        files_observed,
+                        directories_seen,
+                        changed_content,
+                        work_enqueued,
+                    )
                     if cancel_scan_on_cancel:
                         self.catalog.cancel_scan(scan_id, now=self.clock())
                     return IndexRunResult(
@@ -365,6 +431,22 @@ class CatalogIndexer:
                     )
 
                 self._validate_walk_event(event, registration)
+                if event.kind == WalkEventKind.FILE:
+                    files_seen += 1
+                elif event.kind == WalkEventKind.DIRECTORY:
+                    directories_seen += 1
+                if (
+                    event.kind in {WalkEventKind.FILE, WalkEventKind.DIRECTORY}
+                    and (files_seen + directories_seen) % self.progress_interval == 0
+                ):
+                    self._report_progress(
+                        scan_id,
+                        files_seen,
+                        files_observed,
+                        directories_seen,
+                        changed_content,
+                        work_enqueued,
+                    )
                 if event.kind == WalkEventKind.DIRECTORY:
                     path_key, directory_id, active = self._activate_directory(
                         scan_id,
@@ -459,6 +541,14 @@ class CatalogIndexer:
                     walk_issues_recorded += 1
 
             if coverage is None:
+                self._report_progress(
+                    scan_id,
+                    files_seen,
+                    files_observed,
+                    directories_seen,
+                    changed_content,
+                    work_enqueued,
+                )
                 self._record_file_error(
                     scan_id,
                     directory_ids.get(self.catalog.normalize_path(self.root_path, sys.platform)),
@@ -513,6 +603,14 @@ class CatalogIndexer:
                 now=self.clock(),
             )
         except Exception as error:
+            self._report_progress(
+                scan_id,
+                files_seen,
+                files_observed,
+                directories_seen,
+                changed_content,
+                work_enqueued,
+            )
             root_key = self.catalog.normalize_path(self.root_path, sys.platform)
             self._record_file_error(
                 scan_id,
@@ -532,6 +630,14 @@ class CatalogIndexer:
                 reason="indexer exception: {}".format(error),
             )
 
+        self._report_progress(
+            scan_id,
+            files_seen,
+            files_observed,
+            directories_seen,
+            changed_content,
+            work_enqueued,
+        )
         return self.finalize_scan(
             scan_id,
             registration=registration,

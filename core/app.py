@@ -24,7 +24,7 @@ from hscommon.safe_fileops import (
     validate_cleanup_path,
     validate_source_destination,
 )
-from hscommon.util import escape, nonone, allsame
+from hscommon.util import allsame, escape, format_size, nonone
 from hscommon.trans import tr
 from hscommon import desktop
 
@@ -33,8 +33,13 @@ from core.pe.cache_sqlite import SqliteCache
 from core.pe.photo import get_delta_dimensions
 from core.util import cmp_value, fix_surrogate_encoding
 from core import __appname__, directories, engine, results, export, fs, prioritize
-from core.catalog import CatalogStateError
-from core.catalog_service import CatalogService, CatalogServiceError
+from core.catalog import (
+    CatalogError,
+    CatalogStateError,
+    catalog_storage_size as get_catalog_storage_size,
+    delete_catalog_storage,
+)
+from core.catalog_service import CatalogProgress, CatalogService, CatalogServiceError
 from core.catalog_worker import CatalogWorkerError
 from core.ignore import IgnoreList, IgnoreListLimitError
 from core.exclude import (
@@ -68,6 +73,7 @@ from core.gui.stats_label import StatsLabel
 HAD_FIRST_LAUNCH_PREFERENCE = "HadFirstLaunch"
 DEBUG_MODE_PREFERENCE = "DebugMode"
 HASH_CACHE_FILENAME = "hash_cache_v3.sqlite3"
+CATALOG_FILENAME = "catalog.sqlite3"
 CATALOG_GUI_EXACT_PAGE_GROUPS = 100
 CATALOG_GUI_EXACT_PAGE_FILES = 10_000
 CATALOG_GUI_MAX_EXACT_GROUPS = 10_000
@@ -475,12 +481,21 @@ class DupeGuru(Broadcaster):
                         ).format(direct_discovery_issue.message)
                     )
                 else:
-                    self.view.show_message(
-                        tr(
-                            "The scan is incomplete. Results are shown for review, but bulk file "
-                            "actions are disabled until a complete rescan succeeds."
-                        )
+                    issue_detail = next(
+                        (issue.message for issue in receipt.issues if issue.message),
+                        tr("No additional details were recorded."),
                     )
+                    if self.results.groups:
+                        message = tr(
+                            "The scan is incomplete. Results are shown for review only, and bulk "
+                            "file actions are disabled until a complete rescan succeeds.\n\n{}"
+                        ).format(issue_detail)
+                    else:
+                        message = tr(
+                            "The scan is incomplete, so no duplicate results were published. "
+                            "No files were changed, and bulk file actions remain disabled.\n\n{}"
+                        ).format(issue_detail)
+                    self.view.show_message(message)
                 if self.results.groups:
                     self.view.show_results_window()
             elif not self.results.groups:
@@ -680,6 +695,15 @@ class DupeGuru(Broadcaster):
 
     def clear_hash_cache(self):
         fs.filesdb.clear()
+
+    def catalog_storage_size(self):
+        return get_catalog_storage_size(Path(self.appdata) / CATALOG_FILENAME)
+
+    def clear_catalog(self):
+        removed_bytes = delete_catalog_storage(Path(self.appdata) / CATALOG_FILENAME)
+        self._catalog_resume_scan_id = None
+        self._catalog_resume_roots = ()
+        return removed_bytes
 
     def copy_or_move(
         self,
@@ -1332,6 +1356,34 @@ class DupeGuru(Broadcaster):
             is None
         )
 
+    @staticmethod
+    def _is_filesystem_root(path):
+        absolute = os.path.normpath(os.path.abspath(os.fspath(path)))
+        anchor = Path(absolute).anchor
+        return bool(anchor) and os.path.normcase(absolute) == os.path.normcase(os.path.normpath(anchor))
+
+    def _catalog_whole_drive_warning(self):
+        roots = self._catalog_selected_roots()
+        whole_drive_roots = tuple(root for root in roots if self._is_filesystem_root(root))
+        if not whole_drive_roots:
+            return None
+        try:
+            catalog_bytes = self.catalog_storage_size()
+        except (CatalogError, OSError) as error:
+            logging.warning("Could not measure the Persistent Catalog before a whole-drive scan: %s", error)
+            catalog_size = tr("unavailable")
+        else:
+            catalog_size = format_size(catalog_bytes, decimal=1) if catalog_bytes else tr("not created")
+        return tr(
+            "The Contents scan records its work in a Persistent Catalog. Scanning an entire "
+            "drive can take many hours and use several GB of local application storage. "
+            "Unavailable folders, links, or files that change during the scan can prevent "
+            "duplicate results from being published.\n\n"
+            "Whole-drive roots: {}\n"
+            "Current catalog size: {}\n\n"
+            "Continue?"
+        ).format(", ".join(str(root) for root in whole_drive_roots), catalog_size)
+
     def _direct_discovery_limits(self):
         return directories.DirectDiscoveryLimits(
             max_files=self.options["direct_scan_max_files"],
@@ -1536,6 +1588,54 @@ class DupeGuru(Broadcaster):
         )
 
     @staticmethod
+    def _catalog_progress_description(progress: CatalogProgress):
+        if progress.phase == "enumerating":
+            return tr(
+                "Building Persistent Catalog: {files:,} files checked in {folders:,} folders " "({roots}/{total} roots)"
+            ).format(
+                files=progress.files_seen,
+                folders=progress.directories_seen,
+                roots=progress.roots_processed,
+                total=progress.roots_total,
+            )
+        if progress.phase == "analyzing":
+            return tr("Analyzing catalog content: {completed:,}/{total:,} items ({failed:,} failed)").format(
+                completed=progress.work_completed,
+                total=progress.work_total,
+                failed=progress.work_failed,
+            )
+        if progress.phase == "finalizing":
+            return tr("Finalizing Persistent Catalog")
+        if progress.phase == "finished":
+            return tr("Persistent Catalog scan finished")
+        return tr("Persistent Catalog scan stopped before completion")
+
+    @staticmethod
+    def _catalog_incomplete_summary(service_result):
+        reasons = []
+        for error in service_result.errors:
+            reason = " ".join(str(error).split())
+            if not reason or reason in reasons:
+                continue
+            reasons.append(reason[:300])
+            if len(reasons) == 3:
+                break
+        summary = tr(
+            "The Persistent Catalog scan did not publish results. Files cataloged this run: "
+            "{files:,}; recorded issues: {issues:,}; failed analysis items: {failed:,}."
+        ).format(
+            files=service_result.files_observed,
+            issues=service_result.status.error_count,
+            failed=service_result.work_failed,
+        )
+        if reasons:
+            summary = "{}\n{}".format(
+                summary,
+                tr("First reported reasons: {}").format("; ".join(reasons)),
+            )
+        return summary
+
+    @staticmethod
     def _catalog_projection_limit_receipt(service_result, counts, projected_groups, projected_files):
         discovered = max(1, service_result.files_observed)
         return ScanReceipt.incomplete(
@@ -1617,14 +1717,20 @@ class DupeGuru(Broadcaster):
         def cancel_check():
             return self._catalog_cancel_requested(j)
 
+        def progress_callback(progress):
+            j.set_progress(0, self._catalog_progress_description(progress))
+
         service = None
         service_result = None
         try:
+            catalog_path = Path(self.appdata) / CATALOG_FILENAME
+            logging.info("Starting Persistent Catalog scan for %d root(s)", len(roots))
             service = CatalogService(
-                Path(self.appdata) / "catalog.sqlite3",
+                catalog_path,
                 roots,
                 directory_pruner=self.directories._directory_prune_reason,
                 file_filter=self._catalog_file_filter,
+                progress_callback=progress_callback,
             )
             if self._catalog_resume_scan_id is not None and self._catalog_resume_roots == roots_key:
                 service_result = service.resume(
@@ -1640,7 +1746,13 @@ class DupeGuru(Broadcaster):
                 or not service_result.status.verified_projection_allowed
             ):
                 self.results.groups = []
-                detail = "; ".join(service_result.errors) or "catalog scan is incomplete"
+                detail = self._catalog_incomplete_summary(service_result)
+                logging.warning(
+                    "Persistent Catalog scan %d ended with status %s: %s",
+                    service_result.scan_id,
+                    service_result.catalog_status,
+                    detail.replace("\n", " "),
+                )
                 self.results.scan_receipt = self._catalog_incomplete_receipt(
                     service_result,
                     detail,
@@ -1712,6 +1824,11 @@ class DupeGuru(Broadcaster):
             else:
                 self.results.scan_receipt = ScanReceipt.completed(service_result.files_observed)
             self.discarded_file_count = scanner.discarded_file_count
+            logging.info(
+                "Persistent Catalog scan %d completed with %d observed file(s)",
+                service_result.scan_id,
+                service_result.files_observed,
+            )
             self._catalog_resume_scan_id = None
             self._catalog_resume_roots = ()
         except job.JobCancelled:
@@ -1741,11 +1858,12 @@ class DupeGuru(Broadcaster):
                     self._catalog_resume_roots = ()
         except (
             CatalogServiceError,
-            CatalogStateError,
+            CatalogError,
             CatalogWorkerError,
             OSError,
             ValueError,
         ) as error:
+            logging.error("Persistent Catalog scan failed: %s", error)
             self.results.groups = []
             self.results.scan_receipt = ScanReceipt.incomplete(
                 discovered=1,
@@ -1784,6 +1902,10 @@ class DupeGuru(Broadcaster):
         if not has_scan_input:
             self.view.show_message(tr("The selected directories contain no scannable file."))
             return
+        if scanner.scan_type == ScanType.CONTENTS:
+            warning = self._catalog_whole_drive_warning()
+            if warning is not None and not self.view.ask_yes_no(warning):
+                return
         self.results.groups = []
         self._recreate_result_table()
         self._results_changed()

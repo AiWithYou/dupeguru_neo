@@ -21,9 +21,10 @@ from hscommon.jobprogress.job import Job
 from core.tests.base import TestApp
 from core.tests.results_test import GetTestGroups
 from core import app, engine, export, fs
+from core.catalog import Catalog
 from core.file_generation import FileGenerationToken
 import core.ignore as ignore_module
-from core.scan_receipt import ScanReceipt, ScanStatus
+from core.scan_receipt import ScanIssue, ScanReceipt, ScanStatus
 from core.scanner import ScanType
 
 
@@ -413,6 +414,124 @@ class TestCaseDupeGuru:
         assert not (bool(f1) and bool(f2))
         add_fake_files_to_directories(app.directories, [f1, f2])
         app.start_scanning()  # no exception
+
+    def test_whole_drive_contents_scan_requires_explicit_confirmation(self, tmp_path, monkeypatch):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path / "appdata")
+        Path(dgapp.appdata).mkdir()
+        selected = tmp_path / "selected"
+        selected.mkdir()
+        dgapp.directories.add_path(selected)
+        dgapp.options["scan_type"] = ScanType.CONTENTS
+        prior_groups = list(GetTestGroups()[2])
+        dgapp.results.groups = prior_groups
+        filesystem_root = Path(Path.cwd().anchor)
+        prompts = []
+        jobs = []
+        monkeypatch.setattr(dgapp, "_catalog_selected_roots", lambda: (filesystem_root,))
+        monkeypatch.setattr(dgapp.view, "ask_yes_no", lambda prompt: prompts.append(prompt) or False)
+        monkeypatch.setattr(dgapp, "_start_job", lambda *args, **kwargs: jobs.append((args, kwargs)))
+
+        dgapp.start_scanning()
+
+        assert jobs == []
+        assert dgapp.results.groups == prior_groups
+        assert len(prompts) == 1
+        assert str(filesystem_root) in prompts[0]
+        assert "many hours" in prompts[0]
+        assert "not created" in prompts[0]
+
+    def test_catalog_storage_can_be_measured_and_cleared_without_touching_settings(self, tmp_path):
+        dgapp = TestApp().app
+        dgapp.appdata = str(tmp_path)
+        database_path = tmp_path / app.CATALOG_FILENAME
+        Catalog(database_path).close()
+        wal_path = Path(str(database_path) + "-wal")
+        wal_path.write_bytes(b"rebuildable")
+        settings_path = tmp_path / "settings.ini"
+        settings_path.write_bytes(b"keep")
+        dgapp._catalog_resume_scan_id = 42
+        dgapp._catalog_resume_roots = ("root",)
+
+        measured = dgapp.catalog_storage_size()
+        removed = dgapp.clear_catalog()
+
+        assert removed == measured
+        assert not database_path.exists()
+        assert not wal_path.exists()
+        assert settings_path.read_bytes() == b"keep"
+        assert dgapp._catalog_resume_scan_id is None
+        assert dgapp._catalog_resume_roots == ()
+
+    def test_catalog_progress_descriptions_expose_real_counts(self):
+        enumerating = app.CatalogProgress(
+            scan_id=7,
+            phase="enumerating",
+            roots_total=2,
+            roots_processed=1,
+            files_seen=1234,
+            files_observed=1200,
+            directories_seen=56,
+            work_total=0,
+            work_completed=0,
+            work_failed=0,
+        )
+        analyzing = app.CatalogProgress(
+            scan_id=7,
+            phase="analyzing",
+            roots_total=2,
+            roots_processed=2,
+            files_seen=1234,
+            files_observed=1200,
+            directories_seen=56,
+            work_total=1200,
+            work_completed=345,
+            work_failed=6,
+        )
+
+        assert "1,234 files" in app.DupeGuru._catalog_progress_description(enumerating)
+        assert "56 folders" in app.DupeGuru._catalog_progress_description(enumerating)
+        assert "345/1,200" in app.DupeGuru._catalog_progress_description(analyzing)
+        assert "6 failed" in app.DupeGuru._catalog_progress_description(analyzing)
+
+    def test_catalog_incomplete_receipt_counts_walk_and_worker_failures(self):
+        service_result = SimpleNamespace(
+            scan_id=7,
+            catalog_status="completed_with_errors",
+            files_observed=100,
+            work_failed=3,
+            errors=("first", "first", "second"),
+            status=SimpleNamespace(
+                error_count=10,
+                work_counts={"total": 100},
+            ),
+        )
+
+        receipt = app.DupeGuru._catalog_incomplete_receipt(
+            service_result,
+            app.DupeGuru._catalog_incomplete_summary(service_result),
+        )
+
+        assert receipt.failed == 13
+        assert "recorded issues: 10" in receipt.issues[0].message
+        assert receipt.issues[0].message.count("first") == 1
+
+    def test_incomplete_scan_without_groups_explains_that_nothing_was_published(self):
+        dgapp = TestApp().app
+        dgapp.results.groups = []
+        dgapp.results.scan_receipt = ScanReceipt.incomplete(
+            discovered=2,
+            analyzed=1,
+            failed=1,
+            issues=(ScanIssue(code="catalog_scan_partial", message="example reason"),),
+        )
+
+        dgapp._job_completed(app.JobType.SCAN)
+
+        message = dgapp.view.messages[-1]
+        assert "no duplicate results were published" in message
+        assert "No files were changed" in message
+        assert "example reason" in message
 
     def test_direct_discovery_limit_discards_partial_input_before_scanner(self, tmp_path, monkeypatch):
         dgapp = TestApp().app

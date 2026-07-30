@@ -62,7 +62,7 @@ class ProgressWindow:
             confirm_dialog = QMessageBox(
                 QMessageBox.Icon.Question,
                 tr("Cancel?"),
-                tr("Are you sure you want to cancel? All progress will be lost."),
+                tr("Are you sure you want to stop the current operation?"),
                 QMessageBox.StandardButton.No | QMessageBox.StandardButton.Yes,
                 self._window,
             )

@@ -30,7 +30,7 @@ import threading
 import time
 import unicodedata
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
@@ -789,6 +789,106 @@ def inspect_catalog_file(
             connection.close()
     finally:
         os.close(descriptor)
+
+
+def _catalog_storage_stats(database_path: Union[str, os.PathLike]) -> Tuple[Path, Dict[Path, os.stat_result]]:
+    """Return validated filesystem facts for one catalog and its SQLite sidecars."""
+
+    path = preflight_catalog_path(database_path, must_exist=False)
+    members = (path,) + tuple(Path(str(path) + suffix) for suffix in _SQLITE_SIDECAR_SUFFIXES)
+    stats: Dict[Path, os.stat_result] = {}
+    for member in members:
+        if not os.path.lexists(member):
+            continue
+        try:
+            member_stat = os.lstat(member)
+        except OSError as error:
+            raise CatalogPathError("catalog storage is unavailable: '{}'".format(member)) from error
+        if stat.S_ISLNK(member_stat.st_mode) or _is_reparse_point(member_stat) or not stat.S_ISREG(member_stat.st_mode):
+            raise CatalogPathError("catalog storage must contain only plain regular files: '{}'".format(member))
+        if int(getattr(member_stat, "st_nlink", 0)) != 1:
+            raise CatalogPathError("catalog storage files must have exactly one filesystem link: '{}'".format(member))
+        stats[member] = member_stat
+    if path not in stats and stats:
+        raise CatalogPathError("catalog SQLite sidecars exist without the catalog database: '{}'".format(path))
+    return path, stats
+
+
+def catalog_storage_size(database_path: Union[str, os.PathLike]) -> int:
+    """Return bytes used by one validated catalog database and its known sidecars."""
+
+    _path, stats = _catalog_storage_stats(database_path)
+    return sum(int(member_stat.st_size) for member_stat in stats.values())
+
+
+def delete_catalog_storage(database_path: Union[str, os.PathLike]) -> int:
+    """Delete one owned catalog and its sidecars through live verified handles.
+
+    The exact application-owned path is validated before any mutation.  A
+    foreign SQLite database, link, reparse point, non-regular entry, or object
+    replacement makes the operation fail closed.
+    """
+
+    path, expected_stats = _catalog_storage_stats(database_path)
+    if not expected_stats:
+        return 0
+
+    # Import locally so the catalog's read-only inspection code stays
+    # independent from the destructive filesystem adapter at module import.
+    from core.safe_action import platform_file_system
+
+    filesystem = platform_file_system()
+    handles = {}
+    with ExitStack() as stack:
+        for member, expected_stat in expected_stats.items():
+            try:
+                handle = stack.enter_context(filesystem.open_readonly(member))
+            except OSError as error:
+                raise CatalogPathError(
+                    "catalog storage could not be opened without following links: '{}'".format(member)
+                ) from error
+            guarded_stat = os.fstat(handle.fileno())
+            current_stat = os.lstat(member)
+            if (
+                not stat.S_ISREG(guarded_stat.st_mode)
+                or _is_reparse_point(guarded_stat)
+                or not _same_file_stat(guarded_stat, expected_stat)
+                or not _same_file_stat(guarded_stat, current_stat)
+                or int(getattr(guarded_stat, "st_nlink", 0)) != 1
+                or int(getattr(current_stat, "st_nlink", 0)) != 1
+            ):
+                raise CatalogPathError("catalog storage changed while it was guarded: '{}'".format(member))
+            handles[member] = handle
+
+        # Authenticate ownership while the main database's verified handle is
+        # still live, then bind the inspected path back to that same object.
+        inspect_catalog_file(path)
+        main_stat = os.fstat(handles[path].fileno())
+        inspected_path_stat = os.lstat(path)
+        if not _same_file_stat(main_stat, inspected_path_stat) or int(getattr(inspected_path_stat, "st_nlink", 0)) != 1:
+            raise CatalogPathError("catalog database changed while ownership was inspected: '{}'".format(path))
+
+        # SQLite sidecars are subordinate to the authenticated main database.
+        # Remove them first so a failed main-file deletion never leaves a
+        # plausible database paired with stale WAL state.
+        deletion_order = tuple(member for member in handles if member != path) + (path,)
+        for member in deletion_order:
+            try:
+                removed = filesystem.delete_verified_regular_file(member, handles[member])
+            except OSError as error:
+                raise CatalogPathError("catalog storage could not be deleted: '{}'".format(member)) from error
+            if not removed:
+                raise CatalogPathError("catalog storage changed before deletion: '{}'".format(member))
+
+    all_members = (path,) + tuple(Path(str(path) + suffix) for suffix in _SQLITE_SIDECAR_SUFFIXES)
+    remaining = tuple(member for member in all_members if os.path.lexists(member))
+    if remaining:
+        raise CatalogPathError(
+            "catalog storage deletion could not be verified: {}".format(
+                ", ".join("'{}'".format(member) for member in remaining)
+            )
+        )
+    return sum(int(member_stat.st_size) for member_stat in expected_stats.values())
 
 
 @dataclass(frozen=True)

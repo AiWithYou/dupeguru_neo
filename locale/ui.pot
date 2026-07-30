@@ -1590,3 +1590,38 @@ msgid ""
 "Only checked byte-for-byte duplicates from a complete current scan can be "
 "quarantined."
 msgstr ""
+
+#: qt\app.py:381
+msgid ""
+"Cache information could not be read. Nothing was cleared.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: qt\app.py:384
+msgid "not created"
+msgstr ""
+
+#: qt\app.py:385
+msgid ""
+"Clear all rebuildable scan data?\n"
+"\n"
+"This removes cached file hashes, picture analysis, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
+"\n"
+"Persistent Catalog: {}"
+msgstr ""
+
+#: qt\app.py:401
+msgid ""
+"Cache cleanup stopped. Some rebuildable data may already have been cleared.\n"
+"\n"
+"{}"
+msgstr ""
+
+#: qt\app.py:406
+msgid "Rebuildable scan data cleared."
+msgstr ""
+
+#: qt\progress_window.py:65
+msgid "Are you sure you want to stop the current operation?"
+msgstr ""

@@ -163,6 +163,26 @@ def test_gui_hydration_failure_discards_all_results_and_disables_actions(
     assert app.results.scan_receipt.failed == 1
 
 
+def test_gui_invalid_catalog_becomes_an_incomplete_receipt_instead_of_job_crash(tmp_path):
+    root = tmp_path / "library"
+    root.mkdir()
+    (root / "one.bin").write_bytes(b"same")
+    (root / "two.bin").write_bytes(b"same")
+    app = create_contents_app(tmp_path, (root,))
+    database_path = Path(app.appdata) / app_module.CATALOG_FILENAME
+    original = b"foreign application data"
+    database_path.write_bytes(original)
+
+    run_scan(app)
+
+    assert app.results.groups == []
+    assert not app.results.scan_receipt.allows_destructive_actions
+    assert app.results.scan_receipt.issues[0].code == "catalog_projection_failed"
+    assert database_path.read_bytes() == original
+    app._job_completed(app_module.JobType.SCAN)
+    assert any("no duplicate results were published" in message for message in app.view.messages)
+
+
 def test_gui_selected_root_scope_never_returns_old_unselected_root(tmp_path):
     first = tmp_path / "first"
     second = tmp_path / "second"

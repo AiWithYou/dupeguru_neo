@@ -6,9 +6,11 @@
 
 """High-level orchestration for multi-root durable catalog scans."""
 
+import logging
 import os
 
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple, Union
 
@@ -22,7 +24,7 @@ from core.catalog import (
     ScanIncompleteError,
     preflight_catalog_path,
 )
-from core.catalog_indexer import CatalogIndexer, IndexOutcome
+from core.catalog_indexer import CatalogIndexProgress, CatalogIndexer, IndexOutcome
 from core.catalog_worker import CatalogWorker, VerifiedExactGroup, WorkerOutcome
 from core.reserved_paths import is_within_reserved_internal_directory
 
@@ -68,7 +70,24 @@ class CatalogServiceResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class CatalogProgress:
+    """User-facing progress aggregated across all selected catalog roots."""
+
+    scan_id: int
+    phase: str
+    roots_total: int
+    roots_processed: int
+    files_seen: int
+    files_observed: int
+    directories_seen: int
+    work_total: int
+    work_completed: int
+    work_failed: int
+
+
 CancelCheck = Callable[[], bool]
+ProgressCallback = Callable[[CatalogProgress], None]
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -159,6 +178,7 @@ class CatalogService:
         file_filter=None,
         catalog: Optional[Catalog] = None,
         selected_root_ids: Optional[Sequence[int]] = None,
+        progress_callback: Optional[ProgressCallback] = None,
     ):
         if worker_batch_size < 1:
             raise ValueError("worker_batch_size must be at least one")
@@ -186,6 +206,7 @@ class CatalogService:
         self.max_worker_batches = max_worker_batches
         self.directory_pruner = directory_pruner
         self.file_filter = file_filter
+        self.progress_callback = progress_callback
         if catalog is None:
             if selected_root_ids is not None:
                 raise ValueError("selected_root_ids require an explicitly supplied catalog")
@@ -204,18 +225,75 @@ class CatalogService:
             ):
                 raise ValueError("selected_root_ids must uniquely identify every service root")
             self._selected_root_ids = normalized_root_ids
-        self.indexers = tuple(
-            CatalogIndexer(
-                self.catalog,
-                root,
-                analysis_kinds=self.analysis_kinds,
-                owner="catalog-service-indexer-{}".format(index),
-                directory_pruner=self.directory_pruner,
-                file_filter=self.file_filter,
+        self._progress_scan_id = 0
+        self._progress_roots_processed = 0
+        self._progress_files_seen = [0] * len(self.roots)
+        self._progress_files_observed = [0] * len(self.roots)
+        self._progress_directories_seen = [0] * len(self.roots)
+        self._progress_work_total = 0
+        self._progress_work_completed = 0
+        self._progress_work_failed = 0
+        indexers = []
+        for index, root in enumerate(self.roots):
+            index_progress_callback = None
+            if self.progress_callback is not None:
+                index_progress_callback = partial(self._on_index_progress, index)
+            indexers.append(
+                CatalogIndexer(
+                    self.catalog,
+                    root,
+                    analysis_kinds=self.analysis_kinds,
+                    owner="catalog-service-indexer-{}".format(index),
+                    directory_pruner=self.directory_pruner,
+                    file_filter=self.file_filter,
+                    progress_callback=index_progress_callback,
+                )
             )
-            for index, root in enumerate(self.roots)
-        )
+        self.indexers = tuple(indexers)
         self.worker = CatalogWorker(self.catalog, owner="catalog-service-worker")
+
+    def _reset_progress(self, scan_id: int) -> None:
+        self._progress_scan_id = scan_id
+        self._progress_roots_processed = 0
+        self._progress_files_seen = [0] * len(self.roots)
+        self._progress_files_observed = [0] * len(self.roots)
+        self._progress_directories_seen = [0] * len(self.roots)
+        self._progress_work_total = 0
+        self._progress_work_completed = 0
+        self._progress_work_failed = 0
+
+    def _emit_progress(self, phase: str) -> None:
+        if self.progress_callback is None:
+            return
+        progress = CatalogProgress(
+            scan_id=self._progress_scan_id,
+            phase=phase,
+            roots_total=len(self.roots),
+            roots_processed=self._progress_roots_processed,
+            files_seen=sum(self._progress_files_seen),
+            files_observed=sum(self._progress_files_observed),
+            directories_seen=sum(self._progress_directories_seen),
+            work_total=self._progress_work_total,
+            work_completed=self._progress_work_completed,
+            work_failed=self._progress_work_failed,
+        )
+        try:
+            self.progress_callback(progress)
+        except Exception:
+            logging.debug("Catalog service progress callback failed", exc_info=True)
+
+    def _on_index_progress(self, root_index: int, progress: CatalogIndexProgress) -> None:
+        if progress.scan_id != self._progress_scan_id:
+            return
+        self._progress_files_seen[root_index] = progress.files_seen
+        self._progress_files_observed[root_index] = progress.files_observed
+        self._progress_directories_seen[root_index] = progress.directories_seen
+        self._emit_progress("enumerating")
+
+    def _set_work_progress_from_coverage(self, coverage) -> None:
+        self._progress_work_total = sum(int(coverage.get("work_{}".format(status), 0)) for status in WORK_STATUS_VALUES)
+        self._progress_work_completed = int(coverage.get("work_complete", 0))
+        self._progress_work_failed = int(coverage.get("work_failed", 0))
 
     def close(self) -> None:
         self.catalog.close()
@@ -292,7 +370,20 @@ class CatalogService:
         errors,
     ) -> CatalogServiceResult:
         status = self.status(scan_id)
-        return CatalogServiceResult(
+        reported_errors = list(errors)
+        if status.status != "complete":
+            for row in self.catalog.page_scan_errors(scan_id, limit=3):
+                detail = "{} on '{}': {}".format(
+                    row["operation"],
+                    row["path"],
+                    row["message"],
+                )
+                if detail not in reported_errors:
+                    reported_errors.append(detail)
+        self._progress_work_total = status.work_counts["total"]
+        self._progress_work_completed = status.work_counts["complete"]
+        self._progress_work_failed = status.work_counts["failed"]
+        result = CatalogServiceResult(
             scan_id=scan_id,
             outcome=outcome,
             catalog_status=status.status,
@@ -306,8 +397,10 @@ class CatalogService:
             work_retried=work_retried,
             work_failed=work_failed,
             status=status,
-            errors=tuple(errors),
+            errors=tuple(reported_errors),
         )
+        self._emit_progress("finished" if outcome == "finished" else "partial")
+        return result
 
     def run(
         self,
@@ -324,6 +417,8 @@ class CatalogService:
     ) -> CatalogServiceResult:
         """Resume root enumeration, bounded work batches, and finalization."""
 
+        self._reset_progress(scan_id)
+        self._emit_progress("enumerating")
         scan = self.catalog.get_scan(scan_id)
         selected_root_ids = self.selected_root_ids()
         scan_root_ids = tuple(row["root_id"] for row in self.catalog.scan_roots(scan_id))
@@ -388,9 +483,11 @@ class CatalogService:
                     errors,
                 )
             roots_processed += 1
+            self._progress_roots_processed = roots_processed
             files_observed += indexed.files_observed
             changed_content += indexed.changed_content
             work_enqueued += indexed.work_enqueued
+            self._emit_progress("enumerating")
             if indexed.outcome == IndexOutcome.CANCELLED:
                 errors.append(indexed.reason or "catalog service interrupted during root enumeration")
                 return self._result(
@@ -430,6 +527,8 @@ class CatalogService:
                     errors,
                 )
 
+            self._set_work_progress_from_coverage(coverage)
+            self._emit_progress("analyzing")
             while worker_batches < self.max_worker_batches:
                 if cancel_check is not None and cancel_check():
                     errors.append("catalog service interrupted before the next worker batch")
@@ -458,6 +557,9 @@ class CatalogService:
                 work_retried += batch.retried
                 work_failed += batch.failed
                 errors.extend(batch.errors)
+                self._progress_work_completed += batch.completed
+                self._progress_work_failed += batch.failed
+                self._emit_progress("analyzing")
                 if batch.outcome == WorkerOutcome.CANCELLED:
                     return self._result(
                         scan_id,
@@ -490,6 +592,7 @@ class CatalogService:
                     errors,
                 )
             try:
+                self._emit_progress("finalizing")
                 self.catalog.finish_scan(scan_id)
             except ScanIncompleteError as error:
                 errors.append(str(error))

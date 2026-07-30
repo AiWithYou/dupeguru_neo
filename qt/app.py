@@ -6,6 +6,7 @@
 
 import sys
 import os.path as op
+import sqlite3
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer, QObject, QUrl, pyqtSignal, pyqtSlot, Qt
@@ -14,6 +15,7 @@ from PyQt6.QtWidgets import QApplication, QFileDialog, QDialog, QMessageBox, QSt
 
 from hscommon.trans import trget
 from hscommon import desktop, plat, trans
+from hscommon.util import format_size
 
 from qt.about_box import AboutBox
 from qt.recent import Recent
@@ -22,6 +24,7 @@ from qt.progress_window import ProgressWindow
 
 from core import __appname__, __project_url__
 from core.app import AppMode, DupeGuru as DupeGuruModel
+from core.catalog import CatalogError
 from core.directories import DirectoryState
 from core.visual_service import VisualScanConfig
 import core.pe.photo
@@ -368,12 +371,39 @@ class DupeGuru(QObject):
 
     def clearCacheTriggered(self):
         title = tr("Clear Cache")
-        msg = tr("Do you really want to clear the cache? This will remove all cached file hashes and picture analysis.")
+        active = QApplication.activeWindow()
+        try:
+            catalog_bytes = self.model.catalog_storage_size()
+        except (CatalogError, OSError, sqlite3.Error, ValueError) as error:
+            QMessageBox.critical(
+                active,
+                title,
+                tr("Cache information could not be read. Nothing was cleared.\n\n{}").format(error),
+            )
+            return
+        catalog_size = format_size(catalog_bytes, decimal=1) if catalog_bytes else tr("not created")
+        msg = tr(
+            "Clear all rebuildable scan data?\n\n"
+            "This removes cached file hashes, picture analysis, and the Persistent Catalog "
+            "(including scan history and unfinished scans). Your files, settings, exclusions, "
+            "and saved result files are not removed.\n\n"
+            "Persistent Catalog: {}"
+        ).format(catalog_size)
         if self.confirm(title, msg, QMessageBox.StandardButton.No):
-            self.model.clear_picture_cache()
-            self.model.clear_hash_cache()
-            active = QApplication.activeWindow()
-            QMessageBox.information(active, title, tr("Cache cleared."))
+            try:
+                self.model.clear_catalog()
+                self.model.clear_picture_cache()
+                self.model.clear_hash_cache()
+            except (CatalogError, OSError, sqlite3.Error, ValueError) as error:
+                QMessageBox.critical(
+                    active,
+                    title,
+                    tr("Cache cleanup stopped. Some rebuildable data may already have been " "cleared.\n\n{}").format(
+                        error
+                    ),
+                )
+                return
+            QMessageBox.information(active, title, tr("Rebuildable scan data cleared."))
 
     def updatePictureQueryAction(self):
         is_picture = self.model.app_mode == AppMode.PICTURE

@@ -452,3 +452,52 @@ def test_intentionally_pruned_subtree_is_recorded_but_scan_remains_complete(tmp_
     assert action is not None
     assert action["status"] == "completed"
     service.close()
+
+
+def test_service_reports_enumeration_analysis_and_finalization_progress(tmp_path):
+    first, second = create_roots(tmp_path)
+    (first / "first.bin").write_bytes(b"same")
+    (second / "second.bin").write_bytes(b"same")
+    progress = []
+    service = CatalogService(
+        tmp_path / "catalog.sqlite3",
+        (first, second),
+        worker_batch_size=1,
+        progress_callback=progress.append,
+    )
+
+    result = service.run()
+
+    assert result.outcome == "finished"
+    phases = [update.phase for update in progress]
+    assert phases[0] == "enumerating"
+    assert "analyzing" in phases
+    assert "finalizing" in phases
+    assert phases[-1] == "finished"
+    assert max(update.files_seen for update in progress) == 2
+    assert max(update.files_observed for update in progress) == 2
+    assert max(update.directories_seen for update in progress) >= 2
+    assert max(update.work_total for update in progress) == 2
+    assert progress[-1].work_completed == 2
+    assert [update.roots_processed for update in progress] == sorted(update.roots_processed for update in progress)
+    service.close()
+
+
+def test_progress_callback_failure_never_changes_scan_outcome(tmp_path):
+    first, _second = create_roots(tmp_path)
+    (first / "first.bin").write_bytes(b"content")
+
+    def broken_progress_callback(_progress):
+        raise RuntimeError("presentation failed")
+
+    service = CatalogService(
+        tmp_path / "catalog.sqlite3",
+        (first,),
+        progress_callback=broken_progress_callback,
+    )
+
+    result = service.run()
+
+    assert result.outcome == "finished"
+    assert result.catalog_status == "complete"
+    service.close()

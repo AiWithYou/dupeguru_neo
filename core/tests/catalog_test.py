@@ -8,6 +8,7 @@ import hashlib
 import os
 import sqlite3
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -401,6 +402,72 @@ def test_catalog_hardlink_is_rejected_before_sqlite_open(tmp_path):
 
     assert database_path.read_bytes() == alias_path.read_bytes() == original
     assert sorted(path.name for path in tmp_path.glob("catalog*")) == original_names
+
+
+def test_catalog_storage_size_and_delete_include_owned_sqlite_sidecars(tmp_path):
+    catalog, database_path, _root_id, _root_path = create_catalog(tmp_path)
+    catalog.close()
+    wal_path = Path(str(database_path) + "-wal")
+    shm_path = Path(str(database_path) + "-shm")
+    wal_path.write_bytes(b"rebuildable wal bytes")
+    shm_path.write_bytes(b"rebuildable shm bytes")
+    expected_size = sum(path.stat().st_size for path in (database_path, wal_path, shm_path))
+
+    assert catalog_module.catalog_storage_size(database_path) == expected_size
+    assert catalog_module.delete_catalog_storage(database_path) == expected_size
+
+    assert not database_path.exists()
+    assert not wal_path.exists()
+    assert not shm_path.exists()
+    assert catalog_module.catalog_storage_size(database_path) == 0
+    assert catalog_module.delete_catalog_storage(database_path) == 0
+
+
+def test_delete_catalog_storage_rejects_foreign_sqlite_without_mutation(tmp_path):
+    database_path = tmp_path / "catalog.sqlite3"
+    connection = sqlite3.connect(str(database_path))
+    connection.execute("CREATE TABLE user_data(value TEXT)")
+    connection.execute("INSERT INTO user_data VALUES ('keep me')")
+    connection.commit()
+    connection.close()
+    original = database_path.read_bytes()
+
+    with pytest.raises(CatalogSchemaError, match="application_id"):
+        catalog_module.delete_catalog_storage(database_path)
+
+    assert database_path.read_bytes() == original
+
+
+def test_delete_catalog_storage_rejects_orphaned_sidecar_without_mutation(tmp_path):
+    database_path = tmp_path / "catalog.sqlite3"
+    wal_path = Path(str(database_path) + "-wal")
+    original = b"orphaned but not silently deleted"
+    wal_path.write_bytes(original)
+
+    with pytest.raises(CatalogPathError, match="without the catalog database"):
+        catalog_module.delete_catalog_storage(database_path)
+
+    assert wal_path.read_bytes() == original
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlinks are unavailable")
+def test_delete_catalog_storage_rejects_hardlinked_sidecar_before_any_deletion(tmp_path):
+    catalog, database_path, _root_id, _root_path = create_catalog(tmp_path)
+    catalog.close()
+    source = tmp_path / "user-data.bin"
+    source.write_bytes(b"must remain")
+    wal_path = Path(str(database_path) + "-wal")
+    try:
+        os.link(source, wal_path)
+    except OSError as error:
+        pytest.skip("hardlinks are unavailable: {}".format(error))
+    original_database = database_path.read_bytes()
+
+    with pytest.raises(CatalogPathError, match="exactly one filesystem link"):
+        catalog_module.delete_catalog_storage(database_path)
+
+    assert database_path.read_bytes() == original_database
+    assert wal_path.read_bytes() == source.read_bytes() == b"must remain"
 
 
 def test_catalog_ancestor_symlink_is_rejected_before_sqlite_open(tmp_path):
