@@ -36,7 +36,6 @@ def _features():
         color_histogram=(1024,) + (0,) * 63,
         tile_fingerprints=(),
         quality=ImageQuality(8, 0, 0, 0.0),
-        thumbnail_png=b"\x89PNG\r\ncache-test",
         thumbnail_size=(32, 16),
         thumbnail_key="thumbnail-key",
     )
@@ -45,6 +44,29 @@ def _features():
 def _create_cache(path):
     cache = SqliteCache(path)
     cache.close()
+
+
+def _create_retired_cache(path, thumbnail_bytes=0):
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA application_id = {}".format(SQLITE_APPLICATION_ID))
+    connection.execute(SqliteCache.create_schema_version_query)
+    connection.execute(
+        "INSERT INTO schema_version(version,description) VALUES(?,?)",
+        (
+            cache_sqlite._RETIRED_SCHEMA_VERSION,
+            cache_sqlite._RETIRED_SCHEMA_DESCRIPTION,
+        ),
+    )
+    connection.execute(cache_sqlite._CREATE_TABLE_QUERY_V5)
+    connection.execute(SqliteCache.create_index_query)
+    connection.execute("PRAGMA user_version = {}".format(cache_sqlite._RETIRED_SCHEMA_VERSION))
+    if thumbnail_bytes:
+        connection.execute(
+            "INSERT INTO pictures(path,mtime_ns,file_size,thumbnail) " "VALUES('retired.png',0,0,zeroblob(?))",
+            (thumbnail_bytes,),
+        )
+    connection.commit()
+    connection.close()
 
 
 def _make_directory_symlink(target, alias):
@@ -71,6 +93,80 @@ def test_new_database_has_exclusive_single_link_sqlite_schema(tmp_path):
     header = database.read_bytes()[:100]
     assert header[SQLITE_APPLICATION_ID_OFFSET : SQLITE_APPLICATION_ID_OFFSET + 4] == SQLITE_APPLICATION_ID_BYTES
     assert columns[-3:] == ("ctime_ns", "identity_json", "generation_token")
+    assert "thumbnail" not in columns
+
+
+def test_validated_retired_cache_is_rebuilt_and_reclaims_thumbnail_pages(tmp_path):
+    database = tmp_path / "retired-cache.sqlite3"
+    _create_retired_cache(database, thumbnail_bytes=8 * 1024 * 1024)
+    size_before = database.stat().st_size
+
+    cache = SqliteCache(database)
+
+    assert len(cache) == 0
+    assert cache.con.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)
+    assert cache.con.execute("PRAGMA application_id").fetchone() == (SQLITE_APPLICATION_ID,)
+    columns = tuple(row[1] for row in cache.con.execute("PRAGMA table_info(pictures)"))
+    assert "thumbnail" not in columns
+    cache.close()
+
+    size_after = database.stat().st_size
+    assert size_before > 8 * 1024 * 1024
+    assert size_after < size_before // 8
+
+
+def test_readonly_retired_cache_is_rejected_without_replacement(tmp_path):
+    database = tmp_path / "retired-cache.sqlite3"
+    _create_retired_cache(database, thumbnail_bytes=512 * 1024)
+    original = database.read_bytes()
+
+    with pytest.raises(CacheSchemaError, match="open mode"):
+        SqliteCache(database, readonly=True)
+
+    assert database.read_bytes() == original
+
+
+def test_modified_retired_cache_is_rejected_without_replacement(tmp_path):
+    database = tmp_path / "retired-cache.sqlite3"
+    _create_retired_cache(database, thumbnail_bytes=512 * 1024)
+    connection = sqlite3.connect(database)
+    original_sql = connection.execute(
+        "SELECT sql FROM sqlite_schema WHERE type='table' AND name='pictures'"
+    ).fetchone()[0]
+    connection.execute("PRAGMA writable_schema = ON")
+    connection.execute(
+        "UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='pictures'",
+        (original_sql[:-1] + ", CHECK (file_size >= 0))",),
+    )
+    connection.execute("PRAGMA writable_schema = OFF")
+    connection.commit()
+    connection.close()
+    original = database.read_bytes()
+
+    with pytest.raises(CacheSchemaError, match="schema SQL"):
+        SqliteCache(database)
+
+    assert database.read_bytes() == original
+
+
+def test_clear_reclaims_database_pages_instead_of_leaving_a_freelist(tmp_path):
+    database = tmp_path / "cache.sqlite3"
+    cache = SqliteCache(database)
+    cache.con.executemany(
+        "INSERT INTO pictures(path,mtime_ns,file_size,phashes) " "VALUES(?,0,0,zeroblob(?))",
+        (("synthetic-{}".format(index), 16_384) for index in range(512)),
+    )
+    size_before = database.stat().st_size
+
+    cache.clear()
+
+    size_after = database.stat().st_size
+    assert len(cache) == 0
+    assert size_before > 4 * 1024 * 1024
+    assert size_after < size_before // 8
+    if hasattr(cache.con, "getlimit"):
+        assert cache.con.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) == 0
+    cache.close()
 
 
 @pytest.mark.skipif(
@@ -503,10 +599,6 @@ def test_conditional_feature_write_rejects_changed_expected_binding(tmp_path):
         ),
         replace(
             _features(),
-            thumbnail_png=b"x" * (cache_sqlite.MAX_CACHE_THUMBNAIL_BYTES + 1),
-        ),
-        replace(
-            _features(),
             thumbnail_size=(cache_sqlite.MAX_CACHE_THUMBNAIL_EDGE + 1, 16),
         ),
         replace(
@@ -560,7 +652,6 @@ def test_header_read_uses_same_handle_generation_before_and_after(
     (
         ("blocks", cache_sqlite.MAX_CACHE_BLOCK_BYTES + 1),
         ("phashes", cache_sqlite.MAX_FEATURE_PAYLOAD_BYTES + 1),
-        ("thumbnail", cache_sqlite.MAX_CACHE_THUMBNAIL_BYTES + 1),
     ),
 )
 def test_crafted_oversized_blob_is_rejected_before_materialization(
@@ -601,7 +692,7 @@ def test_readonly_connection_is_enforced_by_sqlite(tmp_path):
 
 
 def test_app_picture_cache_clear_preserves_owned_database_and_marker(tmp_path):
-    database = tmp_path / "cached_pictures_v5.db"
+    database = tmp_path / "cached_pictures_v6.db"
     source = tmp_path / "picture.png"
     source.write_bytes(b"content")
     cache = SqliteCache(database)

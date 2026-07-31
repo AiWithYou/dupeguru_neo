@@ -746,6 +746,30 @@ class ThumbnailDiskCache:
         with self._lock:
             return self._cleanup_locked()
 
+    def clear(self) -> tuple[int, int]:
+        """Remove validated cache entries and return their count and byte size."""
+
+        with self._lock:
+            removed_count = 0
+            removed_bytes = 0
+            try:
+                entries = self._entries_locked()
+                for _, size, path, identity in entries:
+                    self._remove_locked(path, expected_identity=identity)
+                    removed_count += 1
+                    removed_bytes += size
+            except BaseException:
+                # A prior removal may have succeeded.  Force a validated
+                # reconciliation before this instance trusts cached totals.
+                self._known_entries = None
+                self._known_bytes = None
+                self._stores_since_reconcile = 0
+                raise
+            self._known_entries = 0
+            self._known_bytes = 0
+            self._stores_since_reconcile = 0
+            return removed_count, removed_bytes
+
     def usage(self) -> tuple[int, int]:
         with self._lock:
             entries = self._entries_locked()
@@ -875,9 +899,21 @@ class ThumbnailDiskCache:
             self._known_bytes = max(0, self._known_bytes - size)
 
 
+def clear_default_thumbnail_cache() -> tuple[int, int]:
+    """Clear only dupeGuru's validated, default lazy-thumbnail entries."""
+
+    try:
+        return ThumbnailDiskCache().clear()
+    except ThumbnailCacheSafetyError:
+        raise
+    except RuntimeError as error:
+        raise ThumbnailCacheSafetyError("the default thumbnail cache location is unavailable") from error
+
+
 __all__ = [
     "ThumbnailCacheSafetyError",
     "ThumbnailDiskCache",
+    "clear_default_thumbnail_cache",
     "default_thumbnail_cache_dir",
     "normalized_absolute_path",
     "thumbnail_cache_key",

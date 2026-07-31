@@ -11,33 +11,32 @@ safe filesystem walk
   ├─ coverage receipt
   └─ stable file identity + generation
           │
-          ▼
-local catalog (paths, physical files, content versions, resumable work)
+          ├─ bounded GUI/direct scan
+          │     ├─ exact: size ─► candidate-only staged hashes ─► byte compare
+          │     ├─ image pHash MultiIndex ─► dHash/color filter ─► visual refinement
+          │     ├─ dataset bundle planner ─► sidecar/leakage/keeper policy
+          │     └─ video metadata/frames/audio ─► bounded sequence alignment
+          │                                  │
+          │                                  ▼
+          │                       typed evidence + scan receipt
+          │                                  │
+          │                     ┌───────────┴───────────┐
+          │                     ▼                       ▼
+          │              Qt review surface          JSON/JSONL direct CLI
+          │                     │
+          │          ┌──────────────┴───────────────────┐
+          │          ▼                                  ▼
+          │  green exact removal plan          explicit organizer Copy/Move
+          │          │                       (complete current Incoming only)
+          │  live SHA-256 + byte proof                   │
+          │          │                         no-replace publication
+          │  quarantine journal/executor
+          │          │
+          │  restore OR explicit finalization
           │
-          ├─ exact candidate filters ─► full digest ─► byte compare
-          ├─ image pHash MultiIndex ─► dHash/color filter ─► 15×15 visual refinement
-          │          └───────────────► bounded tile crop candidates (review-only)
-          ├─ dataset bundle planner ──► sidecar/leakage/keeper policy
-          └─ video metadata/frames/audio ─► bounded sequence alignment
-                                              │
-                                              ▼
-                                  typed evidence + scan receipt
-                                              │
-                         ┌────────────────────┴────────────────────┐
-                         ▼                                         ▼
-                  Qt review surface                         JSON/JSONL CLI
-                         │                                         │
-                         └────────────────────┬────────────────────┘
-                                              │
-                    ┌─────────────────────────┴──────────────────────┐
-                    ▼                                                ▼
-      green exact duplicate-removal plan             explicit organizer Copy/Move
-                    │                              (complete current Incoming only)
-         live SHA-256 + byte proof                              │
-                    │                                    no-replace publication
-         quarantine journal/executor
-                    │
-      restore OR explicit finalization
+          └─ explicit `dupeguru catalog` CLI
+                └─ local catalog (paths, content versions, resumable work)
+                            └─ validated catalog JSONL reports
 ```
 
 ## Boundaries
@@ -68,25 +67,36 @@ candidates, byte-compares every group member to a representative, and creates a
 linear-space `Group.from_exact_files`. Its compatibility match view generates
 pairs lazily and does not store `k(k-1)/2` objects.
 
+The desktop byte-exact **Contents** scan invokes this direct path after bounded
+filesystem discovery. It does not route through `core.catalog` and therefore
+creates no catalog scan snapshots or resumable-work history. The normal hash
+cache remains an accelerator for the candidate files that were actually hashed.
+
 Hash equality alone is not exact evidence. A direct Contents scan binds strict
-hash reads to each file's in-memory `FileSnapshot`; its `ExactEvidence`
-contains the stable representative-to-member byte-comparison results that
-established the equivalence class. Those snapshots belong to that live result
-set and are not persisted as action authority.
+hash reads to each file's in-memory `FileSnapshot`, then establishes each
+equivalence class with stable representative-to-member byte comparisons. The
+scanner publishes policy-filtered subsets of those classes as typed
+`verified_exact` groups without retaining comparison objects for omitted
+members. File-action authority instead comes from each published file's
+scan-bound SHA-256 review snapshot plus live proof at execution time; neither
+form is persisted as action authority.
 
 Catalog projection has a distinct representation. It reopens paths, validates
 the cataloged content generations, performs the same final byte comparisons,
 and stores one `verification_records` identifier per
 representative-to-member edge. A verification ID names a persisted comparison
 between two content versions; it is not an opened-handle snapshot. In both
-paths the action executor builds a new proof immediately before quarantine.
+representations, persisted scan evidence is not mutation authority. The direct
+path's action executor builds a new proof immediately before quarantine;
+catalog output remains report-only.
 
 ### Approximate media evidence
 
 `core.pe.image_features` decodes the first image frame, applies EXIF
 orientation, converts a valid embedded ICC profile to sRGB, composites alpha
 onto a defined white background, and emits deterministic pHash, dHash, fixed
-color histogram, bounded tile fingerprints, thumbnail, quality metadata, and
+color histogram, bounded tile fingerprints, bounded thumbnail-identity
+metadata, quality metadata, and
 block features. `core.pe.candidate_index` retrieves all fingerprints within the
 configured Hamming radius; the dHash/color stage conservatively filters and
 ranks candidates before `core.pe.matchblock` performs the detailed block
@@ -105,7 +115,7 @@ stream, so folder groups remain gray and unverified. They cannot enter either
 duplicate-removal quarantine or program-managed organizer Copy/Move. An
 External Command is a separate, explicitly confirmed trust boundary.
 
-### Catalog
+### Explicit catalog CLI
 
 `core.catalog` is a local SQLite WAL database. It records volumes, roots,
 physical files, paths, content generations, artifacts, scans, directory
@@ -113,10 +123,14 @@ coverage, resumable work leases, verification records, and action journals.
 `core.catalog_indexer` projects no-follow walk events into that state and uses
 keyset pages instead of loading an entire library into memory.
 
+This durable state is created or updated only by an explicitly invoked
+`dupeguru catalog` CLI workflow. A GUI byte-exact **Contents** scan neither
+opens it as its matching path nor appends scan history to it.
+
 Catalog artifacts are accelerators. Before reuse, their content generation and
-algorithm policy must match the current file. Before duplicate-removal
-quarantine, all catalog-derived exact evidence is re-established against a live
-handle.
+algorithm policy must match the current file. Catalog exact projection
+re-establishes byte equality against live handles before it publishes a report;
+that report does not itself grant mutation authority.
 
 Generation is a typed platform primitive rather than an mtime alias. POSIX
 binds inode ctime to the opened device/inode. Windows binds the file's current

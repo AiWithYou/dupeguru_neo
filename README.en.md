@@ -32,10 +32,11 @@ candidates, but it can never authorize deletion.
 - **Coverage-aware scans.** Unreadable, changing, skipped, cancelled, or
   resource-limited input produces an incomplete receipt. Incomplete evidence
   does not silently acquire destructive capability.
-- **Persistent library catalog.** A local SQLite catalog tracks stable file
-  identities, paths, content generations, derived exact artifacts, immutable
-  scan history, and resumable work. Image features, thumbnails, video
-  fingerprints, and file-action recovery journals are separate durable stores
+- **Explicit persistent library catalog.** When selected from the CLI, a local
+  SQLite catalog tracks stable file identities, paths, content generations,
+  derived exact artifacts, immutable scan history, and resumable work. Image
+  features, thumbnails, video fingerprints, and file-action recovery journals
+  are separate durable stores
   with independent validation and lifecycle rules. Native identities preserve
   move history, but a renamed file is analyzed again unless a trusted
   filesystem event journal proves that its content did not change.
@@ -113,13 +114,23 @@ owned cache.
 The normal workflow has two steps: choose folders, then scan for duplicates.
 
 1. Choose Standard, Music, or Picture under Application Mode.
-2. Leave Scan Type set to Contents for ordinary byte-exact duplicate checks.
+2. In Standard or Music mode, leave Scan Type set to Contents for ordinary
+   byte-exact duplicate checks. Picture mode's Contents option is perceptual.
 3. Add folders with **Add Folder…** or drag and drop. Most folders can keep the
    **Organize** handling state. Use **Keep all files** for protected originals,
    **Compare only** for a read-only comparison source, and **Skip** for folders
    that must not be scanned.
 4. Select **2. Scan for duplicates**. Scanning alone never moves or deletes a
    file.
+
+The byte-exact **Contents** scan is a lightweight direct scan. It partitions by
+size, applies staged hashes only to candidates, and finally compares surviving
+members byte for byte. The desktop scan does not create or accumulate
+Persistent Catalog history. If you specifically need resumable history or
+catalog reports, invoke the `dupeguru catalog` CLI explicitly.
+If desktop direct discovery reaches a configured limit, it discards the
+partial input before matching and publishes no duplicate groups; narrow the
+selected folders or add exclusions before trying again.
 
 ![The simplified folder-selection screen](docs/images/en/main-window.png)
 
@@ -243,7 +254,9 @@ dupeguru quarantine finalize path/to/operation-plan.json --dry-run
 dupeguru quarantine finalize path/to/operation-plan.json --execute
 ```
 
-Maintain and query a durable local catalog:
+When needed, explicitly maintain and query a durable local catalog from the
+CLI. The desktop byte-exact **Contents** scan does not create or update this
+catalog:
 
 ```sh
 dupeguru catalog scan catalog.sqlite3 Pictures Archive

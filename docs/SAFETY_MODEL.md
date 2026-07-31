@@ -42,9 +42,16 @@ complete and current and the target is still in Incoming Files. Protected
 Library, Compare Only, saved-report, stale, incomplete, and gray inputs are
 refused. Both the selected item and its review keeper must still have the
 physical identity, content-generation token, and scan-bound SHA-256 proof.
-Direct scans capture the proof before matching and compare it with a second
-full read after matching; this detects equal-length rewrites which share one
-observable timestamp tick. This is checked at the command boundary, again in
+Non-folder direct scans other than the byte-exact **Contents** path capture the
+proof before matching and compare it with a second full read after matching.
+The lighter byte-exact **Contents** path instead streams SHA-256 during the
+final byte comparison and binds that proof to members of a byte-verified exact
+candidate group. Later policy filtering may omit some of those members from the
+published result. Its stable snapshots from opened handles and final generation
+validation provide the corresponding
+freshness boundary without two scan-wide full reads. Both designs detect
+equal-length rewrites instead of trusting one observable timestamp tick. The
+proof is checked at the command boundary, again in
 the worker, and the selected source's full proof is consumed once more by the
 no-replace file operation. Copy computes that terminal SHA-256 while performing
 its already-required source-to-staging byte comparison, so it adds no third
@@ -195,43 +202,54 @@ string preferences such as custom commands even when their complete text is
 values, recent lists retain at most ten validated paths, and the live table
 header width ceiling matches the persisted one-million-pixel ceiling.
 
-GUI scan types other than Standard-mode Contents use one bounded direct
-filesystem-discovery pass. The configurable values may only be lowered from
-hard ceilings of 1,000,000 retained files, 250,000 traversed/retained folders,
-100,000 filesystem issues, and 14,400 seconds. Time is checked around every
-walker event. Ordinary file and directory events are not copied into a second
-audit list; only coverage-reducing events are retained within the issue budget,
-with final per-root coverage stored separately. Folder scan post-order buffers
-are bounded by the folder ceiling.
+Every GUI scan type, including byte-exact **Contents**, uses one bounded
+direct filesystem-discovery pass. The configurable values may only be lowered
+from hard ceilings of 1,000,000 retained files, 250,000 traversed/retained
+folders, 100,000 filesystem issues, and 14,400 seconds. Time is checked around
+every walker event. Ordinary file and directory events are not copied into a
+second audit list; only coverage-reducing events are retained within the issue
+budget, with final per-root coverage stored separately. Folder scan post-order
+buffers are bounded by the folder ceiling.
 
 If any direct-discovery ceiling is exceeded or allocation raises
 `MemoryError`, the GUI does not pass its partial input list to a matcher. It
 publishes no groups and records a `RESOURCE_LIMIT` receipt, which disables
 duplicate-removal quarantine and organizer Copy/Move. Cancellation remains a
 distinct cooperative job outcome.
-Very large exact-match libraries should use the bounded, resumable Persistent
-Catalog behind the Standard-mode Contents scan.
+The GUI does not silently switch to another storage path at those limits;
+users must narrow the selected folders or add exclusions. A bounded, resumable
+Persistent Catalog remains available as a separate, explicitly invoked
+`dupeguru catalog` CLI workflow.
 
 ## Direct-scan and catalog evidence
 
-A direct scan keeps each file's scan-start `FileSnapshot` and SHA-256 content
-proof in memory. It rereads and compares the SHA-256 proof after matching
-before publishing a complete result receipt. Strict digest reads and final
-byte comparisons also validate snapshots from their opened handles, and each
-comparison retains its two stable snapshots. That evidence is scoped to the
-current result set. The two proof passes are intentionally streaming and
-cancellation-aware: they bound memory but add two full reads per direct-scan
-file. The scan-start pass computes the exact engine's xxh128 candidate digest
-in parallel with SHA-256 and uses that same full digest for the partial/sample
-candidate fields; this avoids trusting a timestamp-keyed cache or rereading the
-file for exact candidate filtering. Direct scans expose weighted
-scan-start/matching/scan-end job phases. Both proof phases report completed
-files and streamed bytes, with updates at file boundaries and bounded byte
-intervals, while checking cancellation at every content chunk. Organizer Copy
-reuses its mandatory
-byte-comparison pass for the action proof instead of performing another
-digest-only read. Organizer Move has no copy pass to reuse and therefore
-performs one terminal full read through its held publication descriptor.
+Non-folder direct scans other than the byte-exact **Contents** path keep each
+file's scan-start `FileSnapshot` and SHA-256 content proof in memory. They
+reread and compare that proof after matching before publishing a complete
+result receipt. These two streaming, cancellation-aware proof passes bound
+memory but add two full reads per file. Their weighted
+scan-start/matching/scan-end phases report completed files and streamed bytes
+at bounded intervals.
+
+The GUI byte-exact **Contents** scan deliberately avoids those two scan-wide
+content passes. It records an exact-scan snapshot and partitions by size first.
+Only same-size candidates receive a partial hash, an optional sample hash above
+the configured threshold, and then a full candidate digest. Every surviving
+member is byte-compared with its representative through stable handles. That
+final comparison streams SHA-256 at the same time and binds the organizer
+review proof to members of a byte-verified exact candidate group. Subsequent
+policy filtering may omit some members from the published group. The scan does
+not reread every unique file to seed action authority. A final generation check
+withholds any group containing a file that changed during the scan. Exact
+groups use linear membership storage
+instead of materializing every pair. The GUI neither creates catalog snapshots
+nor appends scan history for this path.
+
+In both direct paths, the in-memory evidence is scoped to the current result
+set. Organizer Copy reuses its mandatory byte-comparison pass for the action
+proof instead of performing another digest-only read. Organizer Move has no
+copy pass to reuse and therefore performs one terminal full read through its
+held publication descriptor.
 
 A content-generation token is also mandatory; size and mtime alone are never
 accepted as freshness evidence. On Windows, a regular-file token combines the
@@ -292,10 +310,11 @@ representative. Each successful edge has one persisted `verification_id`
 binding the two content-version IDs, digest algorithm/version, full digest,
 comparison time, and verification state. A read-only projection still compares
 live bytes and streams SHA-256 during the same comparison pass. The live digest
-must equal the persisted full-hash artifact before a positive record or GUI
-group can be produced; a stale artifact invalidates the edge and makes the
-projection incomplete. In a writable catalog, this failure atomically
-invalidates every verification involving the affected content versions,
+must equal the persisted full-hash artifact before a positive verification
+record or catalog group record can be produced; a stale artifact invalidates
+the edge and makes the projection incomplete. In a writable catalog, this
+failure atomically invalidates every verification involving the affected
+content versions,
 deletes all of their content-derived artifacts (not only the SHA-256 which
 selected the bucket), fails and releases every old work-item lease, disconnects
 those versions from the current physical-file rows, removes affected immutable
@@ -313,12 +332,11 @@ database and roots performs one bounded writable retirement-and-rescan repair
 round before returning. A repeated mismatch remains a hard failure. A
 read-only projection may otherwise only reuse an already-persisted positive ID.
 The ID is a historical comparison record, not an opened-handle snapshot and
-not mutation authority. When a catalog group is materialized for the GUI, this
-persisted and freshly live-confirmed SHA-256 is attached to each current file
-snapshot instead of rereading every file solely to seed organizer authority. A
-later Copy or Move still consumes that digest against the live source at its
-terminal boundary. Quarantine always creates a fresh live SHA-256 and byte
-proof.
+not mutation authority. Catalog groups are exposed by the explicitly invoked
+CLI as reports only; the GUI byte-exact **Contents** scan neither consumes them
+nor appends to their history. They cannot be converted directly into organizer
+or quarantine authority. A current direct GUI scan is required for those
+actions, and quarantine always creates a fresh live SHA-256 and byte proof.
 
 ## Filesystem capability levels
 

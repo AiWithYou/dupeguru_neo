@@ -111,7 +111,17 @@ class Scanner:
             if self.large_size_threshold:
                 files = [f for f in files if f.size <= self.large_size_threshold]
         if self.scan_type == ScanType.CONTENTS:
-            return engine.getgroups_by_contents(files, bigsize=self.big_file_size_threshold, j=j)
+
+            def stop_check():
+                j.check_if_cancelled()
+                return False
+
+            return engine.getgroups_by_contents(
+                files,
+                bigsize=self.big_file_size_threshold,
+                j=j,
+                stop_check=stop_check,
+            )
         elif self.scan_type == ScanType.FOLDERS:
             return engine.getgroups_by_folders(files, j=j)
         else:
@@ -374,7 +384,11 @@ class Scanner:
                 scan_result,
                 ignore_list,
                 j,
-                revalidate=True,
+                # The exact engine already performed stable-handle byte
+                # comparisons and end-of-scan generation validation. Policy
+                # filtering only takes subsets of those equivalence classes,
+                # so rereading every duplicate here adds no evidence.
+                revalidate=False,
             )
         if isinstance(scan_result, engine.FolderGroupList):
             return self._postprocess_folder_groups(

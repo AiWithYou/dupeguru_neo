@@ -39,6 +39,7 @@ from qt.deletion_options import DeletionOptions
 from qt.se.details_dialog import DetailsDialog as DetailsDialogStandard
 from qt.me.details_dialog import DetailsDialog as DetailsDialogMusic
 from qt.pe.details_dialog import DetailsDialog as DetailsDialogPicture
+from qt.pe.thumbnail_cache import ThumbnailCacheSafetyError, clear_default_thumbnail_cache
 from qt.pe.visual_query import (
     VisualQueryController,
     VisualQueryDialog,
@@ -384,9 +385,9 @@ class DupeGuru(QObject):
         catalog_size = format_size(catalog_bytes, decimal=1) if catalog_bytes else tr("not created")
         msg = tr(
             "Clear all rebuildable scan data?\n\n"
-            "This removes cached file hashes, picture analysis, and the Persistent Catalog "
-            "(including scan history and unfinished scans). Your files, settings, exclusions, "
-            "and saved result files are not removed.\n\n"
+            "This removes cached file hashes, picture analysis, on-demand picture thumbnails, "
+            "and the Persistent Catalog (including scan history and unfinished scans). Your "
+            "files, settings, exclusions, and saved result files are not removed.\n\n"
             "Persistent Catalog: {}"
         ).format(catalog_size)
         if self.confirm(title, msg, QMessageBox.StandardButton.No):
@@ -394,7 +395,8 @@ class DupeGuru(QObject):
                 self.model.clear_catalog()
                 self.model.clear_picture_cache()
                 self.model.clear_hash_cache()
-            except (CatalogError, OSError, sqlite3.Error, ValueError) as error:
+                clear_default_thumbnail_cache()
+            except (CatalogError, OSError, sqlite3.Error, ThumbnailCacheSafetyError, ValueError) as error:
                 QMessageBox.critical(
                     active,
                     title,

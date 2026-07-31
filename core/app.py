@@ -24,7 +24,7 @@ from hscommon.safe_fileops import (
     validate_cleanup_path,
     validate_source_destination,
 )
-from hscommon.util import allsame, escape, format_size, nonone
+from hscommon.util import allsame, escape, nonone
 from hscommon.trans import tr
 from hscommon import desktop
 
@@ -32,15 +32,7 @@ from core import se, me, pe
 from core.pe.cache_sqlite import SqliteCache
 from core.pe.photo import get_delta_dimensions
 from core.util import cmp_value, fix_surrogate_encoding
-from core import __appname__, directories, engine, results, export, fs, prioritize
-from core.catalog import (
-    CatalogError,
-    CatalogStateError,
-    catalog_storage_size as get_catalog_storage_size,
-    delete_catalog_storage,
-)
-from core.catalog_service import CatalogProgress, CatalogService, CatalogServiceError
-from core.catalog_worker import CatalogWorkerError
+from core import __appname__, directories, results, export, fs, prioritize
 from core.ignore import IgnoreList, IgnoreListLimitError
 from core.exclude import (
     ExcludeDict as ExcludeList,
@@ -74,11 +66,6 @@ HAD_FIRST_LAUNCH_PREFERENCE = "HadFirstLaunch"
 DEBUG_MODE_PREFERENCE = "DebugMode"
 HASH_CACHE_FILENAME = "hash_cache_v3.sqlite3"
 CATALOG_FILENAME = "catalog.sqlite3"
-CATALOG_GUI_EXACT_PAGE_GROUPS = 100
-CATALOG_GUI_EXACT_PAGE_FILES = 10_000
-CATALOG_GUI_MAX_EXACT_GROUPS = 10_000
-CATALOG_GUI_MAX_EXACT_FILES = 100_000
-CATALOG_GUI_MAX_EXACT_GROUP_MEMBERS = 10_000
 
 MSG_NO_MARKED_DUPES = tr("There are no marked duplicates. Nothing has been done.")
 MSG_NO_SELECTED_DUPES = tr("There are no selected duplicates. Nothing has been done.")
@@ -244,8 +231,6 @@ class DupeGuru(Broadcaster):
         self.quarantine_manager = QuarantineManager()
         self.last_quarantine_plan_paths = ()
         self._last_file_action_outcome = {}
-        self._catalog_resume_scan_id = None
-        self._catalog_resume_roots = ()
         self.progress_window = ProgressWindow(self._job_completed, self._job_error)
         children = [self.directory_tree, self.stats_label, self.details_panel]
         for child in children:
@@ -475,9 +460,8 @@ class DupeGuru(Broadcaster):
                         tr(
                             "The scan stopped before matching because direct folder discovery "
                             "reached a safety limit. No partial results were analyzed, and bulk "
-                            "file actions are disabled.\n\n{}\n\nFor a very large exact-match "
-                            "library, select the Contents scan so the Persistent Catalog can "
-                            "process it in bounded resumable batches."
+                            "file actions are disabled.\n\n{}\n\nPlease narrow the selected folders "
+                            "or add exclusions before trying again."
                         ).format(direct_discovery_issue.message)
                     )
                 else:
@@ -697,13 +681,14 @@ class DupeGuru(Broadcaster):
         fs.filesdb.clear()
 
     def catalog_storage_size(self):
-        return get_catalog_storage_size(Path(self.appdata) / CATALOG_FILENAME)
+        from core.catalog import catalog_storage_size
+
+        return catalog_storage_size(Path(self.appdata) / CATALOG_FILENAME)
 
     def clear_catalog(self):
-        removed_bytes = delete_catalog_storage(Path(self.appdata) / CATALOG_FILENAME)
-        self._catalog_resume_scan_id = None
-        self._catalog_resume_roots = ()
-        return removed_bytes
+        from core.catalog import delete_catalog_storage
+
+        return delete_catalog_storage(Path(self.appdata) / CATALOG_FILENAME)
 
     def copy_or_move(
         self,
@@ -1344,46 +1329,6 @@ class DupeGuru(Broadcaster):
         except (OSError, directories.DirectoriesSaveError) as e:
             self.view.show_message(tr("Couldn't write to file: {}").format(str(e)))
 
-    def _catalog_selected_roots(self):
-        non_excluded_override_ancestors = self.directories._non_excluded_override_ancestors()
-        return tuple(
-            Path(path)
-            for path in self.directories
-            if self.directories._directory_prune_reason(
-                Path(path),
-                non_excluded_override_ancestors,
-            )
-            is None
-        )
-
-    @staticmethod
-    def _is_filesystem_root(path):
-        absolute = os.path.normpath(os.path.abspath(os.fspath(path)))
-        anchor = Path(absolute).anchor
-        return bool(anchor) and os.path.normcase(absolute) == os.path.normcase(os.path.normpath(anchor))
-
-    def _catalog_whole_drive_warning(self):
-        roots = self._catalog_selected_roots()
-        whole_drive_roots = tuple(root for root in roots if self._is_filesystem_root(root))
-        if not whole_drive_roots:
-            return None
-        try:
-            catalog_bytes = self.catalog_storage_size()
-        except (CatalogError, OSError) as error:
-            logging.warning("Could not measure the Persistent Catalog before a whole-drive scan: %s", error)
-            catalog_size = tr("unavailable")
-        else:
-            catalog_size = format_size(catalog_bytes, decimal=1) if catalog_bytes else tr("not created")
-        return tr(
-            "The Contents scan records its work in a Persistent Catalog. Scanning an entire "
-            "drive can take many hours and use several GB of local application storage. "
-            "Unavailable folders, links, or files that change during the scan can prevent "
-            "duplicate results from being published.\n\n"
-            "Whole-drive roots: {}\n"
-            "Current catalog size: {}\n\n"
-            "Continue?"
-        ).format(", ".join(str(root) for root in whole_drive_roots), catalog_size)
-
     def _direct_discovery_limits(self):
         return directories.DirectDiscoveryLimits(
             max_files=self.options["direct_scan_max_files"],
@@ -1546,342 +1491,6 @@ class DupeGuru(Broadcaster):
         )
         self.discarded_file_count = 0
 
-    def _catalog_file_filter(self, path):
-        if self.directories.get_state(path.parent) == directories.DirectoryState.EXCLUDED:
-            return "file is inside an excluded directory"
-        if self.directories._file_is_excluded(path):
-            return "file is excluded by ExcludeList"
-        if not any(fileclass.can_handle(path) for fileclass in self.fileclasses):
-            return "file type is not supported by this application mode"
-        return None
-
-    @staticmethod
-    def _catalog_cancel_requested(j):
-        try:
-            j.check_if_cancelled()
-        except job.JobCancelled:
-            return True
-        return False
-
-    @staticmethod
-    def _catalog_incomplete_receipt(service_result, message):
-        failed = max(
-            1,
-            service_result.status.error_count + service_result.work_failed,
-        )
-        discovered = max(
-            service_result.files_observed,
-            service_result.status.work_counts["total"],
-            failed,
-        )
-        analyzed = max(0, discovered - failed)
-        return ScanReceipt.incomplete(
-            discovered=discovered,
-            analyzed=analyzed,
-            failed=failed,
-            issues=(
-                ScanIssue(
-                    code="catalog_scan_partial",
-                    message=message,
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _catalog_progress_description(progress: CatalogProgress):
-        if progress.phase == "enumerating":
-            return tr(
-                "Building Persistent Catalog: {files:,} files checked in {folders:,} folders " "({roots}/{total} roots)"
-            ).format(
-                files=progress.files_seen,
-                folders=progress.directories_seen,
-                roots=progress.roots_processed,
-                total=progress.roots_total,
-            )
-        if progress.phase == "analyzing":
-            return tr("Analyzing catalog content: {completed:,}/{total:,} items ({failed:,} failed)").format(
-                completed=progress.work_completed,
-                total=progress.work_total,
-                failed=progress.work_failed,
-            )
-        if progress.phase == "finalizing":
-            return tr("Finalizing Persistent Catalog")
-        if progress.phase == "finished":
-            return tr("Persistent Catalog scan finished")
-        return tr("Persistent Catalog scan stopped before completion")
-
-    @staticmethod
-    def _catalog_incomplete_summary(service_result):
-        reasons = []
-        for error in service_result.errors:
-            reason = " ".join(str(error).split())
-            if not reason or reason in reasons:
-                continue
-            reasons.append(reason[:300])
-            if len(reasons) == 3:
-                break
-        summary = tr(
-            "The Persistent Catalog scan did not publish results. Files cataloged this run: "
-            "{files:,}; recorded issues: {issues:,}; failed analysis items: {failed:,}."
-        ).format(
-            files=service_result.files_observed,
-            issues=service_result.status.error_count,
-            failed=service_result.work_failed,
-        )
-        if reasons:
-            summary = "{}\n{}".format(
-                summary,
-                tr("First reported reasons: {}").format("; ".join(reasons)),
-            )
-        return summary
-
-    @staticmethod
-    def _catalog_projection_limit_receipt(service_result, counts, projected_groups, projected_files):
-        discovered = max(1, service_result.files_observed)
-        return ScanReceipt.incomplete(
-            discovered=discovered,
-            analyzed=discovered - 1,
-            skipped=1,
-            issues=(
-                ScanIssue(
-                    code="catalog_projection_limit",
-                    message=(
-                        "The complete catalog projection exceeds GUI safety limits "
-                        "(groups={groups}, duplicate files={files}, largest group={largest}; "
-                        "displayed complete groups={shown_groups}, files={shown_files}). "
-                        "Displayed results are review-only."
-                    ).format(
-                        groups=counts.group_count,
-                        files=counts.file_count,
-                        largest=counts.max_group_members,
-                        shown_groups=projected_groups,
-                        shown_files=projected_files,
-                    ),
-                ),
-            ),
-            status=ScanStatus.RESOURCE_LIMIT,
-        )
-
-    def _materialize_catalog_exact_group(self, service, catalog_group):
-        files = []
-        for item in catalog_group.files:
-            path = item.path
-            state = self.directories.get_state(path.parent)
-            if state == directories.DirectoryState.EXCLUDED or self.directories._file_is_excluded(path):
-                continue
-            file = fs.get_file(path, fileclasses=self.fileclasses)
-            if file is None:
-                raise CatalogStateError("Catalog path '{}' no longer has a supported file type".format(path))
-            if not service.worker.hydrate_file(
-                file,
-                item.content_version_id,
-            ):
-                raise CatalogStateError(
-                    "Catalog generation {} could not hydrate '{}'".format(
-                        item.content_version_id,
-                        path,
-                    )
-                )
-            file.prime_review_content_digest(catalog_group.full_digest)
-            self.directories._apply_file_state(file, state)
-            files.append(file)
-        if len(files) < 2:
-            return None
-        evidence = engine.ExactEvidence(
-            kind=engine.VerificationKind.VERIFIED_EXACT,
-            algorithm="sha256",
-            digest=catalog_group.full_digest,
-            size=catalog_group.size,
-        )
-        return engine.Group.from_exact_files(files, evidence)
-
-    def _run_catalog_contents_scan(self, scanner, j):
-        roots = self._catalog_selected_roots()
-        if not roots:
-            self.results.groups = []
-            self.results.scan_receipt = ScanReceipt.incomplete(
-                discovered=1,
-                analyzed=0,
-                skipped=1,
-                issues=(
-                    ScanIssue(
-                        code="no_catalog_roots",
-                        message="All selected roots are excluded",
-                    ),
-                ),
-            )
-            return
-
-        roots_key = tuple(os.path.normcase(os.path.abspath(str(root))) for root in roots)
-
-        def cancel_check():
-            return self._catalog_cancel_requested(j)
-
-        def progress_callback(progress):
-            j.set_progress(0, self._catalog_progress_description(progress))
-
-        service = None
-        service_result = None
-        try:
-            catalog_path = Path(self.appdata) / CATALOG_FILENAME
-            logging.info("Starting Persistent Catalog scan for %d root(s)", len(roots))
-            service = CatalogService(
-                catalog_path,
-                roots,
-                directory_pruner=self.directories._directory_prune_reason,
-                file_filter=self._catalog_file_filter,
-                progress_callback=progress_callback,
-            )
-            if self._catalog_resume_scan_id is not None and self._catalog_resume_roots == roots_key:
-                service_result = service.resume(
-                    self._catalog_resume_scan_id,
-                    cancel_check=cancel_check,
-                )
-            else:
-                service_result = service.run(cancel_check=cancel_check)
-
-            if (
-                service_result.outcome != "finished"
-                or service_result.catalog_status != "complete"
-                or not service_result.status.verified_projection_allowed
-            ):
-                self.results.groups = []
-                detail = self._catalog_incomplete_summary(service_result)
-                logging.warning(
-                    "Persistent Catalog scan %d ended with status %s: %s",
-                    service_result.scan_id,
-                    service_result.catalog_status,
-                    detail.replace("\n", " "),
-                )
-                self.results.scan_receipt = self._catalog_incomplete_receipt(
-                    service_result,
-                    detail,
-                )
-                if service_result.catalog_status == "running":
-                    self._catalog_resume_scan_id = service_result.scan_id
-                    self._catalog_resume_roots = roots_key
-                else:
-                    self._catalog_resume_scan_id = None
-                    self._catalog_resume_roots = ()
-                return
-
-            projection_counts = service.verified_exact_projection_counts()
-            projection_limited = (
-                projection_counts.group_count > CATALOG_GUI_MAX_EXACT_GROUPS
-                or projection_counts.file_count > CATALOG_GUI_MAX_EXACT_FILES
-                or projection_counts.max_group_members > CATALOG_GUI_MAX_EXACT_GROUP_MEMBERS
-            )
-            projected_groups = 0
-            projected_files = 0
-            compact_groups = engine.ExactGroupList()
-            if cancel_check():
-                self._catalog_resume_scan_id = None
-                self._catalog_resume_roots = ()
-                self.results.groups = []
-                self.results.scan_receipt = self._catalog_incomplete_receipt(
-                    service_result,
-                    "catalog projection was interrupted",
-                )
-                return
-            for catalog_group in service.iter_verified_exact_groups(
-                page_size=CATALOG_GUI_EXACT_PAGE_GROUPS,
-                max_page_files=CATALOG_GUI_EXACT_PAGE_FILES,
-                max_group_members=CATALOG_GUI_MAX_EXACT_GROUP_MEMBERS,
-            ):
-                if cancel_check():
-                    self._catalog_resume_scan_id = None
-                    self._catalog_resume_roots = ()
-                    self.results.groups = []
-                    self.results.scan_receipt = self._catalog_incomplete_receipt(
-                        service_result,
-                        "catalog projection was interrupted",
-                    )
-                    return
-                member_count = len(catalog_group.files)
-                if (
-                    projected_groups >= CATALOG_GUI_MAX_EXACT_GROUPS
-                    or projected_files + member_count > CATALOG_GUI_MAX_EXACT_FILES
-                ):
-                    projection_limited = True
-                    break
-                projected_groups += 1
-                projected_files += member_count
-                group = self._materialize_catalog_exact_group(service, catalog_group)
-                if group is not None:
-                    compact_groups.append(group)
-            self.results.groups = scanner.get_dupe_groups_from_verified_exact(
-                compact_groups,
-                self.ignore_list,
-                j,
-            )
-            if projection_limited:
-                self.results.scan_receipt = self._catalog_projection_limit_receipt(
-                    service_result,
-                    projection_counts,
-                    projected_groups,
-                    projected_files,
-                )
-            else:
-                self.results.scan_receipt = ScanReceipt.completed(service_result.files_observed)
-            self.discarded_file_count = scanner.discarded_file_count
-            logging.info(
-                "Persistent Catalog scan %d completed with %d observed file(s)",
-                service_result.scan_id,
-                service_result.files_observed,
-            )
-            self._catalog_resume_scan_id = None
-            self._catalog_resume_roots = ()
-        except job.JobCancelled:
-            self.results.groups = []
-            if service_result is None:
-                self.results.scan_receipt = ScanReceipt.incomplete(
-                    discovered=1,
-                    analyzed=0,
-                    failed=1,
-                    issues=(
-                        ScanIssue(
-                            code="catalog_scan_partial",
-                            message="catalog scan was interrupted",
-                        ),
-                    ),
-                )
-            else:
-                self.results.scan_receipt = self._catalog_incomplete_receipt(
-                    service_result,
-                    "catalog projection was interrupted",
-                )
-                if service_result.catalog_status == "running":
-                    self._catalog_resume_scan_id = service_result.scan_id
-                    self._catalog_resume_roots = roots_key
-                else:
-                    self._catalog_resume_scan_id = None
-                    self._catalog_resume_roots = ()
-        except (
-            CatalogServiceError,
-            CatalogError,
-            CatalogWorkerError,
-            OSError,
-            ValueError,
-        ) as error:
-            logging.error("Persistent Catalog scan failed: %s", error)
-            self.results.groups = []
-            self.results.scan_receipt = ScanReceipt.incomplete(
-                discovered=1,
-                analyzed=0,
-                failed=1,
-                issues=(
-                    ScanIssue(
-                        code="catalog_projection_failed",
-                        message=str(error),
-                    ),
-                ),
-            )
-            self._catalog_resume_scan_id = None
-            self._catalog_resume_roots = ()
-        finally:
-            if service is not None:
-                service.close()
-
     def start_scanning(self, profile_scan=False):
         """Starts an async job to scan for duplicates.
 
@@ -1889,8 +1498,7 @@ class DupeGuru(Broadcaster):
         """
         scanner = self.SCANNER_CLASS()
         fs.filesdb.ignore_mtime = self.options["rehash_ignore_mtime"] is True
-        # Configure the scanner before choosing the collection engine because
-        # CONTENTS scans use the durable catalog rather than the legacy walk.
+        # Configure the scanner before collecting the selected files.
         for k, v in self.options.items():
             if hasattr(scanner, k):
                 setattr(scanner, k, v)
@@ -1902,10 +1510,6 @@ class DupeGuru(Broadcaster):
         if not has_scan_input:
             self.view.show_message(tr("The selected directories contain no scannable file."))
             return
-        if scanner.scan_type == ScanType.CONTENTS:
-            warning = self._catalog_whole_drive_warning()
-            if warning is not None and not self.view.ask_yes_no(warning):
-                return
         self.results.groups = []
         self._recreate_result_table()
         self._results_changed()
@@ -1915,105 +1519,103 @@ class DupeGuru(Broadcaster):
                 pr = cProfile.Profile()
                 pr.enable()
             j.set_progress(0, tr("Collecting files to scan"))
-            if scanner.scan_type == ScanType.CONTENTS:
-                self._run_catalog_contents_scan(scanner, j)
-            else:
-                folder_scan = scanner.scan_type == ScanType.FOLDERS
-                budget = directories.DirectDiscoveryBudget(
-                    self._direct_discovery_limits(),
-                )
+            folder_scan = scanner.scan_type == ScanType.FOLDERS
+            lightweight_exact_scan = scanner.scan_type == ScanType.CONTENTS
+            budget = directories.DirectDiscoveryBudget(
+                self._direct_discovery_limits(),
+            )
+            try:
                 try:
-                    try:
-                        if folder_scan:
-                            files = list(
-                                self.directories.get_folders(
-                                    folderclass=se.fs.Folder,
-                                    j=j,
-                                    budget=budget,
-                                )
-                            )
-                        else:
-                            files = list(
-                                self.directories.get_files(
-                                    fileclasses=self.fileclasses,
-                                    j=j,
-                                    budget=budget,
-                                )
-                            )
-                        if self.options["ignore_hardlink_matches"]:
-                            files = self._remove_hardlink_dupes(
-                                files,
-                                budget=budget,
+                    if folder_scan:
+                        files = list(
+                            self.directories.get_folders(
+                                folderclass=se.fs.Folder,
                                 j=j,
+                                budget=budget,
                             )
-                        logging.info("Scanning %d files" % len(files))
-                        matching_job = j
-                        proof_job = None
-                        if not folder_scan:
-                            proof_job = j.start_subjob(
-                                [2, 6, 2],
-                                tr("Preparing scan-start content proofs"),
+                        )
+                    else:
+                        files = list(
+                            self.directories.get_files(
+                                fileclasses=self.fileclasses,
+                                j=j,
+                                budget=budget,
                             )
-                            try:
-                                self._bind_direct_scan_generations(files, proof_job)
-                            except (OSError, TypeError, ValueError) as error:
-                                self._record_scan_generation_failure(
-                                    error,
-                                    len(files),
-                                    after_matching=False,
-                                )
-                                return
-                            matching_job = proof_job.start_subjob(
-                                1,
-                                tr("Matching files"),
-                            )
-                        groups = scanner.get_dupe_groups(
+                        )
+                    if self.options["ignore_hardlink_matches"]:
+                        files = self._remove_hardlink_dupes(
                             files,
-                            self.ignore_list,
-                            matching_job,
+                            budget=budget,
+                            j=j,
                         )
-                        if not folder_scan:
-                            try:
-                                self._validate_direct_scan_generations(files, proof_job)
-                            except (OSError, TypeError, ValueError) as error:
-                                self._record_scan_generation_failure(
-                                    error,
-                                    len(files),
-                                    after_matching=True,
-                                )
-                                return
-                        stored_coverages = getattr(
-                            self.directories,
-                            "last_walk_coverages",
-                            (),
+                    logging.info("Scanning %d files" % len(files))
+                    matching_job = j
+                    proof_job = None
+                    if not folder_scan and not lightweight_exact_scan:
+                        proof_job = j.start_subjob(
+                            [2, 6, 2],
+                            tr("Preparing scan-start content proofs"),
                         )
-                        walk_coverages = (
-                            tuple(stored_coverages.values())
-                            if hasattr(stored_coverages, "values")
-                            else tuple(stored_coverages)
+                        try:
+                            self._bind_direct_scan_generations(files, proof_job)
+                        except (OSError, TypeError, ValueError) as error:
+                            self._record_scan_generation_failure(
+                                error,
+                                len(files),
+                                after_matching=False,
+                            )
+                            return
+                        matching_job = proof_job.start_subjob(
+                            1,
+                            tr("Matching files"),
                         )
-                        receipt = receipt_from_walk_coverages(len(files), walk_coverages)
-                        matcher_receipt = getattr(scanner, "scan_receipt", None)
-                        if matcher_receipt is not None and not getattr(
-                            matcher_receipt,
-                            "allows_destructive_actions",
-                            False,
-                        ):
-                            receipt = matcher_receipt
-                    except MemoryError as error:
-                        raise budget.memory_error() from error
-                except directories.DirectDiscoveryResourceError as error:
-                    self._record_direct_discovery_resource_failure(
-                        error,
-                        folder_scan,
+                    groups = scanner.get_dupe_groups(
+                        files,
+                        self.ignore_list,
+                        matching_job,
                     )
-                else:
-                    # Publish results only after collection and matching both
-                    # completed. A resource failure can therefore never expose
-                    # or analyze a partial discovery list.
-                    self.results.groups = groups
-                    self.results.scan_receipt = receipt
-                    self.discarded_file_count = scanner.discarded_file_count
+                    if not folder_scan and not lightweight_exact_scan:
+                        try:
+                            self._validate_direct_scan_generations(files, proof_job)
+                        except (OSError, TypeError, ValueError) as error:
+                            self._record_scan_generation_failure(
+                                error,
+                                len(files),
+                                after_matching=True,
+                            )
+                            return
+                    stored_coverages = getattr(
+                        self.directories,
+                        "last_walk_coverages",
+                        (),
+                    )
+                    walk_coverages = (
+                        tuple(stored_coverages.values())
+                        if hasattr(stored_coverages, "values")
+                        else tuple(stored_coverages)
+                    )
+                    receipt = receipt_from_walk_coverages(len(files), walk_coverages)
+                    matcher_receipt = getattr(scanner, "scan_receipt", None)
+                    if matcher_receipt is not None and not getattr(
+                        matcher_receipt,
+                        "allows_destructive_actions",
+                        False,
+                    ):
+                        receipt = matcher_receipt
+                except MemoryError as error:
+                    raise budget.memory_error() from error
+            except directories.DirectDiscoveryResourceError as error:
+                self._record_direct_discovery_resource_failure(
+                    error,
+                    folder_scan,
+                )
+            else:
+                # Publish results only after collection and matching both
+                # completed. A resource failure can therefore never expose
+                # or analyze a partial discovery list.
+                self.results.groups = groups
+                self.results.scan_receipt = receipt
+                self.discarded_file_count = scanner.discarded_file_count
             if profile_scan:
                 pr.disable()
                 pr.dump_stats(op.join(self.appdata, f"{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.profile"))

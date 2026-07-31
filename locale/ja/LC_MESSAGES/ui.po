@@ -1510,11 +1510,11 @@ msgstr "探索の最大秒数:"
 
 #: qt\preferences_dialog.py:261
 msgid ""
-"These limits apply to filename, folder, tag, and picture scans that discover"
-" files directly. For a very large exact-match library, use the Contents scan"
-" and its Persistent Catalog."
+"These limits apply to filename, contents, folder, tag, and picture scans "
+"that discover files directly. Reaching a limit publishes no partial "
+"duplicate list; narrow the selected folders or add exclusions."
 msgstr ""
-"これらの上限は、ファイルを直接探索するファイル名、フォルダー、タグ、画像の各スキャンに適用されます。非常に大きな完全一致ライブラリには、「内容」スキャンと永続カタログを使用してください。"
+"これらの上限は、ファイルを直接探索するファイル名、内容、フォルダー、タグ、画像の各スキャンに適用されます。上限へ達した場合は部分的な重複一覧を公開しません。選択するフォルダーを絞るか、除外条件を追加してください。"
 
 #: qt\result_window.py:83
 msgid "Quarantine Verified Marked Files..."
@@ -1646,17 +1646,17 @@ msgstr ""
 msgid "not created"
 msgstr "未作成"
 
-#: qt\app.py:385
+#: qt\app.py:386
 msgid ""
 "Clear all rebuildable scan data?\n"
 "\n"
-"This removes cached file hashes, picture analysis, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
+"This removes cached file hashes, picture analysis, on-demand picture thumbnails, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
 "\n"
 "Persistent Catalog: {}"
 msgstr ""
 "再生成可能なスキャンデータをすべて消去しますか？\n"
 "\n"
-"キャッシュされたファイルハッシュ、画像解析、永続カタログ（スキャン履歴と未完了のスキャンを含む）を削除します。ファイル、設定、除外条件、保存済みの結果ファイルは削除されません。\n"
+"キャッシュされたファイルハッシュ、画像解析、必要時に生成される画像サムネイル、永続カタログ（スキャン履歴と未完了のスキャンを含む）を削除します。ファイル、設定、除外条件、保存済みの結果ファイルは削除されません。\n"
 "\n"
 "永続カタログ: {}"
 
@@ -1677,3 +1677,24 @@ msgstr "再生成可能なスキャンデータを消去しました。"
 #: qt\progress_window.py:65
 msgid "Are you sure you want to stop the current operation?"
 msgstr "現在の処理を停止しますか？"
+
+#: qt\preferences_dialog.py:261
+msgid ""
+"These limits apply to filename, folder, tag, and picture scans that discover"
+" files directly. For a very large exact-match library, use the Contents scan"
+" and its Persistent Catalog."
+msgstr "これらの上限は、ファイルを直接探索するファイル名、フォルダー、タグ、画像の各スキャンに適用されます。非常に大きな完全一致ライブラリには、「内容」スキャンと永続カタログを使用してください。"
+
+#: qt\app.py:385
+msgid ""
+"Clear all rebuildable scan data?\n"
+"\n"
+"This removes cached file hashes, picture analysis, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
+"\n"
+"Persistent Catalog: {}"
+msgstr ""
+"再生成可能なスキャンデータをすべて消去しますか？\n"
+"\n"
+"キャッシュされたファイルハッシュ、画像解析、永続カタログ（スキャン履歴と未完了のスキャンを含む）を削除します。ファイル、設定、除外条件、保存済みの結果ファイルは削除されません。\n"
+"\n"
+"永続カタログ: {}"

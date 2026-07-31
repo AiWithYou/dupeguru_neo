@@ -1,5 +1,4 @@
 import math
-from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -147,7 +146,7 @@ _TRACKED_IMAGE_MODULE = SimpleNamespace(
 )
 
 
-def test_feature_extraction_is_deterministic_and_thumbnail_preserves_aspect(tmp_path):
+def test_feature_extraction_is_deterministic_and_thumbnail_identity_preserves_aspect(tmp_path):
     path = tmp_path / "gradient.png"
     image = Image.new("RGB", (400, 100))
     image.putdata(
@@ -173,7 +172,23 @@ def test_feature_extraction_is_deterministic_and_thumbnail_preserves_aspect(tmp_
     assert first.quality.exif_count == 0
     assert math.isfinite(first.quality.jpeg_artifact_score)
     assert first.thumbnail_size == (256, 64)
-    assert Image.open(BytesIO(first.thumbnail_png)).mode == "RGB"
+    assert len(first.thumbnail_key) == 64
+    assert not hasattr(first, "thumbnail_png")
+
+
+def test_feature_extraction_does_not_encode_thumbnail_png(tmp_path, monkeypatch):
+    path = tmp_path / "source.png"
+    Image.new("RGB", (400, 100), (10, 20, 30)).save(path)
+
+    def unexpected_save(*_args, **_kwargs):
+        raise AssertionError("feature extraction must not encode a display thumbnail")
+
+    monkeypatch.setattr(Image.Image, "save", unexpected_save)
+
+    features = _decode(path)
+
+    assert features.thumbnail_size == (256, 64)
+    assert len(features.thumbnail_key) == 64
 
 
 def test_exif_orientation_is_applied_before_every_feature(tmp_path):
@@ -203,7 +218,7 @@ def test_exif_orientation_is_applied_before_every_feature(tmp_path):
     assert oriented.phashes == expected.phashes
     assert oriented.dhashes == expected.dhashes
     assert oriented.color_histogram == expected.color_histogram
-    assert oriented.thumbnail_png == expected.thumbnail_png
+    assert oriented.thumbnail_key == expected.thumbnail_key
 
 
 def test_embedded_srgb_profile_and_assumed_srgb_produce_same_pixels(tmp_path):
@@ -219,7 +234,7 @@ def test_embedded_srgb_profile_and_assumed_srgb_produce_same_pixels(tmp_path):
 
     assert tagged.blocks == untagged.blocks
     assert tagged.phashes == untagged.phashes
-    assert tagged.thumbnail_png == untagged.thumbnail_png
+    assert tagged.thumbnail_key == untagged.thumbnail_key
 
 
 def test_lab_icc_profile_is_converted_to_srgb(tmp_path):
@@ -243,7 +258,7 @@ def test_lab_icc_profile_is_converted_to_srgb(tmp_path):
 
     assert tagged.blocks == expected.blocks
     assert tagged.phashes == expected.phashes
-    assert tagged.thumbnail_png == expected.thumbnail_png
+    assert tagged.thumbnail_key == expected.thumbnail_key
 
 
 def test_invalid_icc_profile_is_a_decode_failure_not_a_silent_fallback(tmp_path):
@@ -266,7 +281,7 @@ def test_alpha_is_composited_on_white_and_hidden_rgb_does_not_change_features(tm
     assert first.blocks == second.blocks
     assert set(first.blocks[0]) == {(255, 255, 255)}
     assert first.phashes == second.phashes
-    assert first.thumbnail_png == second.thumbnail_png
+    assert first.thumbnail_key == second.thumbnail_key
 
 
 def test_animated_image_uses_only_first_frame(tmp_path):
@@ -283,7 +298,7 @@ def test_animated_image_uses_only_first_frame(tmp_path):
     assert animated.frame_count == 2
     assert animated.blocks == static.blocks
     assert animated.phashes == static.phashes
-    assert animated.thumbnail_png == static.thumbnail_png
+    assert animated.thumbnail_key == static.thumbnail_key
 
 
 def test_rotated_mode_emits_all_eight_aligned_orientations(tmp_path):

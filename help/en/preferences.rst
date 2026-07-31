@@ -41,17 +41,18 @@ Preferences
     while ignoring internal duplicates in either collection.
 
 **Direct scan resource limits:**
-    Filename, folder, tag, and picture scans enumerate the selected filesystem
-    directly before matching. The Advanced preferences cap one pass at
-    1,000,000 files, 250,000 folders, 100,000 filesystem issues, and 14,400
+    Contents, filename, folder, tag, and picture scans enumerate the selected
+    filesystem directly before matching. The Advanced preferences cap one pass
+    at 1,000,000 files, 250,000 folders, 100,000 filesystem issues, and 14,400
     seconds; each value may be lowered but not raised above that hard ceiling.
     Reaching a limit or running out of memory discards the entire partial input
-    list before matching. The result receipt is marked resource-limited and
-    bulk file actions remain disabled.
+    list before matching and publishes no duplicate groups. The result receipt
+    is marked resource-limited and bulk file actions remain disabled.
 
-    For a very large exact-match library, use the Standard mode
-    **Contents** scan. Its Persistent Catalog processes the library in bounded,
-    resumable batches instead of materializing one direct-discovery input list.
+    A byte-exact **Contents** scan first partitions files by size, applies
+    staged hashes only to candidates, and byte-compares the survivors. It does
+    not create Persistent Catalog history. The resumable catalog is a separate,
+    explicitly invoked ``dupeguru catalog`` CLI workflow.
 
 **Use regular expressions when filtering:**
     If you check this box, the filtering feature will treat your filter query as a

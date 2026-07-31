@@ -4,8 +4,10 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
+import gc
 import os
 import sys
+import weakref
 
 import pytest
 from pytest import raises
@@ -752,6 +754,26 @@ class TestCaseGetMatchesByContents:
         eq_(100, group.percentage)
         group.switch_ref(group.dupes[-1])
         assert group.get_match_of(group.dupes[-1]).percentage == 100
+
+    def test_exact_result_does_not_retain_unique_input_files(self):
+        references = []
+
+        def generate_files():
+            for index in range(10_000):
+                size = 1 if index < 2 else index + 1
+                file = no("file-{}".format(index), size=size)
+                if index < 2:
+                    file.digest_partial = "same-partial"
+                    file.digest = "same-full"
+                references.append(weakref.ref(file))
+                yield file
+
+        groups = getgroups_by_contents(generate_files())
+        gc.collect()
+
+        live_files = [reference() for reference in references if reference() is not None]
+        assert len(groups) == 1
+        assert {file.name for file in live_files} == {"file-0", "file-1"}
 
     def test_exact_get_match_builds_only_the_requested_edge_at_100k_scale(
         self,

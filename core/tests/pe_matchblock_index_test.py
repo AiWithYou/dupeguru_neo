@@ -59,7 +59,6 @@ def _synthetic_features(
         color_histogram=histogram or ((1024,) + (0,) * 63),
         tile_fingerprints=(),
         quality=quality or ImageQuality(8, 0, 0, 0.0),
-        thumbnail_png=b"synthetic-thumbnail",
         thumbnail_size=(30, 20),
         thumbnail_key="synthetic-key-{}".format(fingerprint),
     )

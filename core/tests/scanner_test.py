@@ -13,6 +13,7 @@ from hscommon.testutil import eq_
 from core import engine, fs
 from core.engine import getwords, Match
 from core.ignore import IgnoreList
+from core.me.fs import MusicFile
 from core.scanner import Scanner, ScanType
 from core.me.scanner import ScannerME
 
@@ -149,6 +150,44 @@ def test_content_scan_compare_sizes_first(fake_fileexists):
     s.scan_type = ScanType.CONTENTS
     f = [MyFile("foo", 1), MyFile("bar", 2)]
     eq_(len(s.get_dupe_groups(f)), 0)
+
+
+def test_content_scan_checks_for_cancellation_inside_engine(monkeypatch):
+    checks = []
+
+    class ProbeJob:
+        def start_subjob(self, *args, **kwargs):
+            return self
+
+        def check_if_cancelled(self):
+            checks.append(True)
+
+    def getgroups_by_contents(files, *, bigsize, j, stop_check):
+        assert stop_check() is False
+        return []
+
+    monkeypatch.setattr(engine, "getgroups_by_contents", getgroups_by_contents)
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+
+    assert scanner._getmatches([no("foo")], ProbeJob()) == []
+    assert checks == [True]
+
+
+def test_music_content_scan_uses_strict_direct_hashing(tmp_path):
+    first_path = tmp_path / "first.mp3"
+    second_path = tmp_path / "second.mp3"
+    first_path.write_bytes(b"same music payload")
+    second_path.write_bytes(b"same music payload")
+    scanner = ScannerME()
+    scanner.scan_type = ScanType.CONTENTS
+
+    [group] = scanner.get_dupe_groups(
+        [MusicFile(first_path), MusicFile(second_path)],
+    )
+
+    assert {file.path for file in group} == {first_path, second_path}
+    assert group.verification_kind is engine.VerificationKind.VERIFIED_EXACT
 
 
 def test_ignore_file_size(fake_fileexists):
@@ -334,6 +373,26 @@ def test_content_byte_verification_failure_marks_scan_incomplete():
     assert not scanner.scan_receipt.allows_destructive_actions
     assert scanner.scan_receipt.failed == 2
     assert scanner.scan_receipt.issues[0].code == "byte_verification_failed"
+
+
+def test_content_scan_byte_compares_each_group_member_only_once(fake_fileexists):
+    comparisons = []
+
+    class ComparedFile(no):
+        def compare_bytes(self, other):
+            comparisons.append((self, other))
+            return self.digest == other.digest
+
+    files = [ComparedFile(name, size=4) for name in ("first", "second", "third")]
+    for file in files:
+        file.digest_partial = file.digest_samples = file.digest = b"same"
+    scanner = Scanner()
+    scanner.scan_type = ScanType.CONTENTS
+
+    [group] = scanner.get_dupe_groups(files)
+
+    assert len(group) == 3
+    assert len(comparisons) == 2
 
 
 def test_content_full_hash_change_marks_entire_scan_incomplete(

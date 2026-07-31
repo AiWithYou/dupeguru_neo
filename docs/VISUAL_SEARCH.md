@@ -22,7 +22,7 @@ policy:
 8. load cached 15×15 RGB blocks only for the bounded candidate batch selected
    for refinement.
 
-The SQLite schema is version 5. Every row is bound to physical file identity,
+The SQLite schema is version 6. Every row is bound to physical file identity,
 size, nanosecond mtime, and a versioned content-generation token (Windows
 volume USN-journal identifier plus file USN, or POSIX ctime). Windows has no
 timestamp fallback: an unavailable/disabled journal or a filesystem/share
@@ -34,17 +34,24 @@ the JSON lexer then enforces depth, node, scalar, and string budgets before
 decoding. Old raw pHash blobs, unknown payload versions, duplicate keys,
 non-canonical fingerprints, incompatible decoder policies, non-finite values,
 and malformed fields are rejected and regenerated; they are never silently
-reused.
+reused. The matching cache stores thumbnail dimensions and a bounded
+pixel-derived identity key, but it neither PNG-encodes nor persists thumbnail
+image bytes.
 
 On-disk picture caches also carry the dedicated SQLite application ID `DGPE`.
 It is checked directly in the 100-byte SQLite header before SQLite connects,
 then checked again through the read-only connection. A shape-compatible
 foreign database, an unmarked legacy v3/v4 cache, or a modified marker is
 rejected without migration or writes. New GUI caches use the versioned
-`cached_pictures_v5.db` filename. “Clear picture cache” deletes only rows from
-an owned database; it never removes the database file, and refuses pre-existing
-SQLite journal/WAL/shared-memory sidecars rather than recovering or deleting
-unknown data.
+`cached_pictures_v5.db` filename so an existing owned version-5 cache can be
+found. A strictly validated writable version-5 cache is discarded, rebuilt as
+version 6, and compacted; this reclaims its old thumbnail BLOB pages instead of
+copying obsolete payloads forward. Unmarked version-3/version-4 caches and
+modified version-5 databases remain untouched and are rejected. “Clear picture
+cache” removes rows only from an owned database and then compacts it to return
+the freed disk capacity; it never removes the database file and refuses
+pre-existing SQLite journal/WAL/shared-memory sidecars rather than recovering
+or deleting unknown data.
 
 Portable visual artifacts use schema version 4 and are capped at 512 KiB per
 artifact. Their UTF-8 JSON is structurally preflighted before object allocation,

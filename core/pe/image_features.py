@@ -10,7 +10,7 @@ The normalization contract is intentionally centralized here:
 * EXIF orientation is applied before any feature is calculated;
 * embedded ICC profiles are converted to sRGB (missing profiles are explicitly assumed sRGB);
 * alpha is composited onto opaque sRGB white; and
-* pHash, dHash, color, bounded tile, quality, and thumbnail features share one
+* pHash, dHash, color, bounded tile, quality, and thumbnail identity share one
   versioned normalization policy.
 
 Changing any of those rules requires a new :data:`FEATURE_VERSION` so cached features cannot be
@@ -30,7 +30,7 @@ from typing import Tuple
 from core.pe.block import getblocks2
 from core.pe.candidate_index import dct_phash
 
-FEATURE_VERSION = "pillow_srgb_exif_firstframe_whitealpha_visual_v2"
+FEATURE_VERSION = "pillow_srgb_exif_firstframe_whitealpha_visual_v3"
 PHASH_SAMPLE_SIZE = 32
 PHASH_BIT_WIDTH = 64
 DHASH_SAMPLE_SIZE = (9, 8)
@@ -144,7 +144,6 @@ class ImageFeatures:
     color_histogram: Tuple[int, ...]
     tile_fingerprints: Tuple[TileFingerprint, ...]
     quality: ImageQuality
-    thumbnail_png: bytes
     thumbnail_size: Tuple[int, int]
     thumbnail_key: str
     feature_version: str = FEATURE_VERSION
@@ -177,8 +176,8 @@ class ImageFeatures:
             raise ValueError("tile fingerprints must be unique and bounded")
         if not isinstance(self.quality, ImageQuality):
             raise ValueError("image features require measured quality metadata")
-        if not self.thumbnail_png or not self.thumbnail_key:
-            raise ValueError("thumbnail data and key must not be empty")
+        if not self.thumbnail_key:
+            raise ValueError("thumbnail key must not be empty")
         if any(value <= 0 for value in self.thumbnail_size):
             raise ValueError("thumbnail dimensions must be positive")
         if not self.feature_version:
@@ -678,30 +677,34 @@ def _jpeg_blockiness(image, source_format: str) -> float:
         _close_owned_image(gray, image)
 
 
-def _thumbnail(image, image_module) -> Tuple[bytes, Tuple[int, int], str]:
-    thumbnail = image.copy()
-    try:
-        # Decoder metadata (EXIF, ICC blobs, comments) must not leak into a pixel-derived cache key.
-        thumbnail.info.clear()
-        thumbnail.thumbnail(
-            THUMBNAIL_MAX_SIZE,
+def _thumbnail_identity(image, image_module) -> Tuple[Tuple[int, int], str]:
+    """Return bounded display metadata without encoding or retaining image bytes."""
+
+    width, height = image.size
+    maximum_width, maximum_height = THUMBNAIL_MAX_SIZE
+    if width <= maximum_width and height <= maximum_height:
+        size = image.size
+    elif width * maximum_height > height * maximum_width:
+        size = maximum_width, max(1, round(height * maximum_width / width))
+    else:
+        size = max(1, round(width * maximum_height / height)), maximum_height
+    thumbnail = (
+        image
+        if size == image.size
+        else image.resize(
+            size,
             resample=image_module.Resampling.LANCZOS,
             reducing_gap=3.0,
         )
-        output = BytesIO()
-        thumbnail.save(
-            output,
-            format="PNG",
-            optimize=False,
-            compress_level=9,
-        )
-        data = output.getvalue()
-        size = thumbnail.size
+    )
+    try:
         digest = hashlib.sha256()
         digest.update(FEATURE_VERSION.encode("ascii"))
-        digest.update(b"\0")
-        digest.update(data)
-        return data, size, digest.hexdigest()
+        digest.update(b"\0thumbnail-rgb\0")
+        digest.update(size[0].to_bytes(4, "big"))
+        digest.update(size[1].to_bytes(4, "big"))
+        digest.update(thumbnail.tobytes())
+        return size, digest.hexdigest()
     finally:
         _close_owned_image(thumbnail, image)
 
@@ -738,7 +741,7 @@ def decode_image_features(
             metadata_count=metadata_count,
             jpeg_artifact_score=_jpeg_blockiness(normalized, source_format),
         )
-        thumbnail_png, thumbnail_size, thumbnail_key = _thumbnail(normalized, image_module)
+        thumbnail_size, thumbnail_key = _thumbnail_identity(normalized, image_module)
         return ImageFeatures(
             dimensions=normalized.size,
             frame_count=frame_count,
@@ -748,7 +751,6 @@ def decode_image_features(
             color_histogram=color_histogram,
             tile_fingerprints=tile_fingerprints,
             quality=quality,
-            thumbnail_png=thumbnail_png,
             thumbnail_size=thumbnail_size,
             thumbnail_key=thumbnail_key,
         )

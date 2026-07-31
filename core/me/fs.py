@@ -97,8 +97,8 @@ class MusicFile(fs.File):
             "dupe_count": format_dupe_count(dupe_count),
         }
 
-    def _read_info(self, field):
-        fs.File._read_info(self, field)
+    def _read_info(self, field, strict=False):
+        fs.File._read_info(self, field, strict=strict)
         if field in TAG_FIELDS:
             # The various conversions here are to make this look like the previous implementation
             file = mutagen.File(str(self.path), easy=True)

@@ -11,109 +11,109 @@ msgstr ""
 "Content-Transfer-Encoding: utf-8\n"
 "Plural-Forms: nplurals=1; plural=0;\n"
 
-#: core\app.py:83
+#: core\app.py:70
 msgid "There are no marked duplicates. Nothing has been done."
 msgstr "チェックを入れた重複はありません。 何も行われませんでした。"
 
-#: core\app.py:84
+#: core\app.py:71
 msgid "There are no selected duplicates. Nothing has been done."
 msgstr "選択された重複はありません。 何も行われていません。"
 
-#: core\app.py:112
+#: core\app.py:99
 msgid ""
 "You're about to open many files at once. Depending on what those files are "
 "opened with, doing so can create quite a mess. Continue?"
 msgstr "一度に多くのファイルを開こうとしています。 これらのファイルを開く対象によっては、これを行うとかなり混乱する可能性があります。 継続する？"
 
-#: core\app.py:140
+#: core\app.py:127
 msgid "Scanning for duplicates"
 msgstr "重複のスキャン"
 
-#: core\app.py:141
+#: core\app.py:128
 msgid "Loading"
 msgstr "読み込み中"
 
-#: core\app.py:142
+#: core\app.py:129
 msgid "Moving"
 msgstr "移動します"
 
-#: core\app.py:143
+#: core\app.py:130
 msgid "Copying"
 msgstr "コピー中"
 
-#: core\app.py:457
+#: core\app.py:442
 msgid ""
 "A previous action is still hanging in there. You can't start a new one yet. "
 "Wait a few seconds, then try again."
 msgstr "前のアクションはまだそこにぶら下がっています。 まだ新しいものを始めることはできません。 数秒待ってから、再試行してください。"
 
-#: core\app.py:502
+#: core\app.py:486
 msgid "No duplicates found."
 msgstr "重複は見つかりませんでした。"
 
-#: core\app.py:517
+#: core\app.py:501
 msgid "All marked files were copied successfully."
 msgstr "チェックを入れたファイルをすべてコピーしました。"
 
-#: core\app.py:519
+#: core\app.py:503
 msgid "All marked files were moved successfully."
 msgstr "チェックを入れたファイルをすべて移動しました。"
 
-#: core\app.py:541
+#: core\app.py:525
 msgid "Could not load file: {}"
 msgstr "ファイルを読み込めませんでした：{}"
 
-#: core\app.py:618
+#: core\app.py:602
 msgid "'{}' already is in the list."
 msgstr "「{}」既にリストに含まれています。"
 
-#: core\app.py:620
+#: core\app.py:604
 msgid "'{}' does not exist."
 msgstr "'{}' 存在しません。"
 
-#: core\app.py:628
+#: core\app.py:612
 msgid ""
 "All selected %d matches are going to be ignored in all subsequent scans. "
 "Continue?"
 msgstr "選択した%d個の一致は、以降のすべてのスキャンで無視されます。 継続する？"
 
-#: core\app.py:869
+#: core\app.py:854
 msgid "Select a directory to copy marked files to"
 msgstr "マークされたファイルをコピーするディレクトリを選択してください"
 
-#: core\app.py:871
+#: core\app.py:856
 msgid "Select a directory to move marked files to"
 msgstr "マークされたファイルを移動するディレクトリを選択してください"
 
-#: core\app.py:953
+#: core\app.py:938
 msgid "Select a destination for your exported CSV"
 msgstr "エクスポートしたCSVの宛先を選択します。"
 
-#: core\app.py:959 core\app.py:1335 core\app.py:1345
+#: core\app.py:944 core\app.py:1320 core\app.py:1330
 msgid "Couldn't write to file: {}"
 msgstr "ファイルに書き込めませんでした：{}"
 
-#: core\app.py:982
+#: core\app.py:967
 msgid "You have no custom command set up. Set it up in your preferences."
 msgstr "カスタムコマンドは設定されていません。 お好みで設定してください。"
 
-#: core\app.py:1188 core\app.py:1200
+#: core\app.py:1173 core\app.py:1185
 msgid "You are about to remove %d files from results. Continue?"
 msgstr "結果から%d個のファイルを削除しようとしています。 継続する？"
 
-#: core\app.py:1260
+#: core\app.py:1245
 msgid "{} duplicate groups were changed by the re-prioritization."
 msgstr "{}重複するグループは、再優先順位付けによって変更されました。"
 
-#: core\app.py:1903
+#: core\app.py:1511
 msgid "The selected directories contain no scannable file."
 msgstr "選択したディレクトリにはスキャン可能なファイルが含まれていません。"
 
-#: core\app.py:1917
+#: core\app.py:1521
 msgid "Collecting files to scan"
 msgstr "スキャンするファイルを収集しています"
 
-#: core\app.py:2057
+#: core\app.py:1659
 msgid "%s (%d discarded)"
 msgstr "%s (%d 廃棄)"
 
@@ -217,7 +217,7 @@ msgstr "フィルタ: %s"
 msgid "Read metadata of %d/%d files"
 msgstr "%d/%dファイルのメタデータを読み取った"
 
-#: core\scanner.py:206 core\scanner.py:282 core\scanner.py:388
+#: core\scanner.py:206 core\scanner.py:282 core\scanner.py:392
 msgid "Almost done! Fiddling with results..."
 msgstr "ほぼ完了しました！ 結果をいじっています..."
 
@@ -225,7 +225,7 @@ msgstr "ほぼ完了しました！ 結果をいじっています..."
 msgid "Folders"
 msgstr "フォルダー"
 
-#: core\app.py:85
+#: core\app.py:72
 msgid ""
 "Run the configured external command for {} selected file(s)?\n"
 "\n"
@@ -235,37 +235,37 @@ msgstr ""
 "\n"
 "外部コマンドはdupeGuruの安全モデルの外で実行されます。保護対象や知覚的に類似したファイルを含め、ファイルを変更または完全削除する可能性があります。dupeGuruでは、その変更を検証したり元に戻したりできません。"
 
-#: core\app.py:144
+#: core\app.py:131
 msgid "Moving verified duplicates to quarantine"
 msgstr "検証済みの重複を隔離領域へ移動しています"
 
-#: core\app.py:145
+#: core\app.py:132
 msgid "Restoring quarantined files"
 msgstr "隔離したファイルを復元しています"
 
-#: core\app.py:346
+#: core\app.py:331
 msgid "No files were changed because another batch preflight failed."
 msgstr "別のバッチの事前検査に失敗したため、ファイルは変更されませんでした。"
 
-#: core\app.py:475
+#: core\app.py:460
 msgid ""
 "The scan stopped before matching because direct folder discovery reached a safety limit. No partial results were analyzed, and bulk file actions are disabled.\n"
 "\n"
 "{}\n"
 "\n"
-"For a very large exact-match library, select the Contents scan so the Persistent Catalog can process it in bounded resumable batches."
+"Please narrow the selected folders or add exclusions before trying again."
 msgstr ""
 "フォルダーの直接探索が安全上限に達したため、照合前にスキャンを停止しました。部分結果は解析されておらず、一括ファイル操作は無効です。\n"
 "\n"
 "{}\n"
 "\n"
-"非常に大きな完全一致ライブラリでは、「内容」スキャンを選択し、永続カタログで上限付きの再開可能なバッチとして処理してください。"
+"選択するフォルダーを絞るか、除外条件を追加してから、もう一度実行してください。"
 
-#: core\app.py:521
+#: core\app.py:505
 msgid "All selected byte-verified files were moved to recoverable quarantine."
 msgstr "選択したバイト検証済みファイルをすべて復元可能な隔離領域へ移動しました。"
 
-#: core\app.py:530
+#: core\app.py:514
 msgid ""
 "{} file(s) were restored; {} could not be restored.\n"
 "\n"
@@ -275,13 +275,13 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:534
+#: core\app.py:518
 msgid ""
 "{} file(s) were restored to their original paths. Run a new scan to refresh "
 "the results."
 msgstr "{} 個のファイルを元のパスへ復元しました。結果を更新するには新しいスキャンを実行してください。"
 
-#: core\app.py:660
+#: core\app.py:644
 msgid ""
 "The selected matches were not added because the persistent ignore list would exceed its safety limits. No ignore relationships were changed.\n"
 "\n"
@@ -291,32 +291,32 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:792
+#: core\app.py:777
 msgid ""
 "Verifying keeper: {}/{} organizer actions completed, {} bytes read for '{}'"
 msgstr "保存対象を検証中: 整理操作 {}/{} 件完了、{} バイトを '{}' から読み取り"
 
-#: core\app.py:835
+#: core\app.py:820
 msgid "Organizer action complete"
 msgstr "整理操作が完了しました"
 
-#: core\app.py:837
+#: core\app.py:822
 msgid "Organizer action failed safely"
 msgstr "整理操作は安全に失敗しました"
 
-#: core\app.py:840
+#: core\app.py:825
 msgid "{}: {}/{} files"
 msgstr "{}: {}/{} ファイル"
 
-#: core\app.py:860
+#: core\app.py:845
 msgid "copied"
 msgstr "コピー"
 
-#: core\app.py:860
+#: core\app.py:845
 msgid "moved"
 msgstr "移動"
 
-#: core\app.py:862
+#: core\app.py:847
 msgid ""
 "No files were {}. Organizer operations require a complete current scan and an Incoming Files target.\n"
 "\n"
@@ -326,7 +326,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:891
+#: core\app.py:876
 msgid ""
 "No files were changed. Bulk actions require a complete current scan and byte-verified exact duplicates.\n"
 "\n"
@@ -336,7 +336,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:908
+#: core\app.py:893
 msgid ""
 "No files were changed because a safe action plan could not be built:\n"
 "\n"
@@ -346,23 +346,23 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:923
+#: core\app.py:908
 msgid ""
 "There is no restorable quarantine batch in this session. Use the quarantine "
 "CLI list command to inspect older batches."
 msgstr "このセッションには復元可能な隔離バッチがありません。以前のバッチはquarantine CLIのlistコマンドで確認してください。"
 
-#: core\app.py:929
+#: core\app.py:914
 msgid ""
 "Restore {} quarantined file(s) to their original paths? Existing paths will "
 "never be overwritten."
 msgstr "隔離した {} 個のファイルを元のパスへ復元しますか？既存のパスは上書きされません。"
 
-#: core\app.py:1003
+#: core\app.py:988
 msgid "The custom command could not be started."
 msgstr "カスタムコマンドを開始できませんでした。"
 
-#: core\app.py:1023
+#: core\app.py:1008
 msgid ""
 "The folder list could not be loaded because it is invalid or exceeds the supported safety limits. The current folder list was kept and the invalid source will not be replaced unless the folder selection is changed.\n"
 "\n"
@@ -372,7 +372,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1038
+#: core\app.py:1023
 msgid ""
 "The ignore list could not be loaded because it is invalid or exceeds the supported safety limits. The current ignore list was kept.\n"
 "\n"
@@ -382,7 +382,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1052
+#: core\app.py:1037
 msgid ""
 "The exclusion list could not be loaded because it is invalid or exceeds the supported safety limits. The current exclusion list was kept.\n"
 "\n"
@@ -392,17 +392,17 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1066
+#: core\app.py:1051
 msgid ""
 "The folder list could not be loaded because it is invalid or exceeds the "
 "supported safety limits. The current folder list was kept."
 msgstr "フォルダーリストが無効、または対応する安全上限を超えているため読み込めませんでした。現在のフォルダーリストを維持しました。"
 
-#: core\app.py:1220
+#: core\app.py:1205
 msgid "The file was not renamed. {}"
 msgstr "ファイル名は変更されませんでした。{}"
 
-#: core\app.py:1284
+#: core\app.py:1269
 msgid ""
 "The folder list was not saved because it is invalid or exceeds the supported safety limits. Any existing folder-list file was kept unchanged.\n"
 "\n"
@@ -412,7 +412,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1314
+#: core\app.py:1299
 msgid ""
 "The exclusion list was not saved because it is invalid or exceeds the supported safety limits. Any existing exclusion-list file was kept unchanged.\n"
 "\n"
@@ -422,19 +422,19 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1432
+#: core\app.py:1377
 msgid "Hashing scan-start proofs: {}/{} files, {}/{} bytes"
 msgstr "スキャン開始時の根拠をハッシュ中: {}/{} ファイル、{}/{} バイト"
 
-#: core\app.py:1485
+#: core\app.py:1430
 msgid "Confirming scan-end proofs: {}/{} files, {}/{} bytes"
 msgstr "スキャン終了時の根拠を確認中: {}/{} ファイル、{}/{} バイト"
 
-#: core\app.py:1955
+#: core\app.py:1557
 msgid "Preparing scan-start content proofs"
 msgstr "スキャン開始時の内容根拠を準備しています"
 
-#: core\app.py:1968
+#: core\app.py:1570
 msgid "Matching files"
 msgstr "ファイルを照合しています"
 
@@ -463,11 +463,11 @@ msgstr "最も長いパス"
 msgid "Shortest Path"
 msgstr "最も短いパス"
 
-#: core\app.py:486
+#: core\app.py:470
 msgid "No additional details were recorded."
 msgstr "追加の詳細は記録されていません。"
 
-#: core\app.py:489
+#: core\app.py:473
 msgid ""
 "The scan is incomplete. Results are shown for review only, and bulk file actions are disabled until a complete rescan succeeds.\n"
 "\n"
@@ -477,7 +477,7 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:494
+#: core\app.py:478
 msgid ""
 "The scan is incomplete, so no duplicate results were published. No files were changed, and bulk file actions remain disabled.\n"
 "\n"
@@ -487,65 +487,55 @@ msgstr ""
 "\n"
 "{}"
 
-#: core\app.py:1374
-msgid "unavailable"
-msgstr "取得不可"
+#~ msgid "unavailable"
+#~ msgstr "取得不可"
 
-#: core\app.py:1376
-msgid "not created"
-msgstr "未作成"
+#~ msgid "not created"
+#~ msgstr "未作成"
 
-#: core\app.py:1377
-msgid ""
-"The Contents scan records its work in a Persistent Catalog. Scanning an entire drive can take many hours and use several GB of local application storage. Unavailable folders, links, or files that change during the scan can prevent duplicate results from being published.\n"
-"\n"
-"Whole-drive roots: {}\n"
-"Current catalog size: {}\n"
-"\n"
-"Continue?"
-msgstr ""
-"「内容」スキャンは処理内容を永続カタログに記録します。ドライブ全体のスキャンには数時間以上かかり、ローカルのアプリ保存領域を数GB使用する場合があります。アクセスできないフォルダー、リンク、またはスキャン中に変更されたファイルがあると、重複結果を公開できない場合があります。\n"
-"\n"
-"ドライブ全体のルート: {}\n"
-"現在のカタログ容量: {}\n"
-"\n"
-"続行しますか？"
+#~ msgid ""
+#~ "The Contents scan records its work in a Persistent Catalog. Scanning an entire drive can take many hours and use several GB of local application storage. Unavailable folders, links, or files that change during the scan can prevent duplicate results from being published.\n"
+#~ "\n"
+#~ "Whole-drive roots: {}\n"
+#~ "Current catalog size: {}\n"
+#~ "\n"
+#~ "Continue?"
+#~ msgstr ""
+#~ "「内容」スキャンは処理内容を永続カタログに記録します。ドライブ全体のスキャンには数時間以上かかり、ローカルのアプリ保存領域を数GB使用する場合があります。アクセスできないフォルダー、リンク、またはスキャン中に変更されたファイルがあると、重複結果を公開できない場合があります。\n"
+#~ "\n"
+#~ "ドライブ全体のルート: {}\n"
+#~ "現在のカタログ容量: {}\n"
+#~ "\n"
+#~ "続行しますか？"
 
-#: core\app.py:1593
-msgid ""
-"Building Persistent Catalog: {files:,} files checked in {folders:,} folders "
-"({roots}/{total} roots)"
-msgstr "永続カタログを作成中: {files:,}ファイルを確認、{folders:,}フォルダー（{roots}/{total}ルート）"
+#~ msgid ""
+#~ "Building Persistent Catalog: {files:,} files checked in {folders:,} folders "
+#~ "({roots}/{total} roots)"
+#~ msgstr "永続カタログを作成中: {files:,}ファイルを確認、{folders:,}フォルダー（{roots}/{total}ルート）"
 
-#: core\app.py:1602
-msgid ""
-"Analyzing catalog content: {completed:,}/{total:,} items ({failed:,} failed)"
-msgstr "カタログの内容を解析中: {completed:,}/{total:,}件（失敗 {failed:,}件）"
+#~ msgid ""
+#~ "Analyzing catalog content: {completed:,}/{total:,} items ({failed:,} failed)"
+#~ msgstr "カタログの内容を解析中: {completed:,}/{total:,}件（失敗 {failed:,}件）"
 
-#: core\app.py:1608
-msgid "Finalizing Persistent Catalog"
-msgstr "永続カタログを最終処理中"
+#~ msgid "Finalizing Persistent Catalog"
+#~ msgstr "永続カタログを最終処理中"
 
-#: core\app.py:1610
-msgid "Persistent Catalog scan finished"
-msgstr "永続カタログのスキャンが完了しました"
+#~ msgid "Persistent Catalog scan finished"
+#~ msgstr "永続カタログのスキャンが完了しました"
 
-#: core\app.py:1611
-msgid "Persistent Catalog scan stopped before completion"
-msgstr "永続カタログのスキャンは完了前に停止しました"
+#~ msgid "Persistent Catalog scan stopped before completion"
+#~ msgstr "永続カタログのスキャンは完了前に停止しました"
 
-#: core\app.py:1634
-msgid "First reported reasons: {}"
-msgstr "最初に報告された理由: {}"
+#~ msgid "First reported reasons: {}"
+#~ msgstr "最初に報告された理由: {}"
 
-#: core\app.py:1623
-msgid ""
-"The Persistent Catalog scan did not publish results. Files cataloged this "
-"run: {files:,}; recorded issues: {issues:,}; failed analysis items: "
-"{failed:,}."
-msgstr ""
-"永続カタログのスキャンは結果を公開できませんでした。今回カタログ化したファイル: {files:,}件、記録された問題: "
-"{issues:,}件、解析失敗: {failed:,}件。"
+#~ msgid ""
+#~ "The Persistent Catalog scan did not publish results. Files cataloged this "
+#~ "run: {files:,}; recorded issues: {issues:,}; failed analysis items: "
+#~ "{failed:,}."
+#~ msgstr ""
+#~ "永続カタログのスキャンは結果を公開できませんでした。今回カタログ化したファイル: {files:,}件、記録された問題: "
+#~ "{issues:,}件、解析失敗: {failed:,}件。"
 
 #~ msgid ""
 #~ "Persistent Catalog scan {scan_id} did not publish results (status: "

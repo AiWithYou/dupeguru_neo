@@ -363,6 +363,31 @@ def test_hash_cache_never_migrates_or_marks_an_unmarked_legacy_cache(tmp_path):
         check.close()
 
 
+def test_hash_cache_clear_reclaims_database_pages(tmp_path):
+    candidate = tmp_path / "hashes.db"
+    database = fs.FilesDB()
+    database.connect(candidate)
+    database.conn.executemany(
+        "INSERT INTO files("
+        "path,device,file_id,size,mtime_ns,ctime_ns,algorithm,entry_dt,digest"
+        ") VALUES(?, 'device', 'file', 0, 0, x'00', ?, datetime('now'), zeroblob(?))",
+        (("synthetic-{}".format(index), fs.HASH_ALGORITHM, 16_384) for index in range(512)),
+    )
+    database.conn.commit()
+    size_before = candidate.stat().st_size
+
+    database.clear()
+
+    size_after = candidate.stat().st_size
+    assert database.conn.execute("SELECT COUNT(*) FROM files").fetchone() == (0,)
+    assert database.conn.execute("PRAGMA freelist_count").fetchone() == (0,)
+    if hasattr(database.conn, "getlimit"):
+        assert database.conn.getlimit(sqlite3.SQLITE_LIMIT_ATTACHED) == 0
+    assert size_before > 4 * 1024 * 1024
+    assert size_after < size_before // 8
+    database.close()
+
+
 @pytest.mark.parametrize(
     "unexpected_sql",
     (

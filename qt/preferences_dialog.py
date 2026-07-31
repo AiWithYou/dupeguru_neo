@@ -259,9 +259,9 @@ most users should not have to modify these."),
         discovery_form.addRow(tr("Maximum discovery seconds:"), self.direct_scan_max_seconds_box)
         discovery_groupbox.setToolTip(
             tr(
-                "These limits apply to filename, folder, tag, and picture scans that "
-                "discover files directly. For a very large exact-match library, use "
-                "the Contents scan and its Persistent Catalog."
+                "These limits apply to filename, contents, folder, tag, and picture scans "
+                "that discover files directly. Reaching a limit publishes no partial "
+                "duplicate list; narrow the selected folders or add exclusions."
             )
         )
         discovery_groupbox.setLayout(discovery_form)

@@ -49,14 +49,15 @@ SQLITE_APPLICATION_ID_OFFSET = 68
 SQLITE_APPLICATION_ID = 0x44475045
 SQLITE_APPLICATION_ID_BYTES = SQLITE_APPLICATION_ID.to_bytes(4, "big")
 SQLITE_SIDECAR_SUFFIXES = ("-journal", "-wal", "-shm")
-SCHEMA_VERSION = 5
-SCHEMA_DESCRIPTION = "Bound image features to versioned content generation, identity, and feature version."
+SCHEMA_VERSION = 6
+SCHEMA_DESCRIPTION = "Bound image features without persisted thumbnail image bytes."
+_RETIRED_SCHEMA_VERSION = 5
+_RETIRED_SCHEMA_DESCRIPTION = "Bound image features to versioned content generation, identity, and feature version."
 FEATURE_PAYLOAD_SCHEMA = "dupeguru.image-feature-cache"
 FEATURE_PAYLOAD_VERSION = 1
 MAX_FEATURE_PAYLOAD_BYTES = 16_384
 MAX_CACHE_PATH_CHARACTERS = 32_768
 MAX_CACHE_BLOCK_BYTES = 15 * 15 * 3
-MAX_CACHE_THUMBNAIL_BYTES = 1024 * 1024
 MAX_CACHE_IDENTITY_CHARACTERS = 4_096
 MAX_CACHE_GENERATION_TOKEN_BYTES = 256
 MAX_CACHE_FEATURE_VERSION_CHARACTERS = 256
@@ -126,6 +127,19 @@ _PICTURE_COLUMNS_V4 = _PICTURE_COLUMNS_V3 + (
     "identity_json",
 )
 _PICTURE_COLUMNS_V5 = _PICTURE_COLUMNS_V4 + ("generation_token",)
+_PICTURE_COLUMNS_V6 = tuple(column for column in _PICTURE_COLUMNS_V5 if column != "thumbnail")
+
+_CREATE_TABLE_QUERY_V5 = (
+    "CREATE TABLE pictures("
+    "path TEXT NOT NULL, mtime_ns INTEGER NOT NULL, file_size INTEGER NOT NULL, "
+    "blocks BLOB, blocks2 BLOB, blocks3 BLOB, blocks4 BLOB, blocks5 BLOB, "
+    "blocks6 BLOB, blocks7 BLOB, blocks8 BLOB, "
+    "width INTEGER, height INTEGER, frame_count INTEGER, "
+    "phashes BLOB, phash_count INTEGER, "
+    "thumbnail BLOB, thumbnail_width INTEGER, thumbnail_height INTEGER, "
+    "thumbnail_key TEXT, feature_version TEXT, "
+    "ctime_ns INTEGER, identity_json TEXT, generation_token BLOB)"
+)
 
 _FEATURE_ROW_COLUMNS = (
     "path",
@@ -142,7 +156,6 @@ _FEATURE_ROW_COLUMNS = (
     "frame_count",
     "phashes",
     "phash_count",
-    "thumbnail",
     "thumbnail_width",
     "thumbnail_height",
     "thumbnail_key",
@@ -199,7 +212,6 @@ class CachedImageFeatureMetadata:
 class CachedImageFeatures(CachedImageFeatureMetadata):
     frame_count: int
     blocks: tuple
-    thumbnail_png: bytes
     thumbnail_size: tuple
     thumbnail_key: str
 
@@ -548,7 +560,12 @@ def _read_existing_header(path: Path, expected_identity: FileIdentity) -> None:
 
 
 @contextlib.contextmanager
-def _hold_database_path_identity(path: Path, expected_identity: FileIdentity):
+def _hold_database_path_identity(
+    path: Path,
+    expected_identity: FileIdentity,
+    *,
+    allow_content_change=False,
+):
     """Prevent Windows path replacement while the verified database is reopened."""
 
     if os.name == "nt":
@@ -612,8 +629,10 @@ def _hold_database_path_identity(path: Path, expected_identity: FileIdentity):
             stat_result=after,
         )
         if (
-            int(before.st_size) != int(after.st_size)
-            or int(before.st_mtime_ns) != int(after.st_mtime_ns)
+            (
+                not allow_content_change
+                and (int(before.st_size) != int(after.st_size) or int(before.st_mtime_ns) != int(after.st_mtime_ns))
+            )
             or getattr(after, "st_nlink", None) != 1
             or is_reparse_point(after)
             or same_physical_file(before_identity, after_identity).verdict is not IdentityVerdict.SAME
@@ -828,6 +847,25 @@ def _apply_sqlite_runtime_limits(connection) -> None:
         raise CacheSafetyError("image cache SQLite runtime limits could not be configured") from error
 
 
+def _vacuum_owned_database(connection) -> None:
+    """Run SQLite's fixed VACUUM statement and restore the no-attach limit."""
+
+    category = getattr(sqlite, "SQLITE_LIMIT_ATTACHED", None)
+    if category is None or not hasattr(connection, "setlimit"):
+        connection.execute("VACUUM")
+        return
+    original_limit = connection.getlimit(category)
+    try:
+        connection.setlimit(category, 1)
+        if connection.getlimit(category) < 1:
+            raise CacheSafetyError("SQLite could not permit its internal VACUUM database")
+        connection.execute("VACUUM")
+    finally:
+        connection.setlimit(category, original_limit)
+        if connection.getlimit(category) != original_limit:
+            raise CacheSafetyError("SQLite attachment limit was not restored after VACUUM")
+
+
 def _normalize_schema_sql(value) -> str:
     if not isinstance(value, str):
         raise CacheSchemaError("image cache schema SQL is missing or invalid")
@@ -1015,11 +1053,6 @@ def _validate_feature_write_payload(features, encoded_blocks):
     _require_sqlite_integer(width, "image feature width", positive=True)
     _require_sqlite_integer(height, "image feature height", positive=True)
     _require_sqlite_integer(features.frame_count, "image feature frame count", positive=True)
-    _require_bounded_cache_blob(
-        features.thumbnail_png,
-        MAX_CACHE_THUMBNAIL_BYTES,
-        "image cache thumbnail",
-    )
     thumbnail_width, thumbnail_height = features.thumbnail_size
     for value, label in (
         (thumbnail_width, "image cache thumbnail width"),
@@ -1053,7 +1086,7 @@ class SqliteCache:
         "blocks6 BLOB, blocks7 BLOB, blocks8 BLOB, "
         "width INTEGER, height INTEGER, frame_count INTEGER, "
         "phashes BLOB, phash_count INTEGER, "
-        "thumbnail BLOB, thumbnail_width INTEGER, thumbnail_height INTEGER, "
+        "thumbnail_width INTEGER, thumbnail_height INTEGER, "
         "thumbnail_key TEXT, feature_version TEXT, "
         "ctime_ns INTEGER, identity_json TEXT, generation_token BLOB)"
     )
@@ -1254,7 +1287,7 @@ class SqliteCache:
                 "blocks6=?,blocks7=?,blocks8=?,mtime_ns=?,file_size=?,ctime_ns=?,identity_json=?,"
                 "generation_token=?,"
                 "width=NULL,height=NULL,frame_count=NULL,phashes=NULL,phash_count=NULL,"
-                "thumbnail=NULL,thumbnail_width=NULL,thumbnail_height=NULL,"
+                "thumbnail_width=NULL,thumbnail_height=NULL,"
                 "thumbnail_key=NULL,feature_version=NULL WHERE path=?"
             )
         else:
@@ -1302,7 +1335,6 @@ class SqliteCache:
             features.frame_count,
             _serialize_feature_payload(features),
             features.orientation_count,
-            features.thumbnail_png,
             features.thumbnail_size[0],
             features.thumbnail_size[1],
             features.thumbnail_key,
@@ -1317,7 +1349,7 @@ class SqliteCache:
                 "UPDATE pictures SET "
                 "blocks=?,blocks2=?,blocks3=?,blocks4=?,blocks5=?,blocks6=?,blocks7=?,blocks8=?,"
                 "mtime_ns=?,file_size=?,width=?,height=?,frame_count=?,phashes=?,phash_count=?,"
-                "thumbnail=?,thumbnail_width=?,thumbnail_height=?,thumbnail_key=?,feature_version=?,"
+                "thumbnail_width=?,thumbnail_height=?,thumbnail_key=?,feature_version=?,"
                 "ctime_ns=?,identity_json=?,generation_token=? WHERE path=?"
             )
         else:
@@ -1325,9 +1357,9 @@ class SqliteCache:
                 "INSERT INTO pictures("
                 "blocks,blocks2,blocks3,blocks4,blocks5,blocks6,blocks7,blocks8,"
                 "mtime_ns,file_size,width,height,frame_count,phashes,phash_count,"
-                "thumbnail,thumbnail_width,thumbnail_height,thumbnail_key,feature_version,"
+                "thumbnail_width,thumbnail_height,thumbnail_key,feature_version,"
                 "ctime_ns,identity_json,generation_token,path"
-                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
             )
         self.con.execute(sql, values)
 
@@ -1374,12 +1406,12 @@ class SqliteCache:
         self._validate_feature_payload(row, metadata)
         self._require_current_binding(
             row[1],
-            row[21],
             row[20],
+            row[19],
+            row[21],
             row[22],
             row[23],
-            row[24],
-            row[19],
+            row[18],
         )
         return row
 
@@ -1406,7 +1438,6 @@ class SqliteCache:
                 )
             },
             "phashes": MAX_FEATURE_PAYLOAD_BYTES,
-            "thumbnail": MAX_CACHE_THUMBNAIL_BYTES,
             "generation_token": MAX_CACHE_GENERATION_TOKEN_BYTES,
         }
         integer_columns = {
@@ -1446,7 +1477,6 @@ class SqliteCache:
             frame_count,
             _phashes,
             phash_count,
-            _thumbnail,
             thumbnail_width,
             thumbnail_height,
             thumbnail_key,
@@ -1544,7 +1574,7 @@ class SqliteCache:
         rowid, path_str = row[:2]
         encoded_blocks = row[2:10]
         width, height, frame_count, phashes, phash_count = row[10:15]
-        thumbnail, thumbnail_width, thumbnail_height, thumbnail_key, feature_version = row[15:20]
+        thumbnail_width, thumbnail_height, thumbnail_key, feature_version = row[15:19]
         block_count = int(phash_count)
         blocks = tuple(tuple(bytes_to_colors(block or b"")) for block in encoded_blocks[:block_count])
         payload = _deserialize_feature_payload(phashes, block_count)
@@ -1560,17 +1590,16 @@ class SqliteCache:
             feature_version=feature_version,
             frame_count=int(frame_count),
             blocks=blocks,
-            thumbnail_png=bytes(thumbnail),
             thumbnail_size=(int(thumbnail_width), int(thumbnail_height)),
             thumbnail_key=thumbnail_key,
         )
         self._require_current_binding(
             path_str,
-            row[21],
             row[20],
+            row[19],
+            row[21],
             row[22],
             row[23],
-            row[24],
             feature_version,
         )
         return result
@@ -1584,7 +1613,7 @@ class SqliteCache:
             row[11],
             row[13],
             row[14],
-            row[19],
+            row[18],
         )
         payload = _deserialize_feature_payload(phashes, int(phash_count))
         result = CachedImageFeatureMetadata(
@@ -1600,11 +1629,11 @@ class SqliteCache:
         )
         self._require_current_binding(
             path_str,
-            row[21],
             row[20],
+            row[19],
+            row[21],
             row[22],
             row[23],
-            row[24],
             feature_version,
         )
         return result
@@ -1667,10 +1696,20 @@ class SqliteCache:
             raise CacheSafetyError("new image cache changed before SQLite initialization")
         return current_identity
 
-    def _open_verified_writable(self, path, expected_identity):
+    def _open_verified_writable(
+        self,
+        path,
+        expected_identity,
+        *,
+        replace_retired=False,
+    ):
         """Open the writable connection while a verified path lease is held."""
 
-        with _hold_database_path_identity(path, expected_identity):
+        with _hold_database_path_identity(
+            path,
+            expected_identity,
+            allow_content_change=replace_retired,
+        ):
             _read_existing_header(path, expected_identity)
             _require_no_sqlite_sidecars(path)
             self.con = self._connect(readonly=False)
@@ -1717,10 +1756,8 @@ class SqliteCache:
                 )
                 _require_no_sqlite_sidecars(path)
                 version = self._validate_schema(None)
-                if version != self.schema_version:
-                    raise CacheSchemaError(
-                        "image cache schema {} is unsupported; automatic migration is disabled".format(version)
-                    )
+                if version != self.schema_version and (self.readonly or version != _RETIRED_SCHEMA_VERSION):
+                    raise CacheSchemaError("image cache schema {} is unsupported for this open mode".format(version))
             else:
                 self.con = self._connect(readonly=False)
                 self._require_database_identity(
@@ -1745,6 +1782,7 @@ class SqliteCache:
                 current_identity = self._open_verified_writable(
                     path,
                     expected_identity,
+                    replace_retired=existed and version == _RETIRED_SCHEMA_VERSION,
                 )
             self._database_identity = current_identity
         except BaseException:
@@ -1779,7 +1817,31 @@ class SqliteCache:
         version = self._validate_schema(None)
         if version == self.schema_version:
             return
-        raise CacheSchemaError("unsupported image cache schema version: {}".format(version))
+        if version != _RETIRED_SCHEMA_VERSION:
+            raise CacheSchemaError("unsupported image cache schema version: {}".format(version))
+        self._replace_retired_schema()
+
+    def _replace_retired_schema(self):
+        """Discard a validated obsolete cache and reclaim all of its pages."""
+
+        self.con.execute("BEGIN IMMEDIATE")
+        try:
+            self.con.execute("DROP TABLE pictures")
+            self.con.execute("DROP TABLE schema_version")
+            self.con.execute(self.create_schema_version_query)
+            self.con.execute(
+                "INSERT INTO schema_version(version,description) VALUES(?,?)",
+                (self.schema_version, self.schema_version_description),
+            )
+            self.con.execute(self.create_table_query)
+            self.con.execute(self.create_index_query)
+            self.con.execute("PRAGMA user_version = {}".format(self.schema_version))
+            self.con.commit()
+        except BaseException:
+            self.con.rollback()
+            raise
+        _vacuum_owned_database(self.con)
+        self._validate_schema(self.schema_version)
 
     def _validate_schema(self, expected_version):
         try:
@@ -1820,16 +1882,21 @@ class SqliteCache:
             if len(rows) != 1:
                 raise CacheSchemaError("image cache schema version record is invalid")
             version_type, version_value, description_type, description = rows[0]
-            if (
-                version_type != "integer"
-                or version_value is None
-                or description_type != "text"
-                or description != self.schema_version_description
-            ):
+            if version_type != "integer" or version_value is None or description_type != "text":
                 raise CacheSchemaError("image cache schema version record is invalid")
             version = int(version_value)
-            if version != self.schema_version:
+            if version == self.schema_version:
+                expected_description = self.schema_version_description
+                picture_columns = _PICTURE_COLUMNS_V6
+                picture_table_query = self.create_table_query
+            elif version == _RETIRED_SCHEMA_VERSION:
+                expected_description = _RETIRED_SCHEMA_DESCRIPTION
+                picture_columns = _PICTURE_COLUMNS_V5
+                picture_table_query = _CREATE_TABLE_QUERY_V5
+            else:
                 raise CacheSchemaError("image cache schema version is unsupported")
+            if description != expected_description:
+                raise CacheSchemaError("image cache schema version record is invalid")
             if expected_version is not None and version != expected_version:
                 raise CacheSchemaError(
                     "image cache schema version mismatch: {} != {}".format(
@@ -1838,17 +1905,17 @@ class SqliteCache:
                     )
                 )
             user_version = int(self.con.execute("PRAGMA user_version").fetchone()[0])
-            if user_version != self.schema_version:
+            if user_version != version:
                 raise CacheSchemaError("image cache schema version metadata is unsupported")
             picture_info = _bounded_table_columns(
                 self.con,
                 "pictures",
-                len(_PICTURE_COLUMNS_V5),
+                len(picture_columns),
             )
             if picture_info is None:
                 raise CacheSchemaError("image cache pictures table shape is unsupported")
             columns = tuple(row[0] for row in picture_info)
-            if columns != _PICTURE_COLUMNS_V5:
+            if columns != picture_columns:
                 raise CacheSchemaError("image cache pictures table shape is unsupported")
             blob_columns = {
                 "blocks",
@@ -1860,9 +1927,10 @@ class SqliteCache:
                 "blocks7",
                 "blocks8",
                 "phashes",
-                "thumbnail",
                 "generation_token",
             }
+            if version == _RETIRED_SCHEMA_VERSION:
+                blob_columns.add("thumbnail")
             text_columns = {
                 "path",
                 "thumbnail_key",
@@ -1914,7 +1982,7 @@ class SqliteCache:
                 raise CacheSchemaError("image cache path index has an unsupported shape")
             expected_sql = (
                 ("table", "schema_version", self.create_schema_version_query),
-                ("table", "pictures", self.create_table_query),
+                ("table", "pictures", picture_table_query),
                 ("index", "idx_path", self.create_index_query),
             )
             for object_type, name, sql in expected_sql:
@@ -1946,6 +2014,21 @@ class SqliteCache:
                 raise CacheSafetyError("image cache identity changed before explicit clear")
         with self.con:
             self.con.execute("DELETE FROM pictures")
+        _vacuum_owned_database(self.con)
+        if self.dbname != ":memory:":
+            _require_no_sqlite_sidecars(path)
+            _file_stat, vacuumed_identity = _require_plain_regular_file(
+                path,
+                single_link=True,
+            )
+            if (
+                same_physical_file(
+                    self._database_identity,
+                    vacuumed_identity,
+                ).verdict
+                is not IdentityVerdict.SAME
+            ):
+                raise CacheSafetyError("image cache identity changed while reclaiming cleared storage")
 
     def close(self):
         if self.con is not None:

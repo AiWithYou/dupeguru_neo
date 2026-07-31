@@ -1625,3 +1625,19 @@ msgstr ""
 #: qt\progress_window.py:65
 msgid "Are you sure you want to stop the current operation?"
 msgstr ""
+
+#: qt\app.py:386
+msgid ""
+"Clear all rebuildable scan data?\n"
+"\n"
+"This removes cached file hashes, picture analysis, on-demand picture thumbnails, and the Persistent Catalog (including scan history and unfinished scans). Your files, settings, exclusions, and saved result files are not removed.\n"
+"\n"
+"Persistent Catalog: {}"
+msgstr ""
+
+#: qt\preferences_dialog.py:261
+msgid ""
+"These limits apply to filename, contents, folder, tag, and picture scans "
+"that discover files directly. Reaching a limit publishes no partial "
+"duplicate list; narrow the selected folders or add exclusions."
+msgstr ""

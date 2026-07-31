@@ -462,6 +462,17 @@ def _bucket_by_exact_digest(files, attrname, result):
 def _compare_exact_files(first, second, stop_check=None):
     if stop_check is not None and stop_check():
         raise InterruptedError("exact scan resource limit reached")
+    compare_with_proof = getattr(first, "compare_bytes_with_sha256", None)
+    compare_owner = next(
+        (base for base in type(first).__mro__ if "compare_bytes" in base.__dict__),
+        None,
+    )
+    proof_owner = next(
+        (base for base in type(first).__mro__ if "compare_bytes_with_sha256" in base.__dict__),
+        None,
+    )
+    if compare_with_proof is not None and proof_owner is not None and compare_owner is proof_owner:
+        return compare_with_proof(second, stop_check=stop_check)
     interruptible_compare = getattr(first, "compare_bytes_interruptible", None)
     if stop_check is not None and interruptible_compare is not None:
         return interruptible_compare(second, stop_check)
@@ -525,6 +536,21 @@ def _verified_classes(files, digest, size, verification_failures, stop_check=Non
                             )
                         )
                         return []
+                review_digest = getattr(comparison, "sha256_digest", None)
+                if review_digest is not None:
+                    class_review_digest = exact_class["review_digest"]
+                    if class_review_digest is not None and class_review_digest != review_digest:
+                        verification_failures.append(
+                            ExactVerificationFailure(
+                                first_path=str(getattr(representative, "path", "")),
+                                second_path=str(getattr(file, "path", "")),
+                                error_type="ReviewDigestMismatch",
+                                message="byte-identical comparisons produced inconsistent SHA-256 proofs",
+                                phase="review_proof",
+                            )
+                        )
+                        return []
+                    exact_class["review_digest"] = review_digest
                 exact_class["files"].append(file)
                 exact_class["comparisons"].append(
                     ExactComparisonEvidence(
@@ -549,12 +575,41 @@ def _verified_classes(files, digest, size, verification_failures, stop_check=Non
             # risking unbounded work.
             return []
         if not placed:
-            classes.append({"files": [file], "comparisons": []})
+            classes.append({"files": [file], "comparisons": [], "review_digest": None})
     algorithm = getattr(files[0], "digest_algorithm", "test-double")
     result = []
     for exact_class in classes:
         if len(exact_class["files"]) < 2:
             continue
+        review_digest = exact_class["review_digest"]
+        if review_digest is not None:
+            representative = exact_class["files"][0]
+            for compared_file in exact_class["files"]:
+                prime_review_digest = getattr(
+                    compared_file,
+                    "prime_review_content_digest",
+                    None,
+                )
+                if prime_review_digest is None:
+                    continue
+                try:
+                    prime_review_digest(review_digest)
+                except Exception as ex:
+                    logging.warning(
+                        "Couldn't bind organizer content proof for %r: %s",
+                        compared_file,
+                        ex,
+                    )
+                    verification_failures.append(
+                        ExactVerificationFailure(
+                            first_path=str(getattr(representative, "path", "")),
+                            second_path=str(getattr(compared_file, "path", "")),
+                            error_type=type(ex).__name__,
+                            message=str(ex) or type(ex).__name__,
+                            phase="review_proof",
+                        )
+                    )
+                    return []
         evidence = ExactEvidence(
             kind=VerificationKind.VERIFIED_EXACT,
             algorithm=algorithm,

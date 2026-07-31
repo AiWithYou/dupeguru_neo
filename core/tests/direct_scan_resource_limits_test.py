@@ -193,11 +193,16 @@ def test_max_seconds_interrupts_final_byte_comparison_between_bounded_chunks(
     stop_checks = []
     original = core_fs.File.compare_bytes_interruptible
 
-    def expiring_compare(file, other, stop_check):
+    def expiring_compare(file, other, stop_check, *, compute_sha256=False):
         nonlocal comparing_started
         comparing_started = True
         stop_checks.append(stop_check)
-        return original(file, other, stop_check)
+        return original(
+            file,
+            other,
+            stop_check,
+            compute_sha256=compute_sha256,
+        )
 
     monkeypatch.setattr(
         core_fs.File,

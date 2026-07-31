@@ -462,9 +462,10 @@ def _artifact_parameters_hash(block_count, orientation_count):
 class VisualFeatureArtifact:
     """Lightweight derived data suitable for reports and catalog persistence.
 
-    The expensive 15x15 RGB blocks and thumbnail bytes remain in SQLite.  ``cache_record_id`` is
-    only a run-local refinement reference and is deliberately cleared in portable catalog
-    payloads.  A catalog artifact can therefore be paged without retaining decoded pixels.
+    The expensive 15x15 RGB blocks remain in SQLite, while display thumbnails are decoded lazily
+    by the UI.  ``cache_record_id`` is only a run-local refinement reference and is deliberately
+    cleared in portable catalog payloads.  A catalog artifact can therefore be paged without
+    retaining decoded pixels.
     """
 
     asset: VisualAssetSnapshot

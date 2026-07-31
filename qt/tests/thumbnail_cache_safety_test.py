@@ -54,7 +54,7 @@ def test_cache_parent_symlink_is_rejected_before_creation(tmp_path):
     assert not (outside / "cache").exists()
 
 
-def test_linked_shard_blocks_store_load_and_cleanup_without_touching_source(
+def test_linked_shard_blocks_store_load_cleanup_and_clear_without_touching_source(
     tmp_path,
 ):
     cache = ThumbnailDiskCache(tmp_path / "cache")
@@ -74,6 +74,8 @@ def test_linked_shard_blocks_store_load_and_cleanup_without_touching_source(
         cache.load(key, QSize(40, 30))
     with pytest.raises(ThumbnailCacheSafetyError, match="linked shards"):
         cache.cleanup()
+    with pytest.raises(ThumbnailCacheSafetyError, match="linked shards"):
+        cache.clear()
 
     assert source.read_bytes() == original
 
@@ -118,6 +120,8 @@ def test_existing_target_hardlink_is_rejected_without_touching_source(tmp_path):
         cache.load(key, QSize(40, 30))
     with pytest.raises(ThumbnailCacheSafetyError, match="hard-linked entries"):
         cache.cleanup()
+    with pytest.raises(ThumbnailCacheSafetyError, match="hard-linked entries"):
+        cache.clear()
 
     assert source.read_bytes() == original
     assert target.read_bytes() == original

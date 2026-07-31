@@ -21,7 +21,6 @@ def _features(orientation_count=1):
         color_histogram=(1024,) + (0,) * 63,
         tile_fingerprints=(TileFingerprint("center_75", 7, 9, (1250, 1250, 8750, 8750)),),
         quality=ImageQuality(8, 2, 3, 0.125),
-        thumbnail_png=b"\x89PNG\r\ncache-test",
         thumbnail_size=(32, 16),
         thumbnail_key="thumbnail-key",
     )
@@ -48,7 +47,7 @@ def test_normalized_features_round_trip_and_persist(tmp_path):
     assert cached.color_histogram == (1024,) + (0,) * 63
     assert cached.tile_fingerprints == (TileFingerprint("center_75", 7, 9, (1250, 1250, 8750, 8750)),)
     assert cached.quality == ImageQuality(8, 2, 3, 0.125)
-    assert cached.thumbnail_png == b"\x89PNG\r\ncache-test"
+    assert not hasattr(cached, "thumbnail_png")
     assert cached.thumbnail_size == (32, 16)
     assert cached.thumbnail_key == "thumbnail-key"
     assert cached.feature_version == FEATURE_VERSION
@@ -59,6 +58,11 @@ def test_normalized_features_round_trip_and_persist(tmp_path):
     assert metadata.dhashes == tuple(range(8))
     assert metadata.quality == ImageQuality(8, 2, 3, 0.125)
     assert not hasattr(metadata, "thumbnail_png")
+
+    connection = sqlite3.connect(database_path)
+    columns = tuple(row[1] for row in connection.execute("PRAGMA table_info(pictures)"))
+    connection.close()
+    assert "thumbnail" not in columns
 
     reopened = SqliteCache(str(database_path))
     assert reopened.get_features(str(image_path)) == cached

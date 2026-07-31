@@ -1024,9 +1024,32 @@ class FilesDB:
                 raise
 
     def clear(self) -> None:
-        with self.lock, self.conn as conn:
-            conn.execute(self.drop_table_query)
-            conn.execute(self.create_table_query)
+        with self.lock:
+            with self.conn as conn:
+                conn.execute(self.drop_table_query)
+                conn.execute(self.create_table_query)
+            # DROP only moves pages to SQLite's freelist. Compact after the
+            # transaction so "Clear Cache" returns the disk capacity instead
+            # of leaving a large, empty cache file behind.
+            attached_category = getattr(sqlite3, "SQLITE_LIMIT_ATTACHED", None)
+            attached_limit = None
+            if attached_category is not None and hasattr(self.conn, "setlimit"):
+                attached_limit = self.conn.getlimit(attached_category)
+            try:
+                # SQLite's VACUUM implementation temporarily uses an attached
+                # database internally. Permit only that one controlled slot,
+                # then restore the cache connection's normal zero-attach
+                # boundary even when compaction fails.
+                if attached_limit is not None:
+                    self.conn.setlimit(attached_category, 1)
+                    if self.conn.getlimit(attached_category) < 1:
+                        raise HashCacheSafetyError("SQLite could not permit its internal VACUUM database")
+                self.conn.execute("VACUUM")
+            finally:
+                if attached_limit is not None:
+                    self.conn.setlimit(attached_category, attached_limit)
+                    if self.conn.getlimit(attached_category) != attached_limit:
+                        raise HashCacheSafetyError("SQLite attachment limit was not restored after VACUUM")
 
     @classmethod
     def _validate_key(cls, key: str) -> None:
@@ -1462,12 +1485,12 @@ class File:
     def compare_bytes(self, other):
         return self.compare_bytes_interruptible(other, None)
 
-    def compare_bytes_with_sha256(self, other):
+    def compare_bytes_with_sha256(self, other, stop_check=None):
         """Compare bytes and return their SHA-256 in the same streaming pass."""
 
         return self.compare_bytes_interruptible(
             other,
-            None,
+            stop_check,
             compute_sha256=True,
         )
 
