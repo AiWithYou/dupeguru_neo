@@ -8,8 +8,12 @@
 [最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
-> 5.4.0デスクトップ・プレリリースには、下の画面例と同じ簡略化UIが
-> 含まれています。Windows版とmacOS版は未署名です。
+> 上の直接ダウンロードは、`desktop-5.4.0` タグのコミット `9c0241cf` に
+> 固定された公開済みデスクトップ・プレリリースです。この README は、特記が
+> ない限り現在の `main` を説明します。タグ公開後に追加された機能（画像詳細
+> ギャラリーの **Enter「保存対象を確定して次へ」** を含む）は、将来の公開版へ
+> 収録されるまで `main` の開発ビルドまたはソースでのみ利用できます。Windows
+> EXE は Authenticode 未署名、macOS APP は ad-hoc 署名のみで未公証です。
 
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
 重複検出・大規模メディアライブラリ整理ツールです。dupeGuru の成熟した
@@ -112,7 +116,9 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 基本操作は「フォルダーを選ぶ」「重複を検索する」の2段階です。
 
 1. 「対象ファイル」で、すべて・音楽・画像のいずれかを選びます。
-2. 通常の完全一致検索では「比較方法」を「内容」のままにします。
+2. バイト単位の完全一致を探す場合、すべて・音楽モードでは「比較方法」を
+   「内容」のままにし、画像モードでは「バイト単位の完全一致」を選びます。
+   画像モードの「視覚的な類似」は知覚的な比較で、完全一致の証拠にはなりません。
 3. 「フォルダーを追加…」またはドラッグ＆ドロップで調べたい場所を追加します。
    「扱い」は通常「整理する」のままで構いません。原本として必ず残す場所だけ
    「すべて残す」、比較だけに使う場所は「比較だけ」、調べない場所は「対象外」
@@ -126,12 +132,15 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 「チェック」し、上部の件数と容量を確認します。「すべての重複をチェック」と
 「チェックをすべて外す」で選択をやり直せます。
 
-画像モードの詳細ギャラリーでは、緑色のバイト単位完全一致グループで
-**Enter** を押すと、残すファイルを受け入れ、余分な全コピーを最新の安全性
-ゲートで再確認し、一括チェックして次へ進みます。1件でも許可できなければ
-新たなチェックは1件も行いません。黄色・青の類似グループは確認専用で、この
-ショートカットは使えません。この操作はチェック状態を変えるだけで、ファイルを
-移動・削除しません。現在のグループを確定せず次へ進む場合は **Space** を使います。
+画像モードで「バイト単位の完全一致」を選ぶと、緑色の完全一致グループを詳細
+ギャラリーで確認できます。高速レビュー **「シンギュラリティ」** とは、その
+グループで **Enter「保存対象を確定して次へ」** を実行する操作だけを指します。
+保存対象はチェックせず、余分な全コピーが現在の完全な結果で一括チェック可能かを
+再確認してから、1つのバッチとしてチェックし、次へ進みます。1件でも許可できなければ
+新たなチェックは1件も行いません。黄色・青の類似グループでは使えません。この操作は
+チェック状態を変えるだけで、ファイルを移動・隔離・削除しません。ファイル内容は
+隔離の実行直前に改めて検証されます。現在のグループを確定せず次へ進む場合は
+**Space** を使います。
 
 「チェックした完全一致ファイルを隔離…」を使えるのは、現在の完全なスキャンで
 バイト単位の一致が確認された、チェック済みファイルだけです。類似・不完全・
@@ -156,10 +165,11 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 ファイル数・フォルダー数・問題数・時間の上限を設定できます。上限へ達した場合は
 部分的な入力を照合せず、重複グループも公開しません。
 
-標準・音楽モードの完全一致「内容」スキャンは、サイズで候補を絞り、候補だけを
-段階的にハッシュして、最後にバイト単位で比較する軽量な直接スキャンです。GUI の
-スキャン履歴を永続カタログへ蓄積しません。再開可能な履歴やカタログレポートが
-必要な場合に限り、後述の `dupeguru catalog` CLI を明示的に使用してください。
+標準・音楽モードの「内容」と画像モードの「バイト単位の完全一致」は、サイズで
+候補を絞り、候補だけを段階的にハッシュして、最後にバイト単位で比較する軽量な
+直接スキャンです。GUI のスキャン履歴を永続カタログへ蓄積しません。再開可能な
+履歴やカタログレポートが必要な場合に限り、後述の `dupeguru catalog` CLI を
+明示的に使用してください。
 
 ![日本語の高度な設定](docs/images/ja/preferences-advanced.png)
 
@@ -168,7 +178,8 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-現在のソース版は **5.4.0** です。
+現在の `main` が報告するパッケージ版番号も **5.4.0** ですが、公開済み
+`desktop-5.4.0` タグと同一のソーススナップショットではありません。
 
 - **Windows 10 / 11（64ビット）:**
   [**5.4.0 EXE を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe)
@@ -375,6 +386,39 @@ python -m flake8 .
 python build.py --modules
 python run.py --self-test
 ```
+
+### 現在のコミットから Windows EXE を生成
+
+Windows EXE は `main` へ統合する各更新で CI が生成・検証し、PR でも同じ
+パッケージ処理を事前検証します。ローカルで同じ成果物を作る場合は、クリーンな
+commit と **CPython 3.13.14** を使用し、空の `portable-build`、
+`portable-dist`、`desktop-build`、`desktop-dist` ディレクトリから次を
+実行します。
+
+```powershell
+$env:SOURCE_DATE_EPOCH = (git show -s --format=%ct HEAD).Trim()
+python -m pip install --constraint requirements-release.txt `
+  "pip==26.1.2" "setuptools==83.0.0" "wheel==0.47.0" `
+  "polib==1.2.0" "sphinx==8.1.3" "pyinstaller==6.21.0" `
+  "packaging==26.2" --editable .
+python build.py --clean
+python scripts/portable_bundle.py build `
+  --output-directory portable-dist --build-root portable-build
+python scripts/desktop_bundle.py build `
+  --output-directory desktop-dist `
+  --portable-build-root portable-build --build-root desktop-build
+$exe = @(Get-ChildItem -LiteralPath desktop-dist -Filter *.exe -File)
+if ($exe.Count -ne 1) { throw "Expected exactly one desktop EXE" }
+python scripts/desktop_bundle.py verify --artifact $exe[0].FullName --project-root .
+$actual = (Get-FileHash -LiteralPath $exe[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$expected = ((Get-Content -Raw -LiteralPath "$($exe[0].FullName).sha256") -split '\s+')[0].ToLowerInvariant()
+if ($actual -ne $expected) { throw "Desktop EXE SHA-256 mismatch" }
+$actual
+```
+
+生成される EXE、`.exe.sha256`、`README-WINDOWS.txt` と各 build ディレクトリは
+Git 管理対象外です。最終報告では、対応 commit、EXE の場所、実際の SHA-256、
+検証結果を記録します。
 
 リリース成果物は変更不能なタグから構築し、クリーン環境へインストールして、
 依存関係の整合性、SHA-256 インベントリを検証します。GitHub attestation と、

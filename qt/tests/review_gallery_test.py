@@ -11,8 +11,11 @@ from PyQt6.QtGui import QColor, QImage, QPixmap  # noqa: E402
 from PyQt6.QtTest import QSignalSpy, QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget  # noqa: E402
 
+from core import fs  # noqa: E402
 from core.engine import VerificationKind  # noqa: E402
 from core.gui.details_panel import DetailsPanel  # noqa: E402
+from core.pe.scanner import ScannerPE  # noqa: E402
+from core.scanner import ScanType  # noqa: E402
 from hscommon.notify import Broadcaster  # noqa: E402
 from qt.pe.comparison import ComparisonError, ComparisonMode  # noqa: E402
 from qt.pe.details_dialog import DetailsDialog  # noqa: E402
@@ -308,6 +311,32 @@ def test_relation_classes_have_distinct_required_colors(qapp):
     assert semantic_model.data(semantic_index, ReviewRole.RELATION) is ReviewRelation.SEMANTIC_RELATED
     assert semantic_model.data(semantic_index, ReviewRole.RELATION_COLOR) == QColor("#3487E8")
     assert semantic_model.data(semantic_index, ReviewRole.DELETE_ENABLED) is False
+
+
+def test_picture_byte_exact_scan_reaches_green_enter_review(qapp, tmp_path):
+    first_path = tmp_path / "first.png"
+    second_path = tmp_path / "second.png"
+    payload = b"byte-identical picture payload\n" * 64
+    first_path.write_bytes(payload)
+    second_path.write_bytes(payload)
+    scanner = ScannerPE()
+    scanner.scan_type = ScanType.CONTENTS
+
+    [group] = scanner.get_dupe_groups(
+        [fs.File(first_path), fs.File(second_path)],
+    )
+    results = FakeResults(group)
+    model = ReviewGalleryModel(FakeThumbnailLoader())
+    accepted = QSignalSpy(model.acceptKeeperRequested)
+
+    model.set_group(group, results)
+
+    assert group.verification_kind is VerificationKind.VERIFIED_EXACT
+    assert model.relation is ReviewRelation.BYTE_VERIFIED_EXACT
+    assert model.request_accept_keeper()
+    assert len(accepted) == 1
+    assert accepted[0][0] is group.ref
+    assert accepted[0][1] == tuple(group.dupes)
 
 
 @pytest.mark.parametrize("relation_kind", ("transformed", "crop_candidate"))

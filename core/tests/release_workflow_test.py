@@ -19,8 +19,8 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
 
     assert "[English README](README.en.md)" in "\n".join(readme.splitlines()[:8])
     assert "README（GitHub既定）" in "\n".join(english.splitlines()[:8])
-    assert f"現在のソース版は **{__version__}**" in readme
-    assert f"current source version is **{__version__}**" in english
+    assert f"現在の `main` が報告するパッケージ版番号も **{__version__}**" in readme
+    assert f"Current `main` still reports package version **{__version__}**" in english
     for text in (readme, english):
         assert "https://github.com/AiWithYou/dupeguru_neo/releases" in text
         assert "actions/workflows/default.yml?query=branch%3Amain+event%3Apush" in text
@@ -35,6 +35,16 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
         assert "dupeguru-neo-5.0.0-" not in text
         assert "desktop-5.3.0-dev" not in text
         assert "desktop-5.3.0-macos-dev" not in text
+        assert "9c0241cf" in text
+        assert "Singularity" in text or "シンギュラリティ" in text
+        assert "CPython 3.13.14" in text
+        assert "scripts/portable_bundle.py build" in text
+        assert "scripts/desktop_bundle.py build" in text
+        assert "scripts/desktop_bundle.py verify" in text
+    assert "バイト単位の完全一致" in readme
+    assert "視覚的な類似" in readme
+    assert "Byte-exact contents" in english
+    assert "Visual similarity" in english
     for required in (
         "Verified Exact",
         "安全性ラベル",
@@ -62,6 +72,22 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
     ):
         assert f"]({screenshot})" in english
         assert ROOT.joinpath(screenshot).is_file()
+
+
+def test_repository_contract_requires_a_verified_windows_exe_after_updates():
+    instructions = ROOT.joinpath("AGENTS.md").read_text(encoding="utf-8")
+
+    for required in (
+        "Windows EXE after every update",
+        "Desktop package / windows",
+        "CPython 3.13.14",
+        "SOURCE_DATE_EPOCH",
+        "scripts/desktop_bundle.py build",
+        "scripts/desktop_bundle.py verify",
+        "fail if it differs from the `.exe.sha256` sidecar",
+        "Never commit them",
+    ):
+        assert required in instructions
 
 
 def test_desktop_release_announcement_is_an_explicit_unpublished_template():

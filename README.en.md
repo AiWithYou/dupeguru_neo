@@ -8,8 +8,13 @@
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
-> The 5.4.0 desktop pre-release includes the same simplified UI shown in the
-> screenshots below. The Windows and macOS builds are unsigned.
+> The direct downloads above are the published desktop prerelease fixed at
+> commit `9c0241cf` by the `desktop-5.4.0` tag. Unless otherwise noted, this
+> README documents current `main`. Features added after that tag—including
+> **Enter — Accept keeper and next** in Picture mode's detail gallery—are
+> available only from a `main` development build or the current source until a
+> future release includes them. The Windows EXE is not Authenticode-signed;
+> the macOS APP is only ad-hoc signed and is not Apple-notarized.
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
 organizer for Windows, macOS, and Linux. It retains dupeGuru's mature Python
@@ -115,7 +120,9 @@ The normal workflow has two steps: choose folders, then scan for duplicates.
 
 1. Choose Standard, Music, or Picture under Application Mode.
 2. In Standard or Music mode, leave Scan Type set to Contents for ordinary
-   byte-exact duplicate checks. Picture mode's Contents option is perceptual.
+   byte-exact duplicate checks. In Picture mode, select Byte-exact contents.
+   Picture mode's Visual similarity option is perceptual and never establishes
+   byte-exact evidence.
 3. Add folders with **Add Folder…** or drag and drop. Most folders can keep the
    **Organize** handling state. Use **Keep all files** for protected originals,
    **Compare only** for a read-only comparison source, and **Skip** for folders
@@ -138,12 +145,15 @@ In each result group, the first row is the file that will be kept. Only the
 extra copies have checkboxes. **Mark All** and **Mark None** make the review
 state explicit, while the summary shows the selected count and size.
 
-In Picture mode's detail gallery, press **Enter** on a green byte-verified exact
-group to accept its keeper, recheck every extra copy through the live safety
-gate, mark the eligible batch, and advance. The operation is all-or-nothing: if
-one member is not eligible, no member is newly marked. Approximate yellow and
-blue groups remain review-only and never expose this shortcut. This changes
-review marks only; it does not move or delete files. Press **Space** to advance
+Select Byte-exact contents in Picture mode to review green exact groups in the
+detail gallery. The fast review action **“Singularity”** means only **Enter —
+Accept keeper and next** for such a group. It leaves the keeper unmarked,
+rechecks whether every extra copy is eligible to be marked from the current
+complete result, marks the extras as one batch, and advances. The operation is
+all-or-nothing: if one member is not eligible, no member is newly marked.
+Approximate yellow and blue groups never expose this shortcut. It changes
+review marks only; it does not move, quarantine, or delete files. File contents
+are revalidated immediately before quarantine. Press **Space** to advance
 without accepting the current group.
 
 **Quarantine Verified Marked Files…** is enabled only for checked byte-exact
@@ -155,7 +165,8 @@ not immediate permanent deletion.
 
 ## Easy-launch desktop builds
 
-The current source version is **5.4.0**.
+Current `main` still reports package version **5.4.0**, but it is not the same
+source snapshot as the published `desktop-5.4.0` tag.
 
 - **64-bit Windows 10 / 11:**
   [**Download the 5.4.0 EXE directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe).
@@ -370,6 +381,39 @@ python -m flake8 .
 python build.py --modules
 python run.py --self-test
 ```
+
+### Build a Windows EXE from the current commit
+
+CI builds and verifies the Windows EXE for every update integrated into `main`,
+and a pull request runs the same packaging checks in advance. To reproduce that
+artifact locally, use a clean commit with **CPython 3.13.14** and start with
+empty `portable-build`, `portable-dist`, `desktop-build`, and `desktop-dist`
+directories:
+
+```powershell
+$env:SOURCE_DATE_EPOCH = (git show -s --format=%ct HEAD).Trim()
+python -m pip install --constraint requirements-release.txt `
+  "pip==26.1.2" "setuptools==83.0.0" "wheel==0.47.0" `
+  "polib==1.2.0" "sphinx==8.1.3" "pyinstaller==6.21.0" `
+  "packaging==26.2" --editable .
+python build.py --clean
+python scripts/portable_bundle.py build `
+  --output-directory portable-dist --build-root portable-build
+python scripts/desktop_bundle.py build `
+  --output-directory desktop-dist `
+  --portable-build-root portable-build --build-root desktop-build
+$exe = @(Get-ChildItem -LiteralPath desktop-dist -Filter *.exe -File)
+if ($exe.Count -ne 1) { throw "Expected exactly one desktop EXE" }
+python scripts/desktop_bundle.py verify --artifact $exe[0].FullName --project-root .
+$actual = (Get-FileHash -LiteralPath $exe[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+$expected = ((Get-Content -Raw -LiteralPath "$($exe[0].FullName).sha256") -split '\s+')[0].ToLowerInvariant()
+if ($actual -ne $expected) { throw "Desktop EXE SHA-256 mismatch" }
+$actual
+```
+
+The EXE, its `.exe.sha256` sidecar, `README-WINDOWS.txt`, and all four build
+directories are ignored by Git. The final report records the source commit,
+artifact location, actual SHA-256, and verification result.
 
 Release artifacts are built from immutable tags, installed in clean
 environments, checked for dependency consistency, inventoried with SHA-256, and

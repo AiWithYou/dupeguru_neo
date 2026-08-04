@@ -153,7 +153,7 @@ msgstr "ファイル名 - フィールド（順序なし）"
 msgid "Tags"
 msgstr "タグ"
 
-#: core\me\scanner.py:24 core\pe\scanner.py:30 core\se\scanner.py:17
+#: core\me\scanner.py:24 core\se\scanner.py:17
 msgid "Contents"
 msgstr "内容"
 
@@ -165,7 +165,15 @@ msgstr "%d/%d 枚の写真を分析しました"
 msgid "Read EXIF of %d/%d pictures"
 msgstr "%d/%d枚の写真のEXIFを読みました"
 
+#: core\pe\scanner.py:30
+msgid "Visual similarity"
+msgstr "視覚的な類似"
+
 #: core\pe\scanner.py:31
+msgid "Byte-exact contents"
+msgstr "バイト単位の完全一致"
+
+#: core\pe\scanner.py:32
 msgid "EXIF Timestamp"
 msgstr "EXIFタイムスタンプ"
 
