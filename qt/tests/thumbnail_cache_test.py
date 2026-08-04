@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -47,6 +49,7 @@ def qapp():
     yield application
     assert QThreadPool.globalInstance().waitForDone(3000)
     application.processEvents()
+    assert review_gallery._thumbnail_task_runtime().task_count == 0
 
 
 def close_loader(loader, application):
@@ -597,6 +600,8 @@ def test_closed_thumbnail_loader_ignores_late_worker_publication(qapp, tmp_path)
         expected_generation_token=source_generation_token(source_path),
     )
     assert loader.pending_count == 1
+    assert pool.task.autoDelete() is False
+    assert loader._tasks == {(loader._generation, key): pool.task}
 
     loader.close()
     pool.task.run()
@@ -604,6 +609,55 @@ def test_closed_thumbnail_loader_ignores_late_worker_publication(qapp, tmp_path)
 
     assert loader.pending_count == 0
     assert loader.cached_count == 0
+    assert loader._tasks == {}
+    assert len(ready) == 0
+
+
+def test_real_worker_completion_is_retained_until_gui_delivery(qapp):
+    class BlockingCache:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def load(self, *_args):
+            self.started.set()
+            assert self.release.wait(10)
+            return None
+
+        def store(self, *_args):
+            return False
+
+    pool = QThreadPool()
+    pool.setMaxThreadCount(1)
+    cache = BlockingCache()
+    loader = LazyThumbnailLoader(
+        QSize(40, 30),
+        thread_pool=pool,
+        disk_cache=cache,
+        max_concurrent_tasks=1,
+    )
+    initial_runtime_tasks = loader._task_runtime.task_count
+    key = "1" * 64
+    ready = QSignalSpy(loader.thumbnailReady)
+    loader.request(
+        key,
+        "",
+        expected_generation_token=TEST_GENERATION_TOKEN,
+    )
+    task = loader._tasks[(loader._generation, key)]
+    assert task.signals.parent() is loader._task_runtime
+    assert cache.started.wait(5)
+
+    loader.close()
+    cache.release.set()
+    assert pool.waitForDone(10000)
+
+    assert loader._tasks == {(task.generation, task.key): task}
+    assert loader._task_runtime.task_count == initial_runtime_tasks + 1
+    qapp.processEvents()
+    assert loader._tasks == {}
+    assert loader._task_runtime.task_count == initial_runtime_tasks
+    assert not loader._task_runtime.is_retained(task)
     assert len(ready) == 0
 
 
@@ -614,6 +668,10 @@ def test_thumbnail_pending_queue_has_a_hard_cap(qapp, tmp_path):
 
         def start(self, task):
             self.tasks.append(task)
+
+        def tryTake(self, task):
+            self.tasks.remove(task)
+            return True
 
     pool = DeferredPool()
     loader = LazyThumbnailLoader(
@@ -644,6 +702,10 @@ def test_deferred_thumbnails_start_automatically_in_recent_request_order(qapp, t
 
         def start(self, task):
             self.tasks.append(task)
+
+        def tryTake(self, task):
+            self.tasks.remove(task)
+            return True
 
     pool = ManualPool()
     loader = LazyThumbnailLoader(
@@ -683,6 +745,10 @@ def test_deferred_re_request_updates_priority_and_eviction_is_explicit(qapp, tmp
         def start(self, task):
             self.tasks.append(task)
 
+        def tryTake(self, task):
+            self.tasks.remove(task)
+            return True
+
     pool = ManualPool()
     loader = LazyThumbnailLoader(
         QSize(40, 30),
@@ -720,15 +786,11 @@ def test_deferred_re_request_updates_priority_and_eviction_is_explicit(qapp, tmp
     loader.close()
 
 
-def test_clear_drops_owned_pool_queue_and_ignores_old_terminal_signal(
-    qapp,
-    tmp_path,
-    monkeypatch,
-):
+def test_clear_retains_running_task_and_defers_new_generation(qapp, tmp_path):
     class RecordingPool:
         def __init__(self, *_args):
             self.tasks = []
-            self.clear_count = 0
+            self.try_take_calls = []
             self.maximum = 0
 
         def setMaxThreadCount(self, value):
@@ -740,16 +802,17 @@ def test_clear_drops_owned_pool_queue_and_ignores_old_terminal_signal(
         def start(self, task):
             self.tasks.append(task)
 
-        def clear(self):
-            self.clear_count += 1
-            self.tasks.clear()
+        def tryTake(self, task):
+            self.try_take_calls.append(task)
+            return False
 
-    monkeypatch.setattr(review_gallery, "QThreadPool", RecordingPool)
+    pool = RecordingPool()
     source_path = tmp_path / "source.png"
     assert solid_image(QSize(80, 40)).save(str(source_path))
     source_stat = source_path.stat()
     loader = LazyThumbnailLoader(
         QSize(40, 30),
+        thread_pool=pool,
         disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
         max_concurrent_tasks=1,
         max_pending_tasks=3,
@@ -764,12 +827,14 @@ def test_clear_drops_owned_pool_queue_and_ignores_old_terminal_signal(
             expected_generation_token=source_generation_token(source_path),
         )
     old_task = loader.thread_pool.tasks[0]
+    ready = QSignalSpy(loader.thumbnailReady)
     assert loader.pending_count == 3
     assert len(loader.thread_pool.tasks) == 1
 
     loader.clear()
-    assert loader.thread_pool.clear_count == 1
-    assert loader.thread_pool.tasks == []
+    assert loader.thread_pool.try_take_calls == [old_task]
+    assert loader.thread_pool.tasks == [old_task]
+    assert loader._tasks == {(old_task.generation, old_task.key): old_task}
     assert loader.pending_count == 0
     assert all(not loader.is_pending(key) for key in old_keys)
 
@@ -782,15 +847,66 @@ def test_clear_drops_owned_pool_queue_and_ignores_old_terminal_signal(
         expected_generation_token=source_generation_token(source_path),
     )
     assert loader.pending_count == 1
+    assert len(loader.thread_pool.tasks) == 1
+    assert len(loader._tasks) == 1
     old_task.run()
     qapp.processEvents()
     assert loader.pending_count == 1
     assert loader.cached_count == 0
+    assert len(ready) == 0
+    assert len(loader.thread_pool.tasks) == 2
+    assert loader.thread_pool.tasks[1].key == new_key
+    assert len(loader._tasks) == 1
 
-    loader.thread_pool.tasks[0].run()
+    loader.thread_pool.tasks[1].run()
     qapp.processEvents()
     assert loader.pending_count == 0
     assert loader.cached_count == 1
+    assert loader._tasks == {}
+    assert len(ready) == 1
+    assert ready[0][0] == new_key
+    loader.close()
+
+
+def test_clear_releases_tasks_removed_before_start(qapp, tmp_path):
+    class QueuedPool:
+        def __init__(self, *_args):
+            self.tasks = []
+            self.try_take_calls = []
+            self.maximum = 0
+
+        def setMaxThreadCount(self, value):
+            self.maximum = value
+
+        def start(self, task):
+            self.tasks.append(task)
+
+        def tryTake(self, task):
+            self.try_take_calls.append(task)
+            self.tasks.remove(task)
+            return True
+
+    pool = QueuedPool()
+    key = "1" * 64
+    loader = LazyThumbnailLoader(
+        QSize(40, 30),
+        thread_pool=pool,
+        disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
+        max_concurrent_tasks=1,
+    )
+    loader.request(
+        key,
+        str(tmp_path / "missing.png"),
+        expected_generation_token=TEST_GENERATION_TOKEN,
+    )
+    queued_task = loader.thread_pool.tasks[0]
+
+    loader.clear()
+
+    assert loader.thread_pool.try_take_calls == [queued_task]
+    assert loader.thread_pool.tasks == []
+    assert loader._tasks == {}
+    assert loader.pending_count == 0
     loader.close()
 
 
@@ -899,3 +1015,20 @@ def test_default_thumbnail_pool_bounds_concurrent_source_payloads(
     assert loader.pending_count == 0
     assert loader.cached_count == 8
     close_loader(loader, qapp)
+
+
+def test_default_loader_parent_deletion_drains_worker_without_deadlock():
+    probe = Path(__file__).with_name("thumbnail_loader_parent_delete_probe.py")
+    completed = subprocess.run(
+        [sys.executable, str(probe)],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert completed.stdout.strip() == "thumbnail parent deletion: PASS"
+    for forbidden in ("Traceback", "RuntimeError", "_ThumbnailTaskSignals", "wrapped C/C++"):
+        assert forbidden not in completed.stderr
