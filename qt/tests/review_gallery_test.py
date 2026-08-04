@@ -669,13 +669,16 @@ def test_hovered_card_requests_preview(qapp):
     group, _, candidate = make_group()
     widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
     widget.set_group(group, FakeResults(group))
+    qapp.processEvents()
     preview_spy = QSignalSpy(widget.previewRequested)
 
     widget.view.entered.emit(widget.model.index_for_item(candidate))
-    qapp.processEvents()
 
+    assert widget.view._hover_timer.isSingleShot()
+    assert widget.view._hover_timer.interval() == widget.view.HOVER_PREVIEW_DELAY_MS
+    assert widget.view._hover_timer.isActive()
     assert len(preview_spy) == 0
-    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
+    assert preview_spy.wait(widget.view.HOVER_PREVIEW_DELAY_MS + 2_000)
     assert len(preview_spy) == 1
     assert preview_spy[0][0] is candidate
     widget.close()
@@ -685,12 +688,15 @@ def test_hover_preview_is_cancelled_when_pointer_leaves(qapp):
     group, _, candidate = make_group()
     widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
     widget.set_group(group, FakeResults(group))
+    qapp.processEvents()
     preview_spy = QSignalSpy(widget.previewRequested)
 
     widget.view.entered.emit(widget.model.index_for_item(candidate))
+    assert widget.view._hover_timer.isActive()
     QApplication.sendEvent(widget.view.viewport(), QEvent(QEvent.Type.Leave))
-    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
 
+    assert not widget.view._hover_timer.isActive()
+    assert not widget.view._hover_index.isValid()
     assert len(preview_spy) == 0
     widget.close()
 
@@ -699,12 +705,15 @@ def test_hover_preview_is_cancelled_by_model_reset(qapp):
     group, _, candidate = make_group()
     widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
     widget.set_group(group, FakeResults(group))
+    qapp.processEvents()
     preview_spy = QSignalSpy(widget.previewRequested)
 
     widget.view.entered.emit(widget.model.index_for_item(candidate))
+    assert widget.view._hover_timer.isActive()
     widget.model.clear()
-    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
 
+    assert not widget.view._hover_timer.isActive()
+    assert not widget.view._hover_index.isValid()
     assert len(preview_spy) == 0
     widget.close()
 
