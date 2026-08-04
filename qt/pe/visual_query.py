@@ -468,6 +468,7 @@ class VisualQueryDialog(QDialog):
         self.gallery = ReviewGalleryWidget(self)
         self.gallery.keeperButton.hide()
         self.gallery.deleteButton.hide()
+        self.gallery.acceptButton.hide()
         self.gallery.nextButton.hide()
 
         self.cancelButton = QPushButton(tr("Cancel"), self)

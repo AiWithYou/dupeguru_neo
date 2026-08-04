@@ -389,6 +389,61 @@ def test_cleanup_enforces_entry_and_total_byte_bounds(qapp, tmp_path):
     assert tiny_cache.usage() == (0, 0)
 
 
+def test_cleanup_below_limits_does_not_sort_entries(tmp_path, monkeypatch):
+    sort_calls = 0
+
+    class RecordingEntries(list):
+        def sort(self, *args, **kwargs):
+            nonlocal sort_calls
+            sort_calls += 1
+            return super().sort(*args, **kwargs)
+
+    cache = ThumbnailDiskCache(
+        tmp_path / "cache",
+        max_entries=10,
+        max_bytes=1_000,
+    )
+    entries = RecordingEntries([(1, 100, tmp_path / "unused.png", object())])
+    monkeypatch.setattr(cache, "_entries_locked", lambda: entries)
+
+    assert cache.cleanup() == (1, 100)
+    assert sort_calls == 0
+
+
+def test_overflow_prunes_to_low_water_and_avoids_per_store_scans(
+    qapp,
+    tmp_path,
+    monkeypatch,
+):
+    cache = ThumbnailDiskCache(
+        tmp_path / "cache",
+        max_entries=20,
+        max_bytes=10_000_000,
+    )
+    real_entries_locked = cache._entries_locked
+    enumerations = 0
+
+    def counting_entries_locked():
+        nonlocal enumerations
+        enumerations += 1
+        return real_entries_locked()
+
+    monkeypatch.setattr(cache, "_entries_locked", counting_entries_locked)
+
+    for index in range(21):
+        assert cache.store("{:064x}".format(index), solid_image())
+
+    assert len(list(cache.cache_dir.rglob("*.png"))) == 18
+    assert enumerations == 2
+
+    for index in range(21, 35):
+        assert cache.store("{:064x}".format(index), solid_image())
+
+    cached_files = [path for path in cache.cache_dir.rglob("*.png")]
+    assert len(cached_files) == 20
+    assert enumerations == 6
+
+
 def test_cache_key_cannot_escape_cache_directory(tmp_path):
     cache = ThumbnailDiskCache(tmp_path / "cache")
 
@@ -567,6 +622,7 @@ def test_thumbnail_pending_queue_has_a_hard_cap(qapp, tmp_path):
         disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
         max_pending_tasks=2,
     )
+    discarded = QSignalSpy(loader.thumbnailDiscarded)
 
     for index in range(10):
         loader.request(
@@ -577,6 +633,90 @@ def test_thumbnail_pending_queue_has_a_hard_cap(qapp, tmp_path):
 
     assert loader.pending_count == 2
     assert len(pool.tasks) == 2
+    assert len(discarded) == 8
+    loader.close()
+
+
+def test_deferred_thumbnails_start_automatically_in_recent_request_order(qapp, tmp_path):
+    class ManualPool:
+        def __init__(self):
+            self.tasks = []
+
+        def start(self, task):
+            self.tasks.append(task)
+
+    pool = ManualPool()
+    loader = LazyThumbnailLoader(
+        QSize(40, 30),
+        thread_pool=pool,
+        disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
+        max_concurrent_tasks=2,
+        max_pending_tasks=5,
+    )
+    keys = ["{:064x}".format(index + 1) for index in range(5)]
+    for key in keys:
+        loader.request(
+            key,
+            str(tmp_path / "missing.png"),
+            expected_generation_token=TEST_GENERATION_TOKEN,
+        )
+
+    assert loader.pending_count == 5
+    assert [task.key for task in pool.tasks] == keys[:2]
+
+    next_task = 0
+    while next_task < len(pool.tasks):
+        pool.tasks[next_task].run()
+        qapp.processEvents()
+        next_task += 1
+
+    assert [task.key for task in pool.tasks] == [keys[0], keys[1], keys[4], keys[3], keys[2]]
+    assert loader.pending_count == 0
+    close_loader(loader, qapp)
+
+
+def test_deferred_re_request_updates_priority_and_eviction_is_explicit(qapp, tmp_path):
+    class ManualPool:
+        def __init__(self):
+            self.tasks = []
+
+        def start(self, task):
+            self.tasks.append(task)
+
+    pool = ManualPool()
+    loader = LazyThumbnailLoader(
+        QSize(40, 30),
+        thread_pool=pool,
+        disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
+        max_concurrent_tasks=1,
+        max_pending_tasks=3,
+    )
+    keys = ["{:064x}".format(index + 1) for index in range(4)]
+    discarded = QSignalSpy(loader.thumbnailDiscarded)
+    for key in keys:
+        loader.request(
+            key,
+            str(tmp_path / "missing.png"),
+            expected_generation_token=TEST_GENERATION_TOKEN,
+        )
+
+    # The fourth request evicted key 2, the oldest deferred request.  Asking
+    # for key 3 again then moves it ahead of key 4 for the next free slot.
+    assert len(discarded) == 1
+    assert discarded[0][0] == keys[1]
+    assert not loader.is_pending(keys[1])
+    assert loader.is_pending(keys[2])
+    assert loader.is_pending(keys[3])
+    loader.request(
+        keys[2],
+        str(tmp_path / "missing.png"),
+        expected_generation_token=TEST_GENERATION_TOKEN,
+    )
+    pool.tasks[0].run()
+    qapp.processEvents()
+
+    assert len(discarded) == 1
+    assert pool.tasks[1].key == keys[2]
     loader.close()
 
 
@@ -611,21 +751,27 @@ def test_clear_drops_owned_pool_queue_and_ignores_old_terminal_signal(
     loader = LazyThumbnailLoader(
         QSize(40, 30),
         disk_cache=ThumbnailDiskCache(tmp_path / "cache"),
+        max_concurrent_tasks=1,
+        max_pending_tasks=3,
     )
-    old_key = "{:064x}".format(1)
-    loader.request(
-        old_key,
-        str(source_path),
-        expected_size=source_stat.st_size,
-        expected_mtime_ns=source_stat.st_mtime_ns,
-        expected_generation_token=source_generation_token(source_path),
-    )
+    old_keys = ["{:064x}".format(index) for index in range(1, 4)]
+    for key in old_keys:
+        loader.request(
+            key,
+            str(source_path),
+            expected_size=source_stat.st_size,
+            expected_mtime_ns=source_stat.st_mtime_ns,
+            expected_generation_token=source_generation_token(source_path),
+        )
     old_task = loader.thread_pool.tasks[0]
+    assert loader.pending_count == 3
+    assert len(loader.thread_pool.tasks) == 1
 
     loader.clear()
     assert loader.thread_pool.clear_count == 1
     assert loader.thread_pool.tasks == []
     assert loader.pending_count == 0
+    assert all(not loader.is_pending(key) for key in old_keys)
 
     new_key = "{:064x}".format(2)
     loader.request(
@@ -730,6 +876,7 @@ def test_default_thumbnail_pool_bounds_concurrent_source_payloads(
         disk_cache=EmptyCache(),
         max_concurrent_tasks=3,
     )
+    ready = QSignalSpy(loader.thumbnailReady)
     assert loader.thread_pool is not review_gallery.QThreadPool.globalInstance()
     assert loader.thread_pool.maxThreadCount() == 3
 
@@ -744,6 +891,8 @@ def test_default_thumbnail_pool_bounds_concurrent_source_payloads(
     with lock:
         assert maximum[0] == 3
     release.set()
+    while len(ready) < 8:
+        assert ready.wait(3000)
     assert loader.thread_pool.waitForDone(3000)
     qapp.processEvents()
 

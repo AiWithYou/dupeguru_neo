@@ -89,6 +89,27 @@ def test_gui_contents_scan_is_direct_lightweight_and_finds_duplicates(tmp_path, 
             AssertionError("Contents scan must not reread every file after matching")
         ),
     )
+    monkeypatch.setattr(
+        fs.File,
+        "begin_review_scan_generation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Contents scan owns its exact generation baseline")
+        ),
+    )
+    monkeypatch.setattr(
+        fs.File,
+        "validate_review_scan_generation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Contents scan owns its exact generation validation")
+        ),
+    )
+    monkeypatch.setattr(
+        fs.File,
+        "seal_review_scan_content",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Contents scan must reuse exact-engine content proofs")
+        ),
+    )
 
     run_scan(app)
 

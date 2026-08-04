@@ -11,6 +11,7 @@ class Markable:
     def __init__(self):
         self.__marked = set()
         self.__inverted = False
+        self.__mark_revision = 0
 
     # ---Virtual
     # About did_mark and did_unmark: They only happen what an object is actually added/removed
@@ -34,6 +35,7 @@ class Markable:
     def _remove_mark_flag(self, o):
         try:
             self.__marked.remove(o)
+            self.__mark_revision += 1
             self._did_unmark(o)
         except KeyError:
             pass
@@ -45,8 +47,12 @@ class Markable:
         built any derived caches for the complete replacement state.
         """
 
-        self.__marked = set(marked)
-        self.__inverted = bool(inverted)
+        replacement = set(marked)
+        replacement_inverted = bool(inverted)
+        if replacement != self.__marked or replacement_inverted != self.__inverted:
+            self.__mark_revision += 1
+        self.__marked = replacement
+        self.__inverted = replacement_inverted
 
     # ---Public
     def is_marked(self, o):
@@ -71,24 +77,31 @@ class Markable:
     def mark_all(self):
         self.mark_none()
         self.__inverted = True
+        self.__mark_revision += 1
 
     def mark_invert(self):
         self.__inverted = not self.__inverted
+        self.__mark_revision += 1
 
     def mark_none(self):
+        changed = bool(self.__marked) or self.__inverted
         for o in self.__marked:
             self._did_unmark(o)
         self.__marked = set()
         self.__inverted = False
+        if changed:
+            self.__mark_revision += 1
 
     def mark_toggle(self, o):
         try:
             self.__marked.remove(o)
+            self.__mark_revision += 1
             self._did_unmark(o)
         except KeyError:
             if not self._is_markable(o):
                 return False
             self.__marked.add(o)
+            self.__mark_revision += 1
             self._did_mark(o)
         return True
 
@@ -116,6 +129,12 @@ class Markable:
     @property
     def mark_inverted(self):
         return self.__inverted
+
+    @property
+    def mark_revision(self):
+        """Monotonic generation for lazy views of the authoritative mark state."""
+
+        return self.__mark_revision
 
 
 class MarkableList(list, Markable):

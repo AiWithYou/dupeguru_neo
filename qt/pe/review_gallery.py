@@ -21,14 +21,17 @@ from pathlib import Path
 from PyQt6.QtCore import (
     QAbstractListModel,
     QBuffer,
+    QEvent,
     QIODevice,
     QModelIndex,
     QObject,
+    QPersistentModelIndex,
     QPoint,
     QRect,
     QRunnable,
     QSize,
     QThreadPool,
+    QTimer,
     Qt,
     pyqtSignal,
     pyqtSlot,
@@ -418,10 +421,14 @@ class LazyThumbnailLoader(QObject):
 
     QImage decoding happens in a dedicated, bounded worker pool by default.
     QPixmap conversion and cache mutation happen on the GUI thread in
-    ``_thumbnail_loaded``.
+    ``_thumbnail_loaded``.  ``max_pending_tasks`` bounds active and deferred
+    work together.  When that bound requires a deferred request to be evicted,
+    ``thumbnailDiscarded`` tells clients to release its waiter without
+    immediately resubmitting it; a later natural paint may request it again.
     """
 
     thumbnailReady = pyqtSignal(str)
+    thumbnailDiscarded = pyqtSignal(str)
 
     def __init__(
         self,
@@ -465,6 +472,9 @@ class LazyThumbnailLoader(QObject):
         self.disk_cache = disk_cache or ThumbnailDiskCache()
         self._cache: OrderedDict[str, QPixmap] = OrderedDict()
         self._pending: set[str] = set()
+        self._active: set[str] = set()
+        self._deferred: OrderedDict[str, tuple[object, ...]] = OrderedDict()
+        self._active_limit = min(max_concurrent_tasks, max_pending_tasks)
         self._generation = 0
         self._closed = False
         self._placeholder = QPixmap(self.thumbnail_size)
@@ -493,23 +503,35 @@ class LazyThumbnailLoader(QObject):
         if pixmap is not None:
             self._cache.move_to_end(key)
             return pixmap
-        if key not in self._pending and len(self._pending) < self.max_pending_tasks:
-            self._pending.add(key)
-            task = _ThumbnailTask(
-                key,
-                path,
-                self.thumbnail_size,
-                self._generation,
-                self.disk_cache,
-                expected_size=expected_size,
-                expected_mtime_ns=expected_mtime_ns,
-                expected_generation_token=expected_generation_token,
-                max_source_bytes=self.max_source_bytes,
-                max_source_pixels=self.max_source_pixels,
-                allocation_limit_mb=self.allocation_limit_mb,
-            )
-            task.signals.loaded.connect(self._thumbnail_loaded)
-            self.thread_pool.start(task)
+        request = (
+            path,
+            expected_size,
+            expected_mtime_ns,
+            expected_generation_token,
+        )
+        if key in self._deferred:
+            self._deferred[key] = request
+            self._deferred.move_to_end(key)
+            return self._placeholder
+        if key in self._active:
+            return self._placeholder
+
+        if len(self._pending) >= self.max_pending_tasks:
+            if not self._deferred:
+                # Running work cannot be cancelled safely.  Tell clients that
+                # this request was not retained, so they do not register a
+                # waiter that can never receive ``thumbnailReady``.
+                self.thumbnailDiscarded.emit(key)
+                return self._placeholder
+            discarded_key, _request = self._deferred.popitem(last=False)
+            self._pending.discard(discarded_key)
+            self.thumbnailDiscarded.emit(discarded_key)
+
+        self._pending.add(key)
+        if len(self._active) < self._active_limit:
+            self._start_request(key, request)
+        else:
+            self._deferred[key] = request
         return self._placeholder
 
     def is_pending(self, key: str) -> bool:
@@ -526,6 +548,8 @@ class LazyThumbnailLoader(QObject):
             self.thread_pool.clear()
         self._cache.clear()
         self._pending.clear()
+        self._active.clear()
+        self._deferred.clear()
 
     def close(self):
         """Cancel publication from in-flight tasks and release pending keys."""
@@ -539,7 +563,11 @@ class LazyThumbnailLoader(QObject):
     def _thumbnail_loaded(self, key: str, generation: int, image):
         if self._closed or generation != self._generation:
             return
+        if key not in self._active:
+            return
+        self._active.remove(key)
         self._pending.discard(key)
+        self._start_next_deferred()
         pixmap = self._placeholder
         if isinstance(image, QImage) and not image.isNull():
             pixmap = QPixmap.fromImage(image)
@@ -549,6 +577,31 @@ class LazyThumbnailLoader(QObject):
             self._cache.popitem(last=False)
         self.thumbnailReady.emit(key)
 
+    def _start_request(self, key: str, request: tuple[object, ...]):
+        path, expected_size, expected_mtime_ns, expected_generation_token = request
+        self._active.add(key)
+        task = _ThumbnailTask(
+            key,
+            path,
+            self.thumbnail_size,
+            self._generation,
+            self.disk_cache,
+            expected_size=expected_size,
+            expected_mtime_ns=expected_mtime_ns,
+            expected_generation_token=expected_generation_token,
+            max_source_bytes=self.max_source_bytes,
+            max_source_pixels=self.max_source_pixels,
+            allocation_limit_mb=self.allocation_limit_mb,
+        )
+        task.signals.loaded.connect(self._thumbnail_loaded)
+        self.thread_pool.start(task)
+
+    def _start_next_deferred(self):
+        if self._closed or len(self._active) >= self._active_limit or not self._deferred:
+            return
+        key, request = self._deferred.popitem(last=True)
+        self._start_request(key, request)
+
 
 class ReviewGalleryModel(QAbstractListModel):
     """Lightweight rows for every image in one duplicate group."""
@@ -557,20 +610,29 @@ class ReviewGalleryModel(QAbstractListModel):
 
     keeperRequested = pyqtSignal(object)
     deleteCandidateRequested = pyqtSignal(object, bool)
+    acceptKeeperRequested = pyqtSignal(object, object)
     blockedAction = pyqtSignal(str)
 
     def __init__(self, thumbnail_loader: LazyThumbnailLoader | None = None, parent: QObject | None = None):
         super().__init__(parent)
         self.thumbnail_loader = thumbnail_loader or LazyThumbnailLoader(parent=self)
         self.thumbnail_loader.thumbnailReady.connect(self._thumbnail_ready)
+        thumbnail_discarded = getattr(self.thumbnail_loader, "thumbnailDiscarded", None)
+        if thumbnail_discarded is not None:
+            thumbnail_discarded.connect(self._thumbnail_discarded)
         self._group = None
         self._results = None
         self._items: list[object] = []
+        self._row_by_item_identity: dict[int, int] = {}
+        self._group_layout_revision = None
+        self._mark_revision = None
         self._relation = ReviewRelation.UNVERIFIED
         self._metadata_cache: OrderedDict[int, str] = OrderedDict()
         self._eligibility_cache: OrderedDict[int, Eligibility] = OrderedDict()
         self._rows_waiting_for_thumbnail: dict[str, set[int]] = defaultdict(set)
         self._delete_candidates: set[int] = set()
+        self._pending_delete_states: dict[int, bool] = {}
+        self._accept_in_progress = False
 
     @property
     def group(self):
@@ -579,6 +641,10 @@ class ReviewGalleryModel(QAbstractListModel):
     @property
     def relation(self) -> ReviewRelation:
         return self._relation
+
+    @property
+    def accept_in_progress(self) -> bool:
+        return self._accept_in_progress
 
     @property
     def metadata_cache_size(self) -> int:
@@ -596,11 +662,16 @@ class ReviewGalleryModel(QAbstractListModel):
         self._group = group
         self._results = results
         self._items = _group_members(group)
+        self._row_by_item_identity = {id(item): row for row, item in enumerate(self._items)}
+        self._group_layout_revision = getattr(group, "layout_revision", None)
+        self._mark_revision = getattr(results, "mark_revision", None)
         self._relation = relation_for_group(group)
         self._metadata_cache.clear()
         self._eligibility_cache.clear()
         self._rows_waiting_for_thumbnail.clear()
-        self._delete_candidates = {id(item) for item in self._items if self._is_marked_in_results(item)}
+        self._delete_candidates.clear()
+        self._pending_delete_states.clear()
+        self._accept_in_progress = False
         self.endResetModel()
 
     def clear(self):
@@ -610,7 +681,8 @@ class ReviewGalleryModel(QAbstractListModel):
         """Replace live scan context without rebuilding thumbnail rows."""
 
         self._results = results
-        self._delete_candidates = {id(item) for item in self._items if self._is_marked_in_results(item)}
+        self._mark_revision = getattr(results, "mark_revision", None)
+        self._pending_delete_states.clear()
         self.refresh_safety()
         if self._items:
             self.dataChanged.emit(
@@ -619,7 +691,48 @@ class ReviewGalleryModel(QAbstractListModel):
                 [ReviewRole.DELETE_CANDIDATE],
             )
 
+    def update_item(self, results, item):
+        """Refresh one selected card without rescanning a very large group."""
+
+        self._results = results
+        previous_mark_revision = self._mark_revision
+        self._mark_revision = getattr(results, "mark_revision", None)
+        marks_changed = (
+            previous_mark_revision is not None
+            and self._mark_revision is not None
+            and previous_mark_revision != self._mark_revision
+        )
+        if marks_changed:
+            self._pending_delete_states.clear()
+        index = self.index_for_item(item)
+        if not index.isValid():
+            return
+        row = index.row()
+        self._eligibility_cache.pop(row, None)
+        self.dataChanged.emit(
+            index,
+            index,
+            [
+                ReviewRole.DELETE_CANDIDATE,
+                ReviewRole.DELETE_ENABLED,
+                ReviewRole.DELETE_REASON,
+            ],
+        )
+        if marks_changed and self._items:
+            self.dataChanged.emit(
+                self.index(0, 0),
+                self.index(len(self._items) - 1, 0),
+                [ReviewRole.DELETE_CANDIDATE],
+            )
+
     def has_current_layout(self, group) -> bool:
+        if group is self._group:
+            revision = getattr(group, "layout_revision", None)
+            if revision is not None and self._group_layout_revision is not None:
+                try:
+                    return revision == self._group_layout_revision and len(group) == len(self._items)
+                except TypeError:
+                    return False
         members = _group_members(group)
         return len(members) == len(self._items) and all(
             current is member for current, member in zip(self._items, members)
@@ -669,7 +782,7 @@ class ReviewGalleryModel(QAbstractListModel):
         if role_value == ReviewRole.KEEPER:
             return item is getattr(self._group, "ref", None)
         if role_value == ReviewRole.DELETE_CANDIDATE:
-            return id(item) in self._delete_candidates
+            return self._delete_candidate_state(item)
         if role_value == ReviewRole.DELETE_ENABLED:
             return self._eligibility(row).allowed
         if role_value == ReviewRole.DELETE_REASON:
@@ -691,9 +804,9 @@ class ReviewGalleryModel(QAbstractListModel):
         return self._items[index.row()]
 
     def index_for_item(self, item):
-        for row, candidate in enumerate(self._items):
-            if candidate is item:
-                return self.index(row, 0)
+        row = self._row_by_item_identity.get(id(item))
+        if row is not None and 0 <= row < len(self._items) and self._items[row] is item:
+            return self.index(row, 0)
         return QModelIndex()
 
     def eligibility_at(self, index) -> Eligibility:
@@ -724,8 +837,8 @@ class ReviewGalleryModel(QAbstractListModel):
         if item is None:
             return False
         item_id = id(item)
-        if item_id in self._delete_candidates:
-            self._delete_candidates.remove(item_id)
+        if self._delete_candidate_state(item):
+            self._delete_candidates.discard(item_id)
             marked = False
         else:
             eligibility = self.eligibility_at(index)
@@ -734,9 +847,40 @@ class ReviewGalleryModel(QAbstractListModel):
                 return False
             self._delete_candidates.add(item_id)
             marked = True
+        self._pending_delete_states[item_id] = marked
         self.dataChanged.emit(index, index, [ReviewRole.DELETE_CANDIDATE])
         self.deleteCandidateRequested.emit(item, marked)
         return True
+
+    def request_accept_keeper(self) -> bool:
+        """Atomically approve one exact keeper and its remaining candidates."""
+
+        if self._accept_in_progress:
+            return False
+        keeper = getattr(self._group, "ref", None)
+        if keeper is None or self._results is None:
+            self.blockedAction.emit(tr("No live keeper is available for this review."))
+            return False
+        candidates = tuple(item for item in self._items if item is not keeper)
+        if not candidates:
+            self.blockedAction.emit(tr("This group has no duplicate candidates to check."))
+            return False
+        for candidate in candidates:
+            try:
+                eligibility = evaluate_duplicate(self._results, candidate)
+            except Exception:
+                eligibility = Eligibility(
+                    EligibilityCode.INCOMPLETE_SCAN,
+                    tr("The safety gate could not verify this candidate."),
+                )
+            if not eligibility.allowed:
+                self.blockedAction.emit(eligibility.message)
+                return False
+        self.acceptKeeperRequested.emit(keeper, candidates)
+        return True
+
+    def set_accept_in_progress(self, in_progress: bool):
+        self._accept_in_progress = bool(in_progress)
 
     def set_delete_candidate(self, item, marked: bool):
         """Synchronize one card with the authoritative results marking state."""
@@ -745,11 +889,35 @@ class ReviewGalleryModel(QAbstractListModel):
         if not index.isValid():
             return
         item_id = id(item)
+        self._pending_delete_states.pop(item_id, None)
         if marked:
             self._delete_candidates.add(item_id)
         else:
             self._delete_candidates.discard(item_id)
         self.dataChanged.emit(index, index, [ReviewRole.DELETE_CANDIDATE])
+
+    def set_delete_candidates(self, items, marked: bool):
+        """Synchronize a batch using one bounded model notification."""
+
+        first_row = None
+        last_row = None
+        for item in items:
+            row = self._row_by_item_identity.get(id(item))
+            if row is None or not 0 <= row < len(self._items) or self._items[row] is not item:
+                continue
+            first_row = row if first_row is None else min(first_row, row)
+            last_row = row if last_row is None else max(last_row, row)
+            self._pending_delete_states.pop(id(item), None)
+            if marked:
+                self._delete_candidates.add(id(item))
+            else:
+                self._delete_candidates.discard(id(item))
+        if first_row is not None:
+            self.dataChanged.emit(
+                self.index(first_row, 0),
+                self.index(last_row, 0),
+                [ReviewRole.DELETE_CANDIDATE],
+            )
 
     def report_blocked(self, message: str):
         """Expose a late safety-gate failure through the gallery status UI."""
@@ -773,6 +941,18 @@ class ReviewGalleryModel(QAbstractListModel):
             return bool(is_marked(item))
         except (KeyError, TypeError, ValueError):
             return False
+
+    def _delete_candidate_state(self, item) -> bool:
+        item_id = id(item)
+        pending = self._pending_delete_states.get(item_id)
+        if pending is not None:
+            return pending
+        marked = self._is_marked_in_results(item)
+        if marked:
+            self._delete_candidates.add(item_id)
+        else:
+            self._delete_candidates.discard(item_id)
+        return marked
 
     def _thumbnail_key(
         self,
@@ -888,6 +1068,13 @@ class ReviewGalleryModel(QAbstractListModel):
             if 0 <= row < len(self._items):
                 index = self.index(row, 0)
                 self.dataChanged.emit(index, index, [Qt.ItemDataRole.DecorationRole])
+
+    @pyqtSlot(str)
+    def _thumbnail_discarded(self, key: str):
+        # Do not emit dataChanged here.  A repaint would immediately resubmit
+        # the discarded row and could make two off-screen rows evict each other
+        # forever.  A future natural DecorationRole request can enqueue it.
+        self._rows_waiting_for_thumbnail.pop(key, None)
 
 
 class ReviewGalleryDelegate(QStyledItemDelegate):
@@ -1020,6 +1207,8 @@ class ReviewGalleryDelegate(QStyledItemDelegate):
 class ReviewGalleryView(QListView):
     """Icon-mode review surface with keyboard and hover preview signals."""
 
+    HOVER_PREVIEW_DELAY_MS = 200
+
     previewRequested = pyqtSignal(object)
     nextGroupRequested = pyqtSignal()
 
@@ -1039,7 +1228,14 @@ class ReviewGalleryView(QListView):
         self.setSpacing(2)
         self.setItemDelegate(ReviewGalleryDelegate(self))
         self.setModel(model or ReviewGalleryModel(parent=self))
-        self.entered.connect(self._preview_index)
+        self._hover_index = QPersistentModelIndex()
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(self.HOVER_PREVIEW_DELAY_MS)
+        self._hover_timer.timeout.connect(self._emit_hover_preview)
+        self.viewport().installEventFilter(self)
+        self.gallery_model.modelAboutToBeReset.connect(self._cancel_hover_preview)
+        self.entered.connect(self._schedule_hover_preview)
         self.selectionModel().currentChanged.connect(self._current_changed)
 
     @property
@@ -1071,6 +1267,10 @@ class ReviewGalleryView(QListView):
             self.nextGroupRequested.emit()
             event.accept()
             return
+        if event.key() in {Qt.Key.Key_Return, Qt.Key.Key_Enter}:
+            self.gallery_model.request_accept_keeper()
+            event.accept()
+            return
         super().keyPressEvent(event)
 
     @pyqtSlot(QModelIndex)
@@ -1079,9 +1279,34 @@ class ReviewGalleryView(QListView):
         if item is not None:
             self.previewRequested.emit(item)
 
+    @pyqtSlot(QModelIndex)
+    def _schedule_hover_preview(self, index: QModelIndex):
+        self._cancel_hover_preview()
+        if self.gallery_model.item_at(index) is None:
+            return
+        self._hover_index = QPersistentModelIndex(index)
+        self._hover_timer.start()
+
+    @pyqtSlot()
+    def _emit_hover_preview(self):
+        index = self._hover_index
+        self._hover_index = QPersistentModelIndex()
+        self._preview_index(index)
+
+    @pyqtSlot()
+    def _cancel_hover_preview(self):
+        self._hover_timer.stop()
+        self._hover_index = QPersistentModelIndex()
+
     @pyqtSlot(QModelIndex, QModelIndex)
     def _current_changed(self, current: QModelIndex, previous: QModelIndex):
+        self._cancel_hover_preview()
         self._preview_index(current)
+
+    def eventFilter(self, watched, event):
+        if watched is self.viewport() and event.type() == QEvent.Type.Leave:
+            self._cancel_hover_preview()
+        return super().eventFilter(watched, event)
 
 
 class ReviewGalleryWidget(QWidget):
@@ -1090,6 +1315,7 @@ class ReviewGalleryWidget(QWidget):
     previewRequested = pyqtSignal(object)
     keeperRequested = pyqtSignal(object)
     deleteCandidateRequested = pyqtSignal(object, bool)
+    acceptKeeperRequested = pyqtSignal(object, object)
     nextGroupRequested = pyqtSignal()
     blockedAction = pyqtSignal(str)
 
@@ -1114,6 +1340,10 @@ class ReviewGalleryWidget(QWidget):
         self.keeperButton = QPushButton(tr("1 Keep"), self)
         self.keeperButton.setToolTip(tr("Choose the selected image as the keeper."))
         self.deleteButton = QPushButton(tr("2 Mark delete"), self)
+        self.acceptButton = QPushButton(tr("Enter Accept keeper and next"), self)
+        self.acceptButton.setToolTip(
+            tr("Check every safe byte-identical copy of the current keeper, then review the next group.")
+        )
         self.nextButton = QPushButton(tr("Space Next"), self)
         self.nextButton.setToolTip(tr("Review the next duplicate group."))
         self.deleteButton.setEnabled(False)
@@ -1128,6 +1358,7 @@ class ReviewGalleryWidget(QWidget):
         action_row.addStretch(1)
         action_row.addWidget(self.keeperButton)
         action_row.addWidget(self.deleteButton)
+        action_row.addWidget(self.acceptButton)
         action_row.addWidget(self.nextButton)
 
         layout = QVBoxLayout(self)
@@ -1141,14 +1372,17 @@ class ReviewGalleryWidget(QWidget):
         self.view.nextGroupRequested.connect(self.nextGroupRequested)
         self.model.keeperRequested.connect(self.keeperRequested)
         self.model.deleteCandidateRequested.connect(self.deleteCandidateRequested)
+        self.model.acceptKeeperRequested.connect(self.acceptKeeperRequested)
         self.model.blockedAction.connect(self._blocked)
         self.model.blockedAction.connect(self.blockedAction)
         self.model.dataChanged.connect(self._model_data_changed)
         self.view.selectionModel().currentChanged.connect(self._selection_changed)
         self.keeperButton.clicked.connect(self.view.invoke_keeper)
         self.deleteButton.clicked.connect(self.view.invoke_delete_candidate)
+        self.acceptButton.clicked.connect(self.model.request_accept_keeper)
         self.nextButton.clicked.connect(self.nextGroupRequested)
         self._update_relation_label()
+        self._update_safety(QModelIndex())
 
     def set_group(self, group, results=None, selected=None):
         self.model.set_group(group, results)
@@ -1180,6 +1414,11 @@ class ReviewGalleryWidget(QWidget):
     def _update_safety(self, index):
         eligibility = self.model.eligibility_at(index)
         self.deleteButton.setEnabled(eligibility.allowed)
+        self.acceptButton.setEnabled(
+            not self.model.accept_in_progress
+            and self.model.relation is ReviewRelation.BYTE_VERIFIED_EXACT
+            and self.model.rowCount() > 1
+        )
         delete_tooltip = eligibility.message
         if eligibility.allowed:
             delete_tooltip = (
@@ -1192,6 +1431,10 @@ class ReviewGalleryWidget(QWidget):
         self.safetyLabel.setToolTip(eligibility.message)
         item = self.model.item_at(index)
         self.keeperButton.setEnabled(item is not None)
+
+    def set_accept_in_progress(self, in_progress: bool):
+        self.model.set_accept_in_progress(in_progress)
+        self._update_safety(self.view.currentIndex())
 
     @pyqtSlot(QModelIndex, QModelIndex)
     def _selection_changed(self, current, previous):

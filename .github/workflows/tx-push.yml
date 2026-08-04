@@ -4,7 +4,7 @@ name: Transifex Sync
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - locale/*.pot
 

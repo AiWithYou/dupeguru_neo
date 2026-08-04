@@ -9,9 +9,9 @@ artifacts. A local build is useful for testing, but is not a releasable build.
 - `vMAJOR.MINOR.PATCH` is the stable channel. Tags containing a PEP 440
   pre-release or development suffix are pre-releases.
 - The tag must resolve to the workflow's original `GITHUB_SHA`.
-- The tagged commit must be reachable from `master`.
+- The tagged commit must be reachable from `main`.
 - Successful `CI` and `CodeQL` push runs must exist for that same SHA on
-  `master`.
+  `main`.
 - `SOURCE_DATE_EPOCH` is mandatory and is read from the commit timestamp.
 - Build metadata records the repository, full commit, tag ref, version,
   timestamp, exact Python implementation/version used to assemble the public
@@ -20,7 +20,7 @@ artifacts. A local build is useful for testing, but is not a releasable build.
 
 The gate rejects mismatched versions, local or epoch versions, unsafe tag
 values, missing commit timestamps, tags that move to a different commit, and
-release commits that are not on `master`.
+release commits that are not on `main`.
 
 ## Published payload
 
@@ -205,8 +205,9 @@ must also be enabled.
 
 `scripts/release_publication_gate.py` reads the GitHub API with strict UTF-8
 JSON parsing, duplicate-key rejection, bounded responses, and exact Boolean
-checks. It verifies the environment, repository settings, private
-vulnerability reporting, tag target, `master` ancestry, and successful `CI`
+checks. It verifies the environment, repository settings, the dedicated
+immutable-releases setting, private vulnerability reporting, tag target,
+`main` ancestry, and successful `CI`
 and `CodeQL` push runs for the release SHA. Its final-only mode also reads the
 draft release by tag, binds the separately fetched asset list to that release's
 numeric identity, and requires the expected draft/pre-release state. Every
@@ -230,7 +231,7 @@ It is not a reduced ancestry-only check. Putting the two draft API reads after
 the other remote checks keeps the most directly publishable state closest to
 the edit. If an administrator weakens an environment, turns off immutable
 releases, Issues, or private vulnerability reporting, moves the tag, changes
-`master` ancestry, invalidates prerequisite CI, or mutates the observed draft
+`main` ancestry, invalidates prerequisite CI, or mutates the observed draft
 while the gate is running, a detected mismatch stops publication and leaves
 the release as a non-public draft.
 
@@ -302,7 +303,7 @@ part of the official release contract.
 ## Maintainer checklist
 
 1. Confirm the version in `core/__init__.py`.
-2. Confirm `CI` and `CodeQL` succeeded for the intended SHA on `master`.
+2. Confirm `CI` and `CodeQL` succeeded for the intended SHA on `main`.
 3. Confirm both protected environments, immutable releases, Issues, and
    private vulnerability reporting are configured.
 4. Create and push the matching tag.

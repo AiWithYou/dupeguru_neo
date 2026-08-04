@@ -1044,6 +1044,7 @@ class Results(Markable):
                 group.ordered = [file for file in ordered_members if references[id(file)]] + [
                     file for file in ordered_members if not references[id(file)]
                 ]
+                group.layout_revision += 1
                 groups.append(group)
             j.add_progress()
 

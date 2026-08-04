@@ -34,6 +34,9 @@ from core.safe_walk import is_reparse_point
 DEFAULT_MAX_ENTRIES = 4096
 DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 MAXIMUM_ENTRY_BYTES = 64 * 1024 * 1024
+_CLEANUP_LOW_WATER_NUMERATOR = 9
+_CLEANUP_LOW_WATER_DENOMINATOR = 10
+_STORE_RECONCILE_INTERVAL = 128
 _CACHE_KEY_PATTERN = re.compile(r"[0-9a-f]{64}")
 _SHARD_PATTERN = re.compile(r"[0-9a-f]{2}")
 _ENTRY_PATTERN = re.compile(r"([0-9a-f]{64})\.png")
@@ -735,7 +738,7 @@ class ThumbnailDiskCache:
             if (
                 self._known_entries > self.max_entries
                 or self._known_bytes > self.max_bytes
-                or self._stores_since_reconcile >= 128
+                or self._stores_since_reconcile >= _STORE_RECONCILE_INTERVAL
             ):
                 self._cleanup_locked()
             return True
@@ -866,13 +869,24 @@ class ThumbnailDiskCache:
         entries = self._entries_locked()
         count = len(entries)
         total = sum(size for _, size, _, _ in entries)
-        entries.sort(key=lambda item: (item[0], str(item[2])))
-        for _, size, path, identity in entries:
-            if count <= self.max_entries and total <= self.max_bytes:
-                break
-            self._remove_locked(path, expected_identity=identity)
-            count -= 1
-            total -= size
+        if count > self.max_entries or total > self.max_bytes:
+            target_count = self.max_entries * _CLEANUP_LOW_WATER_NUMERATOR // _CLEANUP_LOW_WATER_DENOMINATOR
+            target_total = self.max_bytes * _CLEANUP_LOW_WATER_NUMERATOR // _CLEANUP_LOW_WATER_DENOMINATOR
+            entries.sort(key=lambda item: (item[0], str(item[2])))
+            try:
+                for _, size, path, identity in entries:
+                    if count <= target_count and total <= target_total:
+                        break
+                    self._remove_locked(path, expected_identity=identity)
+                    count -= 1
+                    total -= size
+            except BaseException:
+                # One or more removals may already have succeeded.  Require a
+                # fresh validated traversal before cached totals are reused.
+                self._known_entries = None
+                self._known_bytes = None
+                self._stores_since_reconcile = 0
+                raise
         self._known_entries = count
         self._known_bytes = total
         self._stores_since_reconcile = 0

@@ -14,10 +14,13 @@ model.
 Development process
 -------------------
 
-The ``master`` branch is the current integration branch. Build and test a fresh
-checkout using the commands in ``README.en.md``. Keep changes focused, add a
-regression test for behavior changes, and run the formatter, linter, relevant
-tests, and an appropriate build or smoke test before proposing a change.
+The protected ``main`` branch is the current integration branch. Work on a
+short-lived topic branch and open a pull request; direct and force pushes to
+``main`` are not part of the supported development process. Build and test a
+fresh checkout using the commands in ``README.en.md``. Keep changes focused,
+add a regression test for behavior changes, and run the formatter, linter,
+relevant tests, and an appropriate build or smoke test before proposing a
+change.
 
 Use the collaboration channels currently enabled on the repository page for
 ordinary bug reports and feature proposals. Include the dupeGuru Neo version,

@@ -25,9 +25,9 @@ def valid_state():
             ],
         },
         "repository": {
-            "immutable_releases_enabled": True,
             "has_issues": True,
         },
+        "immutable_releases": {"enabled": True},
         "vulnerability_reporting": {"enabled": True},
         "tag_target": {"sha": COMMIT},
         "comparison": {
@@ -39,7 +39,7 @@ def valid_state():
                 "workflow_runs": [
                     {
                         "head_sha": COMMIT,
-                        "head_branch": "master",
+                        "head_branch": "main",
                         "event": "push",
                         "status": "completed",
                         "conclusion": "success",
@@ -50,7 +50,7 @@ def valid_state():
                 "workflow_runs": [
                     {
                         "head_sha": COMMIT,
-                        "head_branch": "master",
+                        "head_branch": "main",
                         "event": "push",
                         "status": "completed",
                         "conclusion": "success",
@@ -79,8 +79,8 @@ def test_complete_publication_state_is_accepted():
         (("environment", "protection_rules", 0, "prevent_self_review"), False),
         (("environment", "protection_rules", 0, "reviewers"), []),
         (("environment", "protection_rules", 0, "reviewers"), ["not-an-object"]),
-        (("repository", "immutable_releases_enabled"), False),
-        (("repository", "immutable_releases_enabled"), 1),
+        (("immutable_releases", "enabled"), False),
+        (("immutable_releases", "enabled"), 1),
         (("repository", "has_issues"), False),
         (("vulnerability_reporting", "enabled"), False),
         (("tag_target", "sha"), "b" * 40),
@@ -195,9 +195,11 @@ def test_run_gate_fetches_all_state_with_bounded_queries():
             return state["environment"]
         if path.endswith("/private-vulnerability-reporting"):
             return state["vulnerability_reporting"]
+        if path.endswith("/immutable-releases"):
+            return state["immutable_releases"]
         if path.endswith("/commits/v5.0.0"):
             return state["tag_target"]
-        if path.endswith(f"/compare/{COMMIT}...master"):
+        if path.endswith(f"/compare/{COMMIT}...main"):
             return state["comparison"]
         for workflow in ("default.yml", "codeql-analysis.yml"):
             if path.endswith(f"/actions/workflows/{workflow}/runs"):
@@ -208,7 +210,7 @@ def test_run_gate_fetches_all_state_with_bounded_queries():
 
     gate.run_gate("owner/repo", "stable-release", "v5.0.0", COMMIT, api=api)
 
-    assert len(calls) == 7
+    assert len(calls) == 8
     workflow_calls = [item for item in calls if item[0].endswith("/runs")]
     assert len(workflow_calls) == 2
     for _, fields in workflow_calls:
@@ -408,9 +410,11 @@ def test_final_gate_refetches_mutable_state_then_checks_draft_assets_last(tmp_pa
             return state["environment"]
         if path.endswith("/private-vulnerability-reporting"):
             return state["vulnerability_reporting"]
+        if path.endswith("/immutable-releases"):
+            return state["immutable_releases"]
         if path.endswith("/commits/v5.0.0"):
             return state["tag_target"]
-        if path.endswith(f"/compare/{COMMIT}...master"):
+        if path.endswith(f"/compare/{COMMIT}...main"):
             return state["comparison"]
         for workflow in ("default.yml", "codeql-analysis.yml"):
             if path.endswith(f"/actions/workflows/{workflow}/runs"):
@@ -435,7 +439,7 @@ def test_final_gate_refetches_mutable_state_then_checks_draft_assets_last(tmp_pa
         expected_prerelease=False,
     )
 
-    assert len(calls) == 9
+    assert len(calls) == 10
     assert calls[0][1].endswith("/environments/stable-release")
     assert calls[-2:] == [
         ("object", "repos/owner/repo/releases/tags/v5.0.0", None),
@@ -475,6 +479,8 @@ def test_gh_api_passes_fixed_get_method_and_sorted_query_fields(monkeypatch):
         "GET",
         "-H",
         "Accept: application/vnd.github+json",
+        "-H",
+        "X-GitHub-Api-Version: 2026-03-10",
         "repos/owner/repo",
         "-f",
         "a=1",

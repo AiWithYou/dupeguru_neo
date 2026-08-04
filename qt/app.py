@@ -535,7 +535,7 @@ class DupeGuru(QObject):
             if language == "ja" and japanese_repository_name is not None:
                 repository_name = japanese_repository_name
             url = QUrl(
-                "{}/blob/master/{}".format(
+                "{}/blob/main/{}".format(
                     __project_url__,
                     repository_name,
                 )

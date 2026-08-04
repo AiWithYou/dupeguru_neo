@@ -1344,6 +1344,50 @@ class File:
             self._strict_digest_snapshots[digest_field] = snapshot
         return snapshot
 
+    def begin_review_scan_generation(self):
+        """Bind a review scan to one generation without reading file contents."""
+
+        snapshot = _snapshot_path(self.path)
+        self._review_scan_snapshot = snapshot
+        self.size = snapshot.size
+        self.mtime = snapshot.mtime_ns / 1_000_000_000
+        for digest_field in FilesDB.digest_keys:
+            generation = self._strict_digest_snapshots.get(digest_field)
+            if generation is None or not generation.same_content_generation(snapshot):
+                setattr(self, digest_field, NOT_SET)
+                self._strict_digest_snapshots.pop(digest_field, None)
+        return snapshot
+
+    def validate_review_scan_generation(self):
+        """Fail if the path no longer names the generation bound at scan start."""
+
+        if self._review_scan_snapshot is None:
+            raise FileChangedError("The scan did not capture an organizer generation for: {}".format(self.path))
+        current = _snapshot_path(self.path)
+        _ensure_unchanged(self._review_scan_snapshot, current, self.path)
+        return current
+
+    def seal_review_scan_content(self, stop_check=None, progress_callback=None):
+        """Attach one stable SHA-256 proof to the bound review generation."""
+
+        if self._review_scan_snapshot is None:
+            raise FileChangedError("The scan did not capture an organizer generation for: {}".format(self.path))
+        baseline = self._review_scan_snapshot
+        if baseline.content_digest_algorithm == REVIEW_CONTENT_DIGEST_ALGORITHM and baseline.content_digest is not None:
+            self.validate_review_scan_generation()
+            return baseline
+        current = _snapshot_path_with_content_digest(
+            self.path,
+            stop_check=stop_check,
+            progress_callback=progress_callback,
+        )
+        _ensure_unchanged(baseline, current, self.path)
+        self._review_scan_snapshot = baseline.with_content_digest(
+            REVIEW_CONTENT_DIGEST_ALGORITHM,
+            current.content_digest,
+        )
+        return self._review_scan_snapshot
+
     def validate_review_scan(self):
         """Metadata-check and return the scan-bound full-content proof.
 

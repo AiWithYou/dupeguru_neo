@@ -4,7 +4,9 @@
 # which should be included with this package. The terms are also available at
 # http://www.gnu.org/licenses/gpl-3.0.html
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, pyqtSlot
+import logging
+
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -36,6 +38,7 @@ class DetailsDialog(DetailsDialogBase):
         self.vController = None
         self._review_group = None
         self._syncing_gallery = False
+        self._accept_in_progress = False
         super().__init__(parent, app)
 
     def _setupUi(self):
@@ -113,6 +116,7 @@ class DetailsDialog(DetailsDialogBase):
         self.reviewGallery.previewRequested.connect(self._preview_image)
         self.reviewGallery.keeperRequested.connect(self._make_keeper)
         self.reviewGallery.deleteCandidateRequested.connect(self._set_delete_candidate)
+        self.reviewGallery.acceptKeeperRequested.connect(self._accept_keeper)
         self.reviewGallery.nextGroupRequested.connect(self._select_next_group)
         self.splitter.addWidget(self.reviewGallery)
         self.splitter.setStretchFactor(1, 5)
@@ -159,7 +163,7 @@ class DetailsDialog(DetailsDialogBase):
         self._syncing_gallery = True
         try:
             if self.reviewGallery.model.group is group and self.reviewGallery.model.has_current_layout(group):
-                self.reviewGallery.model.update_results(self.app.model.results)
+                self.reviewGallery.model.update_item(self.app.model.results, dupe)
                 self.reviewGallery.view.select_item(dupe)
             else:
                 self.reviewGallery.set_group(group, self.app.model.results, dupe)
@@ -184,24 +188,57 @@ class DetailsDialog(DetailsDialogBase):
             colors = "background-color: #263544; color: #FFFFFF;"
         self.comparisonStatusLabel.setStyleSheet("QLabel {" f"{colors} border-radius: 3px; padding: 3px 6px;" "}")
 
-    def _result_rows(self):
+    def _select_result_item(self, item) -> bool:
         result_table = getattr(self.app.model, "result_table", None)
         if result_table is None:
-            return None, []
-        try:
-            return result_table, list(result_table)
-        except TypeError:
-            return result_table, []
-
-    def _select_result_item(self, item) -> bool:
-        result_table, rows = self._result_rows()
-        if result_table is None:
             return False
-        for row_index, row in enumerate(rows):
-            if getattr(row, "_dupe", None) is item:
-                result_table.select([row_index])
-                return True
+        row_count = len(result_table)
+        current_group = self._review_group
+        if not getattr(result_table, "power_marker", False):
+            group_start = self._normal_result_group_start(result_table, current_group)
+            item_index = self.reviewGallery.model.index_for_item(item)
+            if group_start is not None and item_index.isValid():
+                row_index = group_start + item_index.row()
+                if row_index < row_count:
+                    row = result_table[row_index]
+                    if getattr(row, "_group", None) is current_group and getattr(row, "_dupe", None) is item:
+                        result_table.select([row_index])
+                        return True
+
+        # Power-marker rows can interleave groups. This exceptional mode keeps
+        # the historical full search, without copying the table first.
+        if getattr(result_table, "power_marker", False):
+            for row_index in range(row_count):
+                if getattr(result_table[row_index], "_dupe", None) is item:
+                    result_table.select([row_index])
+                    return True
         return False
+
+    def _normal_result_group_start(self, result_table, current_group):
+        """Locate one contiguous result block with a constant number of reads."""
+
+        row_count = len(result_table)
+        selected_indexes = getattr(result_table, "selected_indexes", ())
+        try:
+            anchor = next(iter(selected_indexes))
+        except (StopIteration, TypeError):
+            return None
+        if not isinstance(anchor, int) or not 0 <= anchor < row_count:
+            return None
+        anchor_row = result_table[anchor]
+        if getattr(anchor_row, "_group", None) is not current_group:
+            return None
+        anchor_item = getattr(anchor_row, "_dupe", None)
+        item_index = self.reviewGallery.model.index_for_item(anchor_item)
+        if not item_index.isValid():
+            return None
+        group_start = anchor - item_index.row()
+        if group_start < 0:
+            return None
+        first_row = result_table[group_start]
+        if getattr(first_row, "_group", None) is not current_group:
+            return None
+        return group_start
 
     @pyqtSlot(object)
     def _make_keeper(self, item):
@@ -268,39 +305,142 @@ class DetailsDialog(DetailsDialogBase):
         self.reviewGallery.model.refresh_safety()
         self.deleteCandidateRequested.emit(item, actual_marked)
 
+    @pyqtSlot(object, object)
+    def _accept_keeper(self, keeper, candidates):
+        if self._accept_in_progress:
+            return
+        group = self._review_group
+        model = self.app.model
+        results = getattr(model, "results", None)
+        if group is None or results is None or keeper is not getattr(group, "ref", None):
+            self.reviewGallery.model.report_blocked(tr("The current keeper changed before this review was accepted."))
+            return
+        current_candidates = tuple(item for item in getattr(group, "ordered", ()) if item is not keeper)
+        candidates = tuple(candidates)
+        if candidates != current_candidates:
+            self.reviewGallery.model.report_blocked(tr("The duplicate group changed before this review was accepted."))
+            return
+        for candidate in candidates:
+            try:
+                eligibility = evaluate_duplicate(results, candidate)
+            except Exception:
+                eligibility = None
+            if eligibility is None or not eligibility.allowed:
+                message = (
+                    eligibility.message
+                    if eligibility is not None
+                    else tr("The deletion proof could not be revalidated.")
+                )
+                self.reviewGallery.model.report_blocked(message)
+                return
+        mark_dupes = getattr(model, "mark_dupes", None)
+        if not callable(mark_dupes):
+            self.reviewGallery.model.report_blocked(tr("The current results cannot be marked as one review batch."))
+            return
+        self._accept_in_progress = True
+        self.reviewGallery.set_accept_in_progress(True)
+        mark_call_failed = False
+        try:
+            mark_dupes(candidates, True)
+        except Exception:
+            mark_call_failed = True
+            logging.exception(
+                "The review batch mark call raised; checking its committed state before reporting failure"
+            )
+        try:
+            batch_is_marked = all(results.is_marked(candidate) for candidate in candidates)
+        except Exception:
+            logging.exception("The committed review batch state could not be read")
+            batch_is_marked = False
+        if not batch_is_marked:
+            self._accept_in_progress = False
+            self.reviewGallery.set_accept_in_progress(False)
+            self.reviewGallery.model.update_results(results)
+            message = (
+                tr("The review batch could not be checked.")
+                if mark_call_failed
+                else tr("The review batch was not fully checked.")
+            )
+            self.reviewGallery.model.report_blocked(message)
+            return
+        self.reviewGallery.model.set_delete_candidates(candidates, True)
+        # Finish the model's accept signal before resetting it for the next
+        # group. Some Qt platforms cannot safely reset a list model from the
+        # middle of its own signal delivery.
+        expected_revision = getattr(group, "layout_revision", None)
+        QTimer.singleShot(
+            0,
+            lambda: self._finish_accepted_group(group, expected_revision),
+        )
+
+    def _finish_accepted_group(self, expected_group, expected_revision):
+        try:
+            if self._review_group is not expected_group:
+                return
+            if getattr(expected_group, "layout_revision", None) != expected_revision:
+                return
+            self._select_next_group()
+        finally:
+            self._accept_in_progress = False
+            self.reviewGallery.set_accept_in_progress(False)
+
     @pyqtSlot()
     def _select_next_group(self):
-        result_table, rows = self._result_rows()
-        visible_groups = []
-        visible_group_ids = set()
-        for row in rows:
-            group = getattr(row, "_group", None)
-            group_id = id(group)
-            if group is not None and group_id not in visible_group_ids:
-                visible_group_ids.add(group_id)
-                visible_groups.append(group)
-
+        result_table = getattr(self.app.model, "result_table", None)
         current_group = self._review_group
-        if result_table is not None and len(visible_groups) > 1:
+        groups = getattr(getattr(self.app.model, "results", None), "groups", ())
+        if (
+            result_table is not None
+            and not getattr(result_table, "power_marker", False)
+            and len(groups) > 1
+            and len(result_table)
+        ):
+            row_count = len(result_table)
+            group_start = self._normal_result_group_start(result_table, current_group)
+            if group_start is not None:
+                target_start = group_start + len(current_group)
+                if target_start >= row_count:
+                    target_start = 0
+                target_row = result_table[target_start]
+                target_group = getattr(target_row, "_group", None)
+                if target_group is not None and target_group is not current_group:
+                    target = target_start
+                    candidate_index = target_start + 1
+                    if candidate_index < row_count:
+                        candidate_row = result_table[candidate_index]
+                        if getattr(candidate_row, "_group", None) is target_group and getattr(
+                            candidate_row, "_dupe", None
+                        ) is not getattr(target_group, "ref", None):
+                            target = candidate_index
+                    result_table.select([target])
+                    self._update()
+        elif (
+            result_table is not None
+            and getattr(result_table, "power_marker", False)
+            and len(groups) > 1
+            and len(result_table)
+        ):
+            row_count = len(result_table)
             try:
-                current_index = next(index for index, group in enumerate(visible_groups) if group is current_group)
-            except StopIteration:
-                current_index = -1
-            target_group = visible_groups[(current_index + 1) % len(visible_groups)]
-            target_rows = [
-                (row_index, row) for row_index, row in enumerate(rows) if getattr(row, "_group", None) is target_group
-            ]
-            target = next(
-                (
-                    (row_index, row)
-                    for row_index, row in target_rows
-                    if getattr(row, "_dupe", None) is not getattr(target_group, "ref", None)
-                ),
-                target_rows[0] if target_rows else None,
-            )
-            if target is not None:
-                result_table.select([target[0]])
-                self._update()
+                anchor = next(iter(getattr(result_table, "selected_indexes", ())))
+            except (StopIteration, TypeError):
+                anchor = None
+            if (
+                isinstance(anchor, int)
+                and 0 <= anchor < row_count
+                and getattr(result_table[anchor], "_group", None) is current_group
+            ):
+                for offset in range(1, row_count + 1):
+                    target = (anchor + offset) % row_count
+                    row = result_table[target]
+                    target_group = getattr(row, "_group", None)
+                    if target_group is current_group or target_group is None:
+                        continue
+                    if getattr(row, "_dupe", None) is getattr(target_group, "ref", None):
+                        continue
+                    result_table.select([target])
+                    self._update()
+                    break
         self.nextGroupRequested.emit()
 
     # --- Override

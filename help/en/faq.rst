@@ -205,4 +205,4 @@ location before deleting anything.
 
 .. _GitHub: https://github.com/AiWithYou/dupeguru_neo
 .. _open an issue: https://github.com/AiWithYou/dupeguru_neo
-.. _safety model: https://github.com/AiWithYou/dupeguru_neo/blob/master/docs/SAFETY_MODEL.md
+.. _safety model: https://github.com/AiWithYou/dupeguru_neo/blob/main/docs/SAFETY_MODEL.md

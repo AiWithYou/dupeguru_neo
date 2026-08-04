@@ -19,7 +19,8 @@ class DetailsPanel(GUIObject, DupeGuruGUIObject):
 
     def _view_updated(self):
         self._refresh()
-        self.view.refresh()
+        if self.has_view():
+            self.view.refresh()
 
     # --- Private
     def _refresh(self):
@@ -59,4 +60,13 @@ class DetailsPanel(GUIObject, DupeGuruGUIObject):
 
     # --- Event Handlers
     def dupes_selected(self):
+        self._view_updated()
+
+    def marking_changed(self):
+        self._view_updated()
+
+    def results_changed(self):
+        self._view_updated()
+
+    def results_changed_but_keep_selection(self):
         self._view_updated()

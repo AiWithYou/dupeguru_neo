@@ -697,7 +697,7 @@ def test_gate_writes_safe_single_line_github_values(tmp_path, monkeypatch):
     assert environment.read_text(encoding="utf-8") == "SOURCE_DATE_EPOCH=123\n"
 
 
-def test_git_release_context_requires_origin_master_ancestry(tmp_path, monkeypatch):
+def test_git_release_context_requires_origin_main_ancestry(tmp_path, monkeypatch):
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
@@ -731,9 +731,9 @@ def test_git_release_context_requires_origin_master_ancestry(tmp_path, monkeypat
         text=True,
     ).stdout.strip()
     subprocess.run(["git", "tag", "v5.0.0", tagged_commit], cwd=repository, check=True)
-    tracked.write_text("master descendant\n", encoding="utf-8")
+    tracked.write_text("main descendant\n", encoding="utf-8")
     subprocess.run(["git", "commit", "--quiet", "-am", "descendant"], cwd=repository, check=True)
-    master_commit = subprocess.run(
+    main_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=repository,
         check=True,
@@ -741,7 +741,7 @@ def test_git_release_context_requires_origin_master_ancestry(tmp_path, monkeypat
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "update-ref", "refs/remotes/origin/master", master_commit],
+        ["git", "update-ref", "refs/remotes/origin/main", main_commit],
         cwd=repository,
         check=True,
     )
@@ -766,11 +766,11 @@ def test_git_release_context_requires_origin_master_ancestry(tmp_path, monkeypat
         text=True,
     ).stdout.strip()
     subprocess.run(
-        ["git", "update-ref", "refs/remotes/origin/master", unrelated_commit],
+        ["git", "update-ref", "refs/remotes/origin/main", unrelated_commit],
         cwd=repository,
         check=True,
     )
-    with pytest.raises(RuntimeError, match="not reachable from origin/master"):
+    with pytest.raises(RuntimeError, match="not reachable from origin/main"):
         release_metadata.git_release_context("v5.0.0", tagged_commit)
 
 

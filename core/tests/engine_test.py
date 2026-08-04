@@ -989,6 +989,21 @@ class TestCaseGroup:
         g.switch_ref(NamedObject("", True))
         assert o2 is g.ref
 
+    def test_layout_revision_tracks_only_member_order_changes(self):
+        g = get_test_group()
+        revision = g.layout_revision
+
+        assert not g.prioritize(lambda _item: 0)
+        assert g.layout_revision == revision
+
+        assert g.switch_ref(g.dupes[-1])
+        revision += 1
+        assert g.layout_revision == revision
+
+        g.remove_dupe(g.dupes[-1])
+        revision += 1
+        assert g.layout_revision == revision
+
     def test_switch_ref_from_ref_dir(self):
         # When the ref dupe is from a ref dir, switch_ref() does nothing
         o1 = no(with_words=True)

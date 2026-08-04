@@ -16,13 +16,13 @@ import pytest
 from pathlib import Path
 import hscommon.conflict
 from hscommon.testutil import eq_, log_calls
-from hscommon.jobprogress.job import Job
+from hscommon.jobprogress.job import Job, JobCancelled
 
 from core.tests.base import TestApp
 from core.tests.results_test import GetTestGroups
 from core import app, engine, export, fs
 from core.catalog import Catalog
-from core.file_generation import FileGenerationToken
+from core.file_generation import FileGenerationError
 import core.ignore as ignore_module
 from core.scan_receipt import ScanIssue, ScanReceipt, ScanStatus
 from core.scanner import ScanType
@@ -55,6 +55,129 @@ def test_desktop_uses_versioned_hash_cache_without_touching_legacy_file(tmp_path
 def add_fake_files_to_directories(directories, files):
     directories.get_files = lambda j=None, **_kwargs: iter(files)
     directories._dirs.append("this is just so Scan() doesn't return 3")
+
+
+def test_mark_dupes_batches_state_changes_and_publishes_one_notification(monkeypatch):
+    dgapp = TestApp().app
+    first = object()
+    second = object()
+    calls = []
+    states = {id(first): False, id(second): False}
+
+    def mark_multiple(items):
+        items = tuple(items)
+        calls.append(("mark", items))
+        for item in items:
+            states[id(item)] = True
+
+    def unmark_multiple(items):
+        items = tuple(items)
+        calls.append(("unmark", items))
+        for item in items:
+            states[id(item)] = False
+
+    monkeypatch.setattr(dgapp.results, "_is_markable", lambda _item: True)
+    monkeypatch.setattr(dgapp.results, "is_marked", lambda item: states[id(item)])
+    monkeypatch.setattr(dgapp.results, "mark_multiple", mark_multiple)
+    monkeypatch.setattr(dgapp.results, "unmark_multiple", unmark_multiple)
+    monkeypatch.setattr(dgapp, "notify", lambda event: calls.append(("notify", event)))
+
+    dgapp.mark_dupes(items=(first, first, second), marked=True)
+    dgapp.mark_dupes((second, second, first), False)
+
+    assert calls == [
+        ("mark", (first, second)),
+        ("notify", "marking_changed"),
+        ("unmark", (second, first)),
+        ("notify", "marking_changed"),
+    ]
+    assert states == {id(first): False, id(second): False}
+
+
+def test_mark_dupes_rejects_an_unmarkable_batch_before_mutation(monkeypatch):
+    dgapp = TestApp().app
+    first = object()
+    second = object()
+    calls = []
+    monkeypatch.setattr(dgapp.results, "_is_markable", lambda item: item is first)
+    monkeypatch.setattr(
+        dgapp.results,
+        "mark_multiple",
+        lambda _items: calls.append("unexpected mutation"),
+    )
+    monkeypatch.setattr(dgapp, "notify", lambda event: calls.append(("notify", event)))
+
+    with pytest.raises(ValueError, match="1 item.*not markable"):
+        dgapp.mark_dupes((first, second), True)
+
+    assert calls == []
+
+
+def test_mark_dupes_rolls_back_a_silently_partial_batch_without_notifying(monkeypatch):
+    dgapp = TestApp().app
+    first = object()
+    second = object()
+    states = {id(first): False, id(second): False}
+    calls = []
+
+    def partial_mark(items):
+        items = tuple(items)
+        calls.append(("mark", items))
+        states[id(items[0])] = True
+
+    def unmark_multiple(items):
+        items = tuple(items)
+        calls.append(("unmark", items))
+        for item in items:
+            states[id(item)] = False
+
+    monkeypatch.setattr(dgapp.results, "_is_markable", lambda _item: True)
+    monkeypatch.setattr(dgapp.results, "is_marked", lambda item: states[id(item)])
+    monkeypatch.setattr(dgapp.results, "mark_multiple", partial_mark)
+    monkeypatch.setattr(dgapp.results, "unmark_multiple", unmark_multiple)
+    monkeypatch.setattr(dgapp, "notify", lambda event: calls.append(("notify", event)))
+
+    with pytest.raises(RuntimeError, match="did not update every requested item"):
+        dgapp.mark_dupes((first, second), True)
+
+    assert states == {id(first): False, id(second): False}
+    assert calls == [
+        ("mark", (first, second)),
+        ("unmark", (first,)),
+    ]
+
+
+def test_mark_dupes_rolls_back_when_the_batch_operation_raises(monkeypatch):
+    dgapp = TestApp().app
+    first = object()
+    second = object()
+    states = {id(first): False, id(second): False}
+    notifications = []
+
+    def partial_failure(items):
+        items = tuple(items)
+        states[id(items[0])] = True
+        raise OSError("synthetic mark failure")
+
+    def unmark_multiple(items):
+        for item in items:
+            states[id(item)] = False
+
+    monkeypatch.setattr(dgapp.results, "_is_markable", lambda _item: True)
+    monkeypatch.setattr(dgapp.results, "is_marked", lambda item: states[id(item)])
+    monkeypatch.setattr(
+        dgapp.results,
+        "mark_multiple",
+        partial_failure,
+    )
+    monkeypatch.setattr(dgapp.results, "unmark_multiple", unmark_multiple)
+    monkeypatch.setattr(dgapp, "notify", notifications.append)
+
+    with pytest.raises(OSError, match="synthetic mark failure"):
+        dgapp.mark_dupes((first, second), True)
+
+    assert states == {id(first): False, id(second): False}
+    assert notifications == []
 
 
 class TestCaseDupeGuru:
@@ -558,17 +681,6 @@ class TestCaseDupeGuru:
         first_before = first.stat()
         dgapp.directories.add_path(root)
         dgapp.options["scan_type"] = ScanType.FILENAME
-        generation = FileGenerationToken("test-fixed-generation", 1)
-        monkeypatch.setattr(
-            fs,
-            "get_file_generation_token",
-            lambda *args, **kwargs: generation,
-        )
-        monkeypatch.setattr(
-            fs,
-            "get_file_generation_token_from_fd",
-            lambda *args, **kwargs: generation,
-        )
 
         def change_during_scan(scanner, files, ignore_list, j):
             first.write_bytes(b"after!")
@@ -596,7 +708,134 @@ class TestCaseDupeGuru:
         assert receipt.issues[0].code == "scan_generation_changed"
         assert not receipt.allows_destructive_actions
 
-    def test_direct_scan_content_proofs_report_phase_file_and_byte_progress(
+    def test_direct_scan_generation_failure_is_fail_closed_and_reports_its_path(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        source = root / "source.bin"
+        source.write_bytes(b"payload")
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+        scanner_called = False
+
+        def unavailable_generation(path, **_kwargs):
+            raise FileGenerationError(path, "read test generation", ValueError("unavailable"))
+
+        def unexpected_scan(scanner, files, ignore_list, j):
+            nonlocal scanner_called
+            scanner_called = True
+            return []
+
+        def run_now(jobid, function, args=()):
+            function(dgapp.view.JOB, *args)
+
+        monkeypatch.setattr(fs, "get_file_generation_token", unavailable_generation)
+        monkeypatch.setattr(app.se.scanner.ScannerSE, "get_dupe_groups", unexpected_scan)
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+
+        dgapp.start_scanning()
+
+        assert not scanner_called
+        assert dgapp.results.groups == []
+        receipt = dgapp.results.scan_receipt
+        assert receipt.status is ScanStatus.FAILED
+        assert receipt.issues[0].code == "scan_generation_changed"
+        assert receipt.issues[0].path == str(source)
+        assert not receipt.allows_destructive_actions
+
+    def test_direct_scan_seals_only_unique_result_members(self, tmp_path, monkeypatch):
+        paths = [tmp_path / name for name in ("first.bin", "second.bin", "unmatched.bin")]
+        for index, path in enumerate(paths, 1):
+            path.write_bytes(bytes([index]) * index)
+        files = [fs.File(path) for path in paths]
+        job = Job([1, 1, 1], lambda *_args: True)
+        sealed_paths = []
+        content_reads = []
+        original_seal = fs.File.seal_review_scan_content
+        original_review_read = fs._snapshot_path_with_review_digests
+
+        def record_seal(file, *args, **kwargs):
+            sealed_paths.append(file.path)
+            return original_seal(file, *args, **kwargs)
+
+        def record_review_read(path, *args, **kwargs):
+            content_reads.append((Path(path), kwargs["include_fast_digest"]))
+            return original_review_read(path, *args, **kwargs)
+
+        monkeypatch.setattr(fs.File, "seal_review_scan_content", record_seal)
+        monkeypatch.setattr(fs, "_snapshot_path_with_review_digests", record_review_read)
+
+        app.DupeGuru._bind_direct_scan_generations(files, job)
+        app.DupeGuru._validate_direct_scan_generations(files, job)
+        app.DupeGuru._seal_direct_scan_review_proofs(
+            ((files[0], files[1]), (files[1],)),
+            job,
+        )
+
+        assert sealed_paths == paths[:2]
+        assert content_reads == [(paths[0], False), (paths[1], False)]
+        assert files[0].validate_review_scan().content_digest is not None
+        assert files[1].validate_review_scan().content_digest is not None
+        with pytest.raises(fs.FileChangedError, match="content proof"):
+            files[2].validate_review_scan()
+
+    def test_direct_scan_does_not_publish_groups_when_result_sealing_returns_no_proof(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        dgapp = TestApp().app
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "same one.bin").write_bytes(b"payload")
+        (root / "same two.bin").write_bytes(b"payload")
+        dgapp.directories.add_path(root)
+        dgapp.options["scan_type"] = ScanType.FILENAME
+
+        def synthetic_group(scanner, files, ignore_list, j):
+            return [files]
+
+        def fail_seal(file, *args, **kwargs):
+            return file.validate_review_scan_generation()
+
+        def run_now(jobid, function, args=()):
+            function(dgapp.view.JOB, *args)
+
+        monkeypatch.setattr(app.se.scanner.ScannerSE, "get_dupe_groups", synthetic_group)
+        monkeypatch.setattr(fs.File, "seal_review_scan_content", fail_seal)
+        monkeypatch.setattr(dgapp, "_start_job", run_now)
+
+        dgapp.start_scanning()
+
+        assert dgapp.results.groups == []
+        receipt = dgapp.results.scan_receipt
+        assert receipt.status is ScanStatus.FAILED
+        assert receipt.issues[0].code == "scan_generation_changed"
+        assert not receipt.allows_destructive_actions
+
+    def test_direct_scan_result_sealing_honors_progress_cancellation(self, tmp_path, monkeypatch):
+        path = tmp_path / "large-result.bin"
+        path.write_bytes(b"x" * (2 * fs.CHUNK_SIZE))
+        file = fs.File(path)
+
+        def report(_progress, description=""):
+            return not ("Sealing result content proofs" in description and "{}/".format(fs.CHUNK_SIZE) in description)
+
+        proof_job = Job([1, 1, 1], report)
+        monkeypatch.setattr(app, "DIRECT_PROOF_PROGRESS_BYTES", 1)
+        app.DupeGuru._bind_direct_scan_generations([file], proof_job)
+        app.DupeGuru._validate_direct_scan_generations([file], proof_job)
+
+        with pytest.raises(JobCancelled):
+            app.DupeGuru._seal_direct_scan_review_proofs([[file]], proof_job)
+        with pytest.raises(fs.FileChangedError, match="content proof"):
+            file.validate_review_scan()
+
+    def test_direct_scan_generations_and_result_proofs_report_bounded_progress(
         self,
         tmp_path,
         monkeypatch,
@@ -612,25 +851,24 @@ class TestCaseDupeGuru:
             updates.append((progress, description))
             return True
 
-        proof_job = Job([1, 1], report)
+        proof_job = Job([1, 1, 1], report)
         monkeypatch.setattr(app, "DIRECT_PROOF_PROGRESS_BYTES", 1)
 
         app.DupeGuru._bind_direct_scan_generations(files, proof_job)
         app.DupeGuru._validate_direct_scan_generations(files, proof_job)
+        app.DupeGuru._seal_direct_scan_review_proofs([files], proof_job)
 
         descriptions = [description for _, description in updates if description]
-        first_file_stream = next(
-            description
-            for description in descriptions
-            if "Hashing scan-start proofs" in description and "3/8 bytes" in description
-        )
-        assert "0/2 files" in first_file_stream
         assert any(
-            "Hashing scan-start proofs" in description and "2/2 files" in description and "8/8 bytes" in description
+            "Capturing scan-start generations" in description and "2/2 files" in description
             for description in descriptions
         )
         assert any(
-            "Confirming scan-end proofs" in description and "2/2 files" in description and "8/8 bytes" in description
+            "Confirming scan-end generations" in description and "2/2 files" in description
+            for description in descriptions
+        )
+        assert any(
+            "Sealing result content proofs" in description and "2/2 files" in description and "8/8 bytes" in description
             for description in descriptions
         )
         assert updates[-1][0] == 100
@@ -661,9 +899,10 @@ class TestCaseDupeGuru:
         dgapp.start_scanning()
 
         descriptions = [description for _, description in updates if description]
-        assert any("Hashing scan-start proofs" in value for value in descriptions)
+        assert any("Capturing scan-start generations" in value for value in descriptions)
         assert any("Matching files" in value for value in descriptions)
-        assert any("Confirming scan-end proofs" in value for value in descriptions)
+        assert any("Confirming scan-end generations" in value for value in descriptions)
+        assert any("Sealing result content proofs" in value for value in descriptions)
         assert updates[-1][0] == 100
         assert dgapp.results.scan_receipt.complete
 
@@ -800,6 +1039,23 @@ class TestCaseDupeGuruWithResults:
         tmppath.joinpath("foo").mkdir()
         tmppath.joinpath("bar").mkdir()
         self.app.directories.add_path(tmppath)
+
+    def test_mark_dupes_is_atomic_across_an_active_results_filter(self, do_setup, monkeypatch):
+        visible = self.objects[1]
+        filtered_out = self.objects[2]
+        self.app.results.apply_filter(r"bar bleh$")
+        assert self.app.results._is_markable(visible)
+        assert not self.app.results._is_markable(filtered_out)
+        notifications = []
+        monkeypatch.setattr(self.app, "notify", notifications.append)
+
+        with pytest.raises(ValueError, match="1 item.*not markable"):
+            self.app.mark_dupes((visible, filtered_out), True)
+
+        assert not self.app.results.is_marked(visible)
+        self.app.results.apply_filter(None)
+        assert not self.app.results.is_marked(filtered_out)
+        assert notifications == []
 
     def test_get_objects(self, do_setup):
         objects = self.objects
@@ -947,6 +1203,30 @@ class TestCaseDupeGuruWithResults:
         self.dpanel.view.check_gui_calls(["refresh"])
         self.rtable.select([])
         eq_(self.dpanel.row(0), ("Filename", "---", "---"))
+        self.dpanel.view.check_gui_calls(["refresh"])
+
+    def test_external_mark_refreshes_details(self, do_setup):
+        self.rtable.select([1])
+        self.dpanel.view.clear_calls()
+
+        self.app.mark_dupe(self.objects[1], True)
+
+        self.dpanel.view.check_gui_calls(["refresh"])
+
+    def test_external_reference_change_refreshes_details(self, do_setup):
+        self.rtable.select([1])
+        self.dpanel.view.clear_calls()
+
+        self.app.make_selected_reference()
+
+        assert self.groups[0].ref is self.objects[1]
+        self.dpanel.view.check_gui_calls(["refresh"])
+
+    def test_results_change_that_keeps_selection_refreshes_details(self, do_setup):
+        self.dpanel.view.clear_calls()
+
+        self.app.notify("results_changed_but_keep_selection")
+
         self.dpanel.view.check_gui_calls(["refresh"])
 
     def test_make_selected_reference(self, do_setup):

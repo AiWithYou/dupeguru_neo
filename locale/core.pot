@@ -197,7 +197,7 @@ msgstr ""
 msgid "Select a destination for your exported CSV"
 msgstr ""
 
-#: core\app.py:944 core\app.py:1320 core\app.py:1330
+#: core\app.py:944 core\app.py:1369 core\app.py:1379
 msgid "Couldn't write to file: {}"
 msgstr ""
 
@@ -234,57 +234,61 @@ msgstr ""
 msgid "The folder list could not be loaded because it is invalid or exceeds the supported safety limits. The current folder list was kept."
 msgstr ""
 
-#: core\app.py:1173 core\app.py:1185
+#: core\app.py:1222 core\app.py:1234
 msgid "You are about to remove %d files from results. Continue?"
 msgstr ""
 
-#: core\app.py:1205
+#: core\app.py:1254
 msgid "The file was not renamed. {}"
 msgstr ""
 
-#: core\app.py:1245
+#: core\app.py:1294
 msgid "{} duplicate groups were changed by the re-prioritization."
 msgstr ""
 
-#: core\app.py:1269
+#: core\app.py:1318
 msgid ""
 "The folder list was not saved because it is invalid or exceeds the supported safety limits. Any existing folder-list file was kept unchanged.\n"
 "\n"
 "{}"
 msgstr ""
 
-#: core\app.py:1299
+#: core\app.py:1348
 msgid ""
 "The exclusion list was not saved because it is invalid or exceeds the supported safety limits. Any existing exclusion-list file was kept unchanged.\n"
 "\n"
 "{}"
 msgstr ""
 
-#: core\app.py:1377
-msgid "Hashing scan-start proofs: {}/{} files, {}/{} bytes"
+#: core\app.py:1423
+msgid "Capturing scan-start generations: {}/{} files"
 msgstr ""
 
-#: core\app.py:1430
-msgid "Confirming scan-end proofs: {}/{} files, {}/{} bytes"
+#: core\app.py:1453
+msgid "Confirming scan-end generations: {}/{} files"
 msgstr ""
 
-#: core\app.py:1511
+#: core\app.py:1502
+msgid "Sealing result content proofs: {}/{} files, {}/{} bytes"
+msgstr ""
+
+#: core\app.py:1599
 msgid "The selected directories contain no scannable file."
 msgstr ""
 
-#: core\app.py:1521
+#: core\app.py:1609
 msgid "Collecting files to scan"
 msgstr ""
 
-#: core\app.py:1557
-msgid "Preparing scan-start content proofs"
+#: core\app.py:1645
+msgid "Capturing scan-start file generations"
 msgstr ""
 
-#: core\app.py:1570
+#: core\app.py:1658
 msgid "Matching files"
 msgstr ""
 
-#: core\app.py:1659
+#: core\app.py:1748
 msgid "%s (%d discarded)"
 msgstr ""
 
@@ -404,11 +408,11 @@ msgstr ""
 msgid " filter: %s"
 msgstr ""
 
-#: core\scanner.py:135
+#: core\scanner.py:145
 msgid "Read metadata of %d/%d files"
 msgstr ""
 
-#: core\scanner.py:206 core\scanner.py:282 core\scanner.py:392
+#: core\scanner.py:216 core\scanner.py:292 core\scanner.py:402
 msgid "Almost done! Fiddling with results..."
 msgstr ""
 

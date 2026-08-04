@@ -51,6 +51,80 @@ def test_review_scan_streams_sha256_and_reuses_its_full_fast_digest(tmp_path):
         assert file.read_info_strict(field) == expected_fast
 
 
+def test_review_generation_is_metadata_only_until_result_content_is_sealed(tmp_path, monkeypatch):
+    path = tmp_path / "payload.bin"
+    payload = (b"result-only proof" * 4096) + b"tail"
+    path.write_bytes(payload)
+    file = fs.File(path)
+    content_reads = []
+    original = fs._snapshot_path_with_content_digest
+
+    def record_content_read(*args, **kwargs):
+        content_reads.append(Path(args[0]))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(fs, "_snapshot_path_with_content_digest", record_content_read)
+
+    baseline = file.begin_review_scan_generation()
+    assert file.validate_review_scan_generation().same_content_generation(baseline)
+    assert content_reads == []
+    with pytest.raises(fs.FileChangedError, match="content proof"):
+        file.validate_review_scan()
+
+    sealed = file.seal_review_scan_content()
+
+    assert content_reads == [path]
+    assert sealed.same_content_generation(baseline)
+    assert sealed.content_digest_algorithm == fs.REVIEW_CONTENT_DIGEST_ALGORITHM
+    assert sealed.content_digest == hashlib.sha256(payload).digest()
+    assert file.validate_review_scan() is sealed
+
+
+def test_result_content_seal_does_not_replace_a_changed_generation(tmp_path):
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"before")
+    original_stat = path.stat()
+    file = fs.File(path)
+    baseline = file.begin_review_scan_generation()
+
+    path.write_bytes(b"after!")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    with pytest.raises(fs.FileChangedError, match="changed"):
+        file.seal_review_scan_content()
+    assert file._review_scan_snapshot is baseline
+    with pytest.raises(fs.FileChangedError, match="content proof"):
+        file.validate_review_scan()
+
+
+def test_result_content_seal_honors_chunk_cancellation(tmp_path):
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"x" * (2 * fs.CHUNK_SIZE))
+    file = fs.File(path)
+    baseline = file.begin_review_scan_generation()
+
+    with pytest.raises(InterruptedError, match="resource limit"):
+        file.seal_review_scan_content(stop_check=lambda: True)
+
+    assert file._review_scan_snapshot is baseline
+    with pytest.raises(fs.FileChangedError, match="content proof"):
+        file.validate_review_scan()
+
+
+def test_result_content_seal_reuses_an_existing_proof(tmp_path, monkeypatch):
+    path = tmp_path / "payload.bin"
+    path.write_bytes(b"already proven")
+    file = fs.File(path)
+    existing = file.begin_review_scan()
+    monkeypatch.setattr(
+        fs,
+        "_snapshot_path_with_content_digest",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("existing proof was reread")),
+    )
+
+    assert file.seal_review_scan_content() is existing
+
+
 def test_priming_exact_digest_preserves_the_scan_bound_content_proof(tmp_path):
     path = tmp_path / "payload.bin"
     path.write_bytes(b"stable payload")

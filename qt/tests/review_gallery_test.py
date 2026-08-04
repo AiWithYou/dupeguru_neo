@@ -6,14 +6,17 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
-from PyQt6.QtCore import QObject, QSize, Qt, pyqtSignal  # noqa: E402
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, pyqtSignal  # noqa: E402
 from PyQt6.QtGui import QColor, QImage, QPixmap  # noqa: E402
 from PyQt6.QtTest import QSignalSpy, QTest  # noqa: E402
 from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget  # noqa: E402
 
 from core.engine import VerificationKind  # noqa: E402
+from core.gui.details_panel import DetailsPanel  # noqa: E402
+from hscommon.notify import Broadcaster  # noqa: E402
 from qt.pe.comparison import ComparisonError, ComparisonMode  # noqa: E402
 from qt.pe.details_dialog import DetailsDialog  # noqa: E402
+import qt.pe.details_dialog as details_dialog_module  # noqa: E402
 import qt.pe.image_viewer as image_viewer_module  # noqa: E402
 from qt.pe.review_gallery import (  # noqa: E402
     RELATION_COLORS,
@@ -59,10 +62,17 @@ class FakeGroup:
         self.ref = self.ordered[0] if self.ordered else None
         self.verification_kind = verification_kind
         self.relation_kind = relation_kind
+        self.layout_revision = 0
         self._sync_reference_flags()
 
     def __contains__(self, item):
         return any(candidate is item for candidate in self.ordered)
+
+    def __iter__(self):
+        return iter(self.ordered)
+
+    def __len__(self):
+        return len(self.ordered)
 
     @property
     def dupes(self):
@@ -71,7 +81,10 @@ class FakeGroup:
     def switch_ref(self, item):
         if item not in self or item is self.ref:
             return False
-        self.ref = item
+        self.ordered.remove(item)
+        self.ordered.insert(0, item)
+        self.ref = self.ordered[0]
+        self.layout_revision += 1
         self._sync_reference_flags()
         return True
 
@@ -87,6 +100,7 @@ class FakeResults:
         self.loaded_report = loaded_report
         self.scan_receipt = SimpleNamespace(allows_destructive_actions=complete)
         self._marked = set()
+        self.mark_revision = 0
 
     def get_group_of_duplicate(self, item):
         return next((group for group in self.groups if item in group), None)
@@ -95,10 +109,16 @@ class FakeResults:
         return item in self._marked
 
     def mark(self, item):
+        if item in self._marked:
+            return
         self._marked.add(item)
+        self.mark_revision += 1
 
     def unmark(self, item):
+        if item not in self._marked:
+            return
         self._marked.discard(item)
+        self.mark_revision += 1
 
 
 class FakeResultRow:
@@ -108,6 +128,11 @@ class FakeResultRow:
 
 
 class FakeResultTable(list):
+    COLUMNS = (
+        SimpleNamespace(name="marked", display=""),
+        SimpleNamespace(name="name", display="Filename"),
+    )
+
     def __init__(self, model):
         self.model = model
         self.power_marker = False
@@ -131,6 +156,10 @@ class FakeCoreModel:
         self.selected_dupes = list(selected)
         self.details_panel = FakeDetailsPanel()
         self.result_table = FakeResultTable(self)
+        selected_ids = {id(item) for item in self.selected_dupes}
+        self.result_table.selected_indexes = [
+            index for index, row in enumerate(self.result_table) if id(row._dupe) in selected_ids
+        ]
 
     def make_selected_reference(self):
         for item in list(self.selected_dupes):
@@ -144,6 +173,43 @@ class FakeCoreModel:
             self.results.mark(item)
         else:
             self.results.unmark(item)
+
+    def mark_dupes(self, items, marked):
+        if marked:
+            for item in items:
+                self.results.mark(item)
+        else:
+            for item in items:
+                self.results.unmark(item)
+
+
+class NotifyingFakeCoreModel(FakeCoreModel, Broadcaster):
+    """Exercise the production DetailsPanel notification path."""
+
+    def __init__(self, results, selected):
+        Broadcaster.__init__(self)
+        FakeCoreModel.__init__(self, results, selected)
+        self.details_panel = DetailsPanel(self)
+        self.details_panel.connect()
+
+    def get_display_info(self, item, group, delta):
+        return {"name": "---" if item is None else item.name}
+
+    def make_selected_reference(self):
+        FakeCoreModel.make_selected_reference(self)
+        selected_ids = {id(item) for item in self.selected_dupes}
+        self.result_table.selected_indexes = [
+            index for index, row in enumerate(self.result_table) if id(row._dupe) in selected_ids
+        ]
+        self.notify("results_changed")
+
+    def mark_dupe(self, item, marked):
+        FakeCoreModel.mark_dupe(self, item, marked)
+        self.notify("marking_changed")
+
+    def mark_dupes(self, items, marked):
+        FakeCoreModel.mark_dupes(self, items, marked)
+        self.notify("marking_changed")
 
 
 class FakeThumbnailLoader(QObject):
@@ -316,6 +382,46 @@ def test_real_thumbnail_loader_decodes_after_decoration_request(qapp, tmp_path):
     assert model.thumbnail_waiter_count == 0
 
 
+def test_evicted_deferred_thumbnail_drops_model_waiter_without_repaint(qapp, tmp_path):
+    class ManualPool:
+        def __init__(self):
+            self.tasks = []
+
+        def start(self, task):
+            self.tasks.append(task)
+
+    files = [FakeFile(tmp_path / f"missing-{index}.png") for index in range(3)]
+    group = FakeGroup(files, VerificationKind.UNVERIFIED)
+    pool = ManualPool()
+    loader = LazyThumbnailLoader(
+        QSize(40, 30),
+        thread_pool=pool,
+        disk_cache=ThumbnailDiskCache(tmp_path / "thumbnail-cache"),
+        max_concurrent_tasks=1,
+        max_pending_tasks=2,
+    )
+    model = ReviewGalleryModel(loader)
+    model.set_group(group)
+    indexes = [model.index(row, 0) for row in range(3)]
+    keys = [model.data(index, ReviewRole.THUMBNAIL_KEY) for index in indexes]
+    changes = QSignalSpy(model.dataChanged)
+
+    for index in indexes:
+        model.data(index, Qt.ItemDataRole.DecorationRole)
+
+    assert loader.pending_count == 2
+    assert loader.is_pending(keys[0])
+    assert not loader.is_pending(keys[1])
+    assert loader.is_pending(keys[2])
+    assert model.thumbnail_waiter_count == 2
+    assert len(changes) == 0
+
+    model.clear()
+    assert loader.pending_count == 0
+    assert model.thumbnail_waiter_count == 0
+    loader.close()
+
+
 @pytest.mark.parametrize(
     ("verification_kind", "loaded_report", "complete", "pool", "expected"),
     [
@@ -402,6 +508,120 @@ def test_keyboard_operations_emit_signals_and_block_unsafe_delete(qapp):
     widget.close()
 
 
+def test_enter_accepts_one_exact_keeper_marks_copies_and_advances(qapp, tmp_path, monkeypatch):
+    class TestReviewGalleryWidget(ReviewGalleryWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent, thumbnail_loader=FakeThumbnailLoader())
+
+    monkeypatch.setattr(details_dialog_module, "ReviewGalleryWidget", TestReviewGalleryWidget)
+    files = []
+    for number in range(5):
+        path = tmp_path / f"accept-{number}.png"
+        image = QImage(24, 16, QImage.Format.Format_RGB32)
+        image.fill(QColor("#456789"))
+        assert image.save(str(path))
+        files.append(FakeFile(path, dimensions=(24, 16)))
+    first_group = FakeGroup(files[:3], VerificationKind.VERIFIED_EXACT)
+    second_group = FakeGroup(files[3:], VerificationKind.VERIFIED_EXACT)
+    results = FakeResults([first_group, second_group])
+    model = FakeCoreModel(results, [files[1]])
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    dialog._update()
+
+    assert dialog.reviewGallery.model.request_accept_keeper()
+    qapp.processEvents()
+
+    assert all(results.is_marked(item) for item in first_group.dupes)
+    assert not results.is_marked(first_group.ref)
+    assert dialog._review_group is second_group
+    assert model.selected_dupes == [files[4]]
+    dialog.close()
+    parent.close()
+
+
+def test_accept_uses_committed_marks_when_post_commit_notification_raises(qapp, monkeypatch, caplog):
+    class TestReviewGalleryWidget(ReviewGalleryWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent, thumbnail_loader=FakeThumbnailLoader())
+
+    monkeypatch.setattr(details_dialog_module, "ReviewGalleryWidget", TestReviewGalleryWidget)
+    files = [FakeFile(f"library/post-commit-{number}.png") for number in range(4)]
+    first_group = FakeGroup(files[:2], VerificationKind.VERIFIED_EXACT)
+    second_group = FakeGroup(files[2:], VerificationKind.VERIFIED_EXACT)
+    results = FakeResults([first_group, second_group])
+    model = FakeCoreModel(results, [files[1]])
+
+    def mark_then_raise(items, marked):
+        FakeCoreModel.mark_dupes(model, items, marked)
+        raise RuntimeError("synthetic post-commit notification failure")
+
+    model.mark_dupes = mark_then_raise
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    dialog._update()
+    blocked_spy = QSignalSpy(dialog.reviewGallery.blockedAction)
+
+    assert dialog.reviewGallery.model.request_accept_keeper()
+    qapp.processEvents()
+
+    assert results.is_marked(files[1])
+    assert dialog._review_group is second_group
+    assert model.selected_dupes == [files[3]]
+    assert len(blocked_spy) == 0
+    assert not dialog.reviewGallery.model.accept_in_progress
+    assert "synthetic post-commit notification failure" in caplog.text
+    dialog.close()
+    parent.close()
+
+
+def test_repeated_enter_cannot_skip_an_unreviewed_group(qapp, tmp_path, monkeypatch):
+    class TestReviewGalleryWidget(ReviewGalleryWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent, thumbnail_loader=FakeThumbnailLoader())
+
+    monkeypatch.setattr(details_dialog_module, "ReviewGalleryWidget", TestReviewGalleryWidget)
+    files = []
+    for number in range(6):
+        path = tmp_path / f"repeat-accept-{number}.png"
+        image = QImage(24, 16, QImage.Format.Format_RGB32)
+        image.fill(QColor("#456789"))
+        assert image.save(str(path))
+        files.append(FakeFile(path, dimensions=(24, 16)))
+    groups = [FakeGroup(files[index : index + 2], VerificationKind.VERIFIED_EXACT) for index in range(0, 6, 2)]
+    results = FakeResults(groups)
+    model = FakeCoreModel(results, [files[1]])
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    dialog._update()
+
+    assert dialog.reviewGallery.model.request_accept_keeper()
+    assert not dialog.reviewGallery.model.request_accept_keeper()
+    qapp.processEvents()
+
+    assert results.is_marked(files[1])
+    assert not results.is_marked(files[3])
+    assert dialog._review_group is groups[1]
+    assert model.selected_dupes == [files[3]]
+    dialog.close()
+    parent.close()
+
+
+def test_enter_shortcut_requests_an_atomic_exact_keeper_review(qapp):
+    group, reference, candidate = make_group()
+    widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
+    widget.set_group(group, FakeResults(group), candidate)
+    accepted = QSignalSpy(widget.acceptKeeperRequested)
+
+    QTest.keyClick(widget.view, Qt.Key.Key_Return)
+    qapp.processEvents()
+
+    assert len(accepted) == 1
+    assert accepted[0][0] is reference
+    assert accepted[0][1] == (candidate,)
+    widget.close()
+
+
 def test_current_selection_requests_preview(qapp):
     group, _, candidate = make_group()
     model = ReviewGalleryModel(FakeThumbnailLoader())
@@ -419,18 +639,44 @@ def test_current_selection_requests_preview(qapp):
 def test_hovered_card_requests_preview(qapp):
     group, _, candidate = make_group()
     widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
-    widget.resize(500, 420)
     widget.set_group(group, FakeResults(group))
-    widget.show()
-    qapp.processEvents()
     preview_spy = QSignalSpy(widget.previewRequested)
 
-    candidate_rect = widget.view.visualRect(widget.model.index_for_item(candidate))
-    QTest.mouseMove(widget.view.viewport(), candidate_rect.center())
+    widget.view.entered.emit(widget.model.index_for_item(candidate))
     qapp.processEvents()
 
-    assert len(preview_spy) >= 1
-    assert preview_spy[-1][0] is candidate
+    assert len(preview_spy) == 0
+    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
+    assert len(preview_spy) == 1
+    assert preview_spy[0][0] is candidate
+    widget.close()
+
+
+def test_hover_preview_is_cancelled_when_pointer_leaves(qapp):
+    group, _, candidate = make_group()
+    widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
+    widget.set_group(group, FakeResults(group))
+    preview_spy = QSignalSpy(widget.previewRequested)
+
+    widget.view.entered.emit(widget.model.index_for_item(candidate))
+    QApplication.sendEvent(widget.view.viewport(), QEvent(QEvent.Type.Leave))
+    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
+
+    assert len(preview_spy) == 0
+    widget.close()
+
+
+def test_hover_preview_is_cancelled_by_model_reset(qapp):
+    group, _, candidate = make_group()
+    widget = ReviewGalleryWidget(thumbnail_loader=FakeThumbnailLoader())
+    widget.set_group(group, FakeResults(group))
+    preview_spy = QSignalSpy(widget.previewRequested)
+
+    widget.view.entered.emit(widget.model.index_for_item(candidate))
+    widget.model.clear()
+    QTest.qWait(widget.view.HOVER_PREVIEW_DELAY_MS + 50)
+
+    assert len(preview_spy) == 0
     widget.close()
 
 
@@ -729,3 +975,178 @@ def test_ten_thousand_rows_remain_virtualized(qapp):
     assert 0 < widget.model.metadata_cache_size < 100
     assert len(widget.findChildren(QWidget)) < 100
     widget.close()
+
+
+def test_same_large_group_selection_refreshes_only_the_selected_card(qapp):
+    files = [FakeFile(f"library/image-{number:05}.png") for number in range(10_000)]
+    group = FakeGroup(files, VerificationKind.SIMILAR)
+
+    class CountingResults(FakeResults):
+        def __init__(self, current_group):
+            super().__init__(current_group)
+            self.mark_checks = 0
+
+        def is_marked(self, item):
+            self.mark_checks += 1
+            return super().is_marked(item)
+
+    results = CountingResults(group)
+    model = FakeCoreModel(results, [files[-1]])
+    dialog = DetailsDialog(QMainWindow(), FakeApplication(model))
+    dialog._update()
+    results.mark_checks = 0
+
+    dialog._update()
+
+    assert results.mark_checks <= 1
+    assert dialog.reviewGallery.view.currentIndex().data(ReviewRole.FILE) is files[-1]
+    dialog.close()
+
+
+def test_external_batch_mark_refreshes_visible_badges_without_rescanning_group(qapp):
+    files = [FakeFile(f"library/badge-{number:05}.png") for number in range(10_000)]
+    group = FakeGroup(files, VerificationKind.VERIFIED_EXACT)
+
+    class CountingResults(FakeResults):
+        def __init__(self, current_group):
+            super().__init__(current_group)
+            self.mark_checks = 0
+
+        def is_marked(self, item):
+            self.mark_checks += 1
+            return super().is_marked(item)
+
+    results = CountingResults(group)
+    model = FakeCoreModel(results, [files[-1]])
+    dialog = DetailsDialog(QMainWindow(), FakeApplication(model))
+    dialog._update()
+    target_index = dialog.reviewGallery.model.index_for_item(files[10])
+    assert not dialog.reviewGallery.model.data(target_index, ReviewRole.DELETE_CANDIDATE)
+    results.mark_checks = 0
+
+    results.mark(files[10])
+    dialog._update()
+
+    assert dialog.reviewGallery.model.data(target_index, ReviewRole.DELETE_CANDIDATE)
+    assert results.mark_checks <= 1
+    dialog.close()
+
+
+def test_details_notifications_refresh_external_marks_and_keeper_layout(qapp):
+    files = [FakeFile(f"library/notified-{number}.png") for number in range(5)]
+    first_group = FakeGroup(files[:3], VerificationKind.VERIFIED_EXACT)
+    second_group = FakeGroup(files[3:], VerificationKind.VERIFIED_EXACT)
+    results = FakeResults([first_group, second_group])
+    model = NotifyingFakeCoreModel(results, [files[2]])
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    parent.show()
+    dialog.show()
+    dialog._update()
+    qapp.processEvents()
+    target_index = dialog.reviewGallery.model.index_for_item(files[1])
+    mark_change_spy = QSignalSpy(dialog.reviewGallery.model.dataChanged)
+
+    model.mark_dupe(files[1], True)
+    qapp.processEvents()
+
+    assert len(mark_change_spy) > 0
+    assert dialog.reviewGallery.model.data(target_index, ReviewRole.DELETE_CANDIDATE)
+
+    layout_reset_spy = QSignalSpy(dialog.reviewGallery.model.modelReset)
+    model.make_selected_reference()
+    qapp.processEvents()
+
+    assert first_group.ref is files[2]
+    assert len(layout_reset_spy) == 1
+    assert dialog.reviewGallery.model.has_current_layout(first_group)
+    assert dialog.reviewGallery.model.index_for_item(files[2]).row() == 0
+
+    dialog._select_next_group()
+
+    assert dialog._review_group is second_group
+    assert model.selected_dupes == [files[4]]
+    dialog.close()
+    parent.close()
+
+
+def test_next_group_navigation_does_not_walk_a_million_result_rows(qapp):
+    files = [FakeFile(f"library/navigation-{number}.png") for number in range(4)]
+
+    class VirtualSizedGroup(FakeGroup):
+        def __len__(self):
+            return 750_000
+
+    first_group = VirtualSizedGroup(files[:2], VerificationKind.VERIFIED_EXACT)
+    second_group = FakeGroup(files[2:], VerificationKind.VERIFIED_EXACT)
+    results = FakeResults([first_group, second_group])
+    model = FakeCoreModel(results, [files[1]])
+
+    class MillionSelectedIndexes:
+        def __len__(self):
+            return 1_000_000
+
+        def __iter__(self):
+            yield 1
+            raise AssertionError("next-group navigation enumerated the full selection")
+
+    class VirtualResultTable:
+        power_marker = False
+        selected_indexes = MillionSelectedIndexes()
+
+        def __init__(self, owner):
+            self.owner = owner
+            self.accesses = 0
+
+        def __len__(self):
+            return 1_000_000
+
+        def __getitem__(self, index):
+            if not 0 <= index < len(self):
+                raise IndexError(index)
+            self.accesses += 1
+            if self.accesses > 20:
+                raise AssertionError("next-group navigation scanned the result table")
+            if index == 0:
+                return FakeResultRow(first_group, files[0])
+            if index < 750_000:
+                return FakeResultRow(first_group, files[1])
+            if index == 750_000:
+                return FakeResultRow(second_group, files[2])
+            return FakeResultRow(second_group, files[3])
+
+        def select(self, indexes):
+            self.selected_indexes = list(indexes)
+            self.owner.selected_dupes = [self[indexes[0]]._dupe]
+
+    virtual_table = VirtualResultTable(model)
+    model.result_table = virtual_table
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    dialog._update()
+
+    dialog._select_next_group()
+
+    assert virtual_table.accesses < 10
+    assert model.selected_dupes == [files[3]]
+    assert dialog._review_group is second_group
+    dialog.close()
+    parent.close()
+
+
+def test_next_group_navigation_wraps_directly_to_the_first_group(qapp):
+    files = [FakeFile(f"library/wrap-{number}.png") for number in range(4)]
+    first_group = FakeGroup(files[:2], VerificationKind.VERIFIED_EXACT)
+    second_group = FakeGroup(files[2:], VerificationKind.VERIFIED_EXACT)
+    results = FakeResults([first_group, second_group])
+    model = FakeCoreModel(results, [files[3]])
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    dialog._update()
+
+    dialog._select_next_group()
+
+    assert model.selected_dupes == [files[1]]
+    assert dialog._review_group is first_group
+    dialog.close()
+    parent.close()

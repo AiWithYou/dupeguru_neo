@@ -1128,6 +1128,55 @@ class DupeGuru(Broadcaster):
             self.results.unmark(dupe)
         self.notify("marking_changed")
 
+    def mark_dupes(self, items, marked):
+        """Atomically change several marked states and publish one update."""
+
+        unique_items = []
+        seen = set()
+        for item in items:
+            identity = id(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique_items.append(item)
+        expected = bool(marked)
+        if expected:
+            unmarkable_count = sum(not self.results._is_markable(item) for item in unique_items)
+            if unmarkable_count:
+                raise ValueError(
+                    "Cannot batch-mark {} item(s) that are not markable".format(
+                        unmarkable_count,
+                    )
+                )
+        original_states = [(item, self.results.is_marked(item)) for item in unique_items]
+        try:
+            if expected:
+                self.results.mark_multiple(unique_items)
+            else:
+                self.results.unmark_multiple(unique_items)
+            if any(self.results.is_marked(item) != expected for item in unique_items):
+                raise RuntimeError("Batch marking did not update every requested item")
+        except Exception:
+            try:
+                restore_marked = [
+                    item for item, was_marked in original_states if was_marked and not self.results.is_marked(item)
+                ]
+                restore_unmarked = [
+                    item for item, was_marked in original_states if not was_marked and self.results.is_marked(item)
+                ]
+                if restore_marked:
+                    self.results.mark_multiple(restore_marked)
+                if restore_unmarked:
+                    self.results.unmark_multiple(restore_unmarked)
+                if any(self.results.is_marked(item) != was_marked for item, was_marked in original_states):
+                    raise RuntimeError("Batch marking rollback did not restore every item")
+            except Exception as rollback_error:
+                raise RuntimeError(
+                    "Batch marking failed and its original state could not be restored"
+                ) from rollback_error
+            raise
+        self.notify("marking_changed")
+
     def open_selected(self):
         """Open :attr:`selected_dupes` with their associated application."""
         if len(self.selected_dupes) > 10 and not self.view.ask_yes_no(MSG_MANY_FILES_TO_OPEN):
@@ -1365,102 +1414,141 @@ class DupeGuru(Broadcaster):
 
     @staticmethod
     def _bind_direct_scan_generations(files, j):
-        """Capture one fail-closed organizer baseline for every direct-scan file."""
+        """Capture one fail-closed generation baseline without reading contents."""
 
         file_count = len(files)
-        total_bytes = sum(max(0, int(getattr(file, "size", 0) or 0)) for file in files)
-        processed_bytes = 0
-        pending_progress = 0
         completed_files = 0
 
         def description():
-            return tr("Hashing scan-start proofs: {}/{} files, {}/{} bytes").format(
+            return tr("Capturing scan-start generations: {}/{} files").format(
                 completed_files,
                 file_count,
-                processed_bytes,
-                total_bytes,
             )
 
-        def stop_check():
-            j.check_if_cancelled()
-            return False
-
-        def progress_callback(byte_count):
-            nonlocal pending_progress, processed_bytes
-            processed_bytes += byte_count
-            pending_progress += byte_count
-            if pending_progress >= DIRECT_PROOF_PROGRESS_BYTES:
-                j.add_progress(pending_progress, description())
-                pending_progress = 0
-
-        j.start_job(max(1, total_bytes), description())
+        j.start_job(max(1, file_count), description())
         for index, file in enumerate(files):
             if index % 256 == 0:
                 j.check_if_cancelled()
-            begin = getattr(file, "begin_review_scan", None)
+            begin = getattr(file, "begin_review_scan_generation", None)
             if begin is None:
                 raise fs.FileChangedError(
-                    "A direct-scan input cannot provide a stable organizer baseline: {}".format(
+                    "A direct-scan input cannot provide a stable generation baseline: {}".format(
                         getattr(file, "path", "<unknown>"),
                     )
                 )
-            begin(
-                stop_check=stop_check,
-                progress_callback=progress_callback,
-            )
+            begin()
             completed_files = index + 1
-            if pending_progress:
-                j.add_progress(pending_progress, description())
-                pending_progress = 0
-            else:
-                j.set_progress(processed_bytes, description())
-        j.set_progress(max(1, total_bytes), description())
+            if completed_files % 256 == 0 or completed_files == file_count:
+                j.set_progress(completed_files, description())
+        j.set_progress(max(1, file_count), description())
 
     @staticmethod
     def _validate_direct_scan_generations(files, j):
-        """Require metadata and bytes to remain on the captured generation."""
+        """Require every direct-scan input to retain its captured generation."""
 
         file_count = len(files)
-        total_bytes = sum(max(0, int(getattr(file, "size", 0) or 0)) for file in files)
-        processed_bytes = 0
-        pending_progress = 0
         completed_files = 0
 
         def description():
-            return tr("Confirming scan-end proofs: {}/{} files, {}/{} bytes").format(
+            return tr("Confirming scan-end generations: {}/{} files").format(
                 completed_files,
                 file_count,
-                processed_bytes,
-                total_bytes,
             )
 
-        def stop_check():
-            j.check_if_cancelled()
-            return False
-
-        def progress_callback(byte_count):
-            nonlocal pending_progress, processed_bytes
-            processed_bytes += byte_count
-            pending_progress += byte_count
-            if pending_progress >= DIRECT_PROOF_PROGRESS_BYTES:
-                j.add_progress(pending_progress, description())
-                pending_progress = 0
-
-        j.start_job(max(1, total_bytes), description())
+        j.start_job(max(1, file_count), description())
         for index, file in enumerate(files):
             if index % 256 == 0:
                 j.check_if_cancelled()
-            validate = getattr(file, "validate_review_scan_content", None)
+            validate = getattr(file, "validate_review_scan_generation", None)
             if validate is None:
                 raise fs.FileChangedError(
                     "A direct-scan input lost its organizer baseline: {}".format(
                         getattr(file, "path", "<unknown>"),
                     )
                 )
-            validate(
+            validate()
+            completed_files = index + 1
+            if completed_files % 256 == 0 or completed_files == file_count:
+                j.set_progress(completed_files, description())
+        j.set_progress(max(1, file_count), description())
+
+    @staticmethod
+    def _direct_scan_result_members(groups):
+        """Return result members once each while preserving published order."""
+
+        members = []
+        seen = set()
+        for group in groups:
+            for file in group:
+                identity = id(file)
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                members.append(file)
+        return members
+
+    @classmethod
+    def _seal_direct_scan_review_proofs(cls, groups, j):
+        """Hash only actionable result members and bind their organizer proofs."""
+
+        members = cls._direct_scan_result_members(groups)
+        file_count = len(members)
+        total_bytes = sum(max(0, int(getattr(file, "size", 0) or 0)) for file in members)
+        processed_bytes = 0
+        pending_progress = 0
+        completed_files = 0
+
+        def description():
+            return tr("Sealing result content proofs: {}/{} files, {}/{} bytes").format(
+                completed_files,
+                file_count,
+                processed_bytes,
+                total_bytes,
+            )
+
+        def stop_check():
+            j.check_if_cancelled()
+            return False
+
+        def progress_callback(byte_count):
+            nonlocal pending_progress, processed_bytes
+            processed_bytes += byte_count
+            pending_progress += byte_count
+            if pending_progress >= DIRECT_PROOF_PROGRESS_BYTES:
+                j.add_progress(pending_progress, description())
+                pending_progress = 0
+
+        j.start_job(max(1, total_bytes), description())
+        for index, file in enumerate(members):
+            if index % 256 == 0:
+                j.check_if_cancelled()
+            seal = getattr(file, "seal_review_scan_content", None)
+            if seal is None:
+                raise fs.FileChangedError(
+                    "A direct-scan result cannot provide a stable content proof: {}".format(
+                        getattr(file, "path", "<unknown>"),
+                    )
+                )
+            processed_before = processed_bytes
+            snapshot = seal(
                 stop_check=stop_check,
                 progress_callback=progress_callback,
             )
+            if (
+                getattr(snapshot, "content_digest_algorithm", None) != fs.REVIEW_CONTENT_DIGEST_ALGORITHM
+                or getattr(snapshot, "content_digest", None) is None
+            ):
+                raise fs.FileChangedError(
+                    "A direct-scan result did not produce a content proof: {}".format(
+                        getattr(file, "path", "<unknown>"),
+                    )
+                )
+            expected_bytes = max(0, int(getattr(snapshot, "size", 0) or 0))
+            reported_bytes = processed_bytes - processed_before
+            if reported_bytes < expected_bytes:
+                remaining_bytes = expected_bytes - reported_bytes
+                processed_bytes += remaining_bytes
+                pending_progress += remaining_bytes
             completed_files = index + 1
             if pending_progress:
                 j.add_progress(pending_progress, description())
@@ -1483,7 +1571,7 @@ class DupeGuru(Broadcaster):
             issues=(
                 ScanIssue(
                     code="scan_generation_changed",
-                    path=str(getattr(error, "filename", "") or ""),
+                    path=str(getattr(error, "path", None) or getattr(error, "filename", "") or ""),
                     message=str(error),
                 ),
             ),
@@ -1553,8 +1641,8 @@ class DupeGuru(Broadcaster):
                     proof_job = None
                     if not folder_scan and not lightweight_exact_scan:
                         proof_job = j.start_subjob(
-                            [2, 6, 2],
-                            tr("Preparing scan-start content proofs"),
+                            [1, 6, 1, 2],
+                            tr("Capturing scan-start file generations"),
                         )
                         try:
                             self._bind_direct_scan_generations(files, proof_job)
@@ -1577,6 +1665,7 @@ class DupeGuru(Broadcaster):
                     if not folder_scan and not lightweight_exact_scan:
                         try:
                             self._validate_direct_scan_generations(files, proof_job)
+                            self._seal_direct_scan_review_proofs(groups, proof_job)
                         except (OSError, TypeError, ValueError) as error:
                             self._record_scan_generation_failure(
                                 error,

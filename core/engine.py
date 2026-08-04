@@ -869,6 +869,7 @@ class Group:
 
     # ---Private
     def _clear(self):
+        self.layout_revision = getattr(self, "layout_revision", -1) + 1
         self._percentage = None
         self._matches_for_ref = None
         self.matches = set()
@@ -1036,6 +1037,7 @@ class Group:
             if self.unordered <= matches:
                 self.ordered.append(item)
                 self.unordered.add(item)
+                self.layout_revision += 1
 
         if match in self.matches:
             return
@@ -1090,6 +1092,8 @@ class Group:
         new_order = sorted(self.ordered, key=lambda x: (-x.is_ref, key_func(x)))
         changed = new_order != self.ordered
         self.ordered = new_order
+        if changed:
+            self.layout_revision += 1
         if tie_breaker is None:
             return changed
         ref = self.ref
@@ -1115,6 +1119,7 @@ class Group:
             return set()
         self.ordered[:] = [member for member in self.ordered if member not in removals]
         self.unordered.difference_update(removals)
+        self.layout_revision += 1
         self._percentage = None
         self._matches_for_ref = None
         if (len(self) > 1) and any(not getattr(member, "is_ref", False) for member in self):
@@ -1136,6 +1141,7 @@ class Group:
         try:
             self.ordered.remove(with_dupe)
             self.ordered.insert(0, with_dupe)
+            self.layout_revision += 1
             self._percentage = None
             self._matches_for_ref = None
             return True

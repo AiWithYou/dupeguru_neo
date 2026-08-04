@@ -18,7 +18,9 @@ every visual relation, and can never enable deletion.
 
 The review panel presents one match group as a virtualized thumbnail gallery.
 Thumbnails are loaded lazily, and only visible rows are painted. Hover or
-select an image to preview it at full viewer resolution.
+select an image to preview it at full viewer resolution. Selecting another
+member of an unchanged group refreshes only that card; normal next-group
+navigation does not copy or walk the complete result table.
 
 Comparison modes
 ----------------
@@ -57,5 +59,11 @@ Keyboard review
 
 Use ``1`` to choose the selected image as keeper, ``2`` to toggle a green item
 that is eligible for quarantine, and ``Space`` to advance to the next group.
-Use the explicit Copy or Move command—not the quarantine shortcut—to organize
-an eligible yellow or blue Incoming Files item.
+For a green byte-verified exact group, ``Enter`` rechecks every non-keeper with
+the live safety gate, marks the whole eligible batch, and advances to the next
+group. If any member is no longer eligible, the batch is left unchanged. This
+one-decision keeper workflow changes review marks only; quarantine remains a
+separate explicit operation. It is never available to yellow, blue, gray,
+saved-report, or visual-query results. Use the explicit Copy or Move
+command—not the quarantine shortcut—to organize an eligible yellow or blue
+Incoming Files item.

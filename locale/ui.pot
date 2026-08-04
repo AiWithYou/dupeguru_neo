@@ -1641,3 +1641,41 @@ msgid ""
 "that discover files directly. Reaching a limit publishes no partial "
 "duplicate list; narrow the selected folders or add exclusions."
 msgstr ""
+
+#: qt\pe\details_dialog.py:314
+msgid "The current keeper changed before this review was accepted."
+msgstr ""
+
+#: qt\pe\details_dialog.py:319
+msgid "The duplicate group changed before this review was accepted."
+msgstr ""
+
+#: qt\pe\details_dialog.py:336
+msgid "The current results cannot be marked as one review batch."
+msgstr ""
+
+#: qt\pe\details_dialog.py:345
+msgid "The review batch could not be checked."
+msgstr ""
+
+#: qt\pe\details_dialog.py:351
+msgid "The review batch was not fully checked."
+msgstr ""
+
+#: qt\pe\review_gallery.py:862
+msgid "No live keeper is available for this review."
+msgstr ""
+
+#: qt\pe\review_gallery.py:866
+msgid "This group has no duplicate candidates to check."
+msgstr ""
+
+#: qt\pe\review_gallery.py:1341
+msgid "Enter Accept keeper and next"
+msgstr ""
+
+#: qt\pe\review_gallery.py:1343
+msgid ""
+"Check every safe byte-identical copy of the current keeper, then review the "
+"next group."
+msgstr ""

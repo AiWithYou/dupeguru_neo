@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -252,7 +252,7 @@ jobs:
         if: >-
           runner.os == 'Windows' &&
           github.event_name == 'push' &&
-          github.ref == 'refs/heads/master'
+          github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dupeguru-neo-windows-exe-${{ github.sha }}
@@ -267,7 +267,7 @@ jobs:
         if: >-
           runner.os == 'macOS' &&
           github.event_name == 'push' &&
-          github.ref == 'refs/heads/master'
+          github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: dupeguru-neo-macos-app-${{ github.sha }}

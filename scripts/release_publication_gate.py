@@ -29,6 +29,7 @@ _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _TAG = re.compile(r"v[0-9A-Za-z][0-9A-Za-z._+-]*")
 _ENVIRONMENTS = frozenset({"stable-release", "prerelease"})
 _REQUIRED_WORKFLOWS = ("default.yml", "codeql-analysis.yml")
+_GITHUB_API_VERSION = "2026-03-10"
 _MAX_API_RESPONSE_BYTES = 16 * 1024 * 1024
 _ASSET_API_PAGE_SIZE = 100
 _HASH_CHUNK_SIZE = 1024 * 1024
@@ -117,8 +118,11 @@ def validate_environment(document: Mapping[str, Any], expected_name: str) -> Non
 
 
 def validate_repository(document: Mapping[str, Any]) -> None:
-    _require_exact_bool(document, "immutable_releases_enabled", True, "repository")
     _require_exact_bool(document, "has_issues", True, "repository")
+
+
+def validate_immutable_releases(document: Mapping[str, Any]) -> None:
+    _require_exact_bool(document, "enabled", True, "immutable_releases")
 
 
 def validate_private_vulnerability_reporting(document: Mapping[str, Any]) -> None:
@@ -130,12 +134,12 @@ def validate_tag_target(document: Mapping[str, Any], expected_commit: str) -> No
         raise PublicationGateError("the release tag no longer resolves to the workflow commit")
 
 
-def validate_master_ancestry(document: Mapping[str, Any], expected_commit: str) -> None:
+def validate_main_ancestry(document: Mapping[str, Any], expected_commit: str) -> None:
     if document.get("status") not in {"ahead", "identical"}:
-        raise PublicationGateError("master no longer descends from the release commit")
+        raise PublicationGateError("main no longer descends from the release commit")
     merge_base = document.get("merge_base_commit")
     if not isinstance(merge_base, dict) or merge_base.get("sha") != expected_commit:
-        raise PublicationGateError("the release commit is no longer the master comparison merge base")
+        raise PublicationGateError("the release commit is no longer the main comparison merge base")
 
 
 def validate_workflow_runs(document: Mapping[str, Any], expected_commit: str, workflow: str) -> None:
@@ -147,13 +151,13 @@ def validate_workflow_runs(document: Mapping[str, Any], expected_commit: str, wo
             continue
         if (
             run.get("head_sha") == expected_commit
-            and run.get("head_branch") == "master"
+            and run.get("head_branch") == "main"
             and run.get("event") == "push"
             and run.get("status") == "completed"
             and run.get("conclusion") == "success"
         ):
             return
-    raise PublicationGateError(f"{workflow} has no successful master push run for the release commit")
+    raise PublicationGateError(f"{workflow} has no successful main push run for the release commit")
 
 
 def validate_publication_state(
@@ -162,6 +166,7 @@ def validate_publication_state(
     expected_commit: str,
     environment: Mapping[str, Any],
     repository: Mapping[str, Any],
+    immutable_releases: Mapping[str, Any],
     vulnerability_reporting: Mapping[str, Any],
     tag_target: Mapping[str, Any],
     comparison: Mapping[str, Any],
@@ -169,9 +174,10 @@ def validate_publication_state(
 ) -> None:
     validate_environment(environment, environment_name)
     validate_repository(repository)
+    validate_immutable_releases(immutable_releases)
     validate_private_vulnerability_reporting(vulnerability_reporting)
     validate_tag_target(tag_target, expected_commit)
-    validate_master_ancestry(comparison, expected_commit)
+    validate_main_ancestry(comparison, expected_commit)
     if set(workflow_runs) != set(_REQUIRED_WORKFLOWS):
         raise PublicationGateError("the publication gate did not fetch every required workflow")
     for workflow in _REQUIRED_WORKFLOWS:
@@ -354,6 +360,8 @@ def _gh_api_payload(path: str, *, fields: Mapping[str, str] | None = None) -> by
         "GET",
         "-H",
         "Accept: application/vnd.github+json",
+        "-H",
+        f"X-GitHub-Api-Version: {_GITHUB_API_VERSION}",
         path,
     ]
     for key, value in sorted((fields or {}).items()):
@@ -403,9 +411,10 @@ def run_gate(
         f"{repository_path}/environments/{quote(environment, safe='')}",
     )
     repository_document = api(repository_path)
+    immutable_releases_document = api(f"{repository_path}/immutable-releases")
     vulnerability_document = api(f"{repository_path}/private-vulnerability-reporting")
     tag_document = api(f"{repository_path}/commits/{quote(tag, safe='')}")
-    comparison_document = api(f"{repository_path}/compare/{commit}...master")
+    comparison_document = api(f"{repository_path}/compare/{commit}...main")
     workflow_documents = {
         workflow: api(
             f"{repository_path}/actions/workflows/{quote(workflow, safe='')}/runs",
@@ -423,6 +432,7 @@ def run_gate(
         expected_commit=commit,
         environment=environment_document,
         repository=repository_document,
+        immutable_releases=immutable_releases_document,
         vulnerability_reporting=vulnerability_document,
         tag_target=tag_document,
         comparison=comparison_document,

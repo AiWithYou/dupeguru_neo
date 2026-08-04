@@ -49,6 +49,28 @@ def test_mark_twice_and_unmark():
     assert not ml.is_marked(5)
 
 
+def test_mark_revision_changes_only_after_authoritative_state_mutations():
+    ml = gen()
+    assert ml.mark_revision == 0
+
+    assert ml.mark(5)
+    assert ml.mark_revision == 1
+    assert not ml.mark(5)
+    assert ml.mark_revision == 1
+
+    ml.mark_invert()
+    assert ml.mark_revision == 2
+    ml.mark_none()
+    assert ml.mark_revision == 3
+    ml.mark_none()
+    assert ml.mark_revision == 3
+
+    ml._replace_marked_state((2, 3), inverted=False)
+    assert ml.mark_revision == 4
+    ml._replace_marked_state((3, 2), inverted=False)
+    assert ml.mark_revision == 4
+
+
 def test_mark_toggle():
     ml = gen()
     ml.mark_toggle(6)

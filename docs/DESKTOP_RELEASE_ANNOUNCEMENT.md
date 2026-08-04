@@ -126,7 +126,7 @@ dupeGuru NeoのWindows画面。フォルダーを選んで重複を検索する2
 ## 公開チェックリスト
 
 - [ ] `{VERSION}` と `{DESKTOP_TAG}` を確定し、対象コミットと一致させた
-- [ ] `{COMMIT_SHA}` が40桁で、`master` 上の公開対象コミットと一致している
+- [ ] `{COMMIT_SHA}` が40桁で、`main` 上の公開対象コミットと一致している
 - [ ] 対象コミットのGitHub Actions全体が成功している
 - [ ] Windows EXEとmacOS APPの生成・起動確認ジョブが成功している
 - [ ] 公開するEXEとAPP ZIPが、成功したCIで検証されたものとバイト単位で同一である

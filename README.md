@@ -5,7 +5,7 @@
 [**Windows 10 / 11版 5.4.0 をダウンロード（EXE）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
 [**macOS Apple Silicon版 5.4.0 をダウンロード（APP ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
 [ほかのリリース](https://github.com/AiWithYou/dupeguru_neo/releases) |
-[最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
+[最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
 > 5.4.0デスクトップ・プレリリースには、下の画面例と同じ簡略化UIが
@@ -126,6 +126,13 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 「チェック」し、上部の件数と容量を確認します。「すべての重複をチェック」と
 「チェックをすべて外す」で選択をやり直せます。
 
+画像モードの詳細ギャラリーでは、緑色のバイト単位完全一致グループで
+**Enter** を押すと、残すファイルを受け入れ、余分な全コピーを最新の安全性
+ゲートで再確認し、一括チェックして次へ進みます。1件でも許可できなければ
+新たなチェックは1件も行いません。黄色・青の類似グループは確認専用で、この
+ショートカットは使えません。この操作はチェック状態を変えるだけで、ファイルを
+移動・削除しません。現在のグループを確定せず次へ進む場合は **Space** を使います。
+
 「チェックした完全一致ファイルを隔離…」を使えるのは、現在の完全なスキャンで
 バイト単位の一致が確認された、チェック済みファイルだけです。類似・不完全・
 保存済み結果は確認専用のままです。隔離は即時の完全削除ではなく、復元可能な
@@ -183,7 +190,7 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 Windows EXE と macOS APP ZIP は、共通の
 [5.4.0 デスクトップ・プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.0)
 から、GitHub へのログインなしで取得できます。さらに新しいコミットの短期保存ビルドは、
-[最新の成功した master push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
+[最新の成功した main push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 の Artifacts 欄から取得できます。Actions 成果物の取得には GitHub へのログインが
 必要で、保存期間は 7 日間です。
 

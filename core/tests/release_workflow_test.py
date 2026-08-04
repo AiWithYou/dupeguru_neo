@@ -23,7 +23,7 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
     assert f"current source version is **{__version__}**" in english
     for text in (readme, english):
         assert "https://github.com/AiWithYou/dupeguru_neo/releases" in text
-        assert "actions/workflows/default.yml?query=branch%3Amaster+event%3Apush" in text
+        assert "actions/workflows/default.yml?query=branch%3Amain+event%3Apush" in text
         assert f"releases/tag/desktop-{__version__}" in text
         assert (
             f"releases/download/desktop-{__version__}/" f"dupeguru-neo-{__version__}-windows-x86_64-unsigned.exe"
@@ -148,7 +148,7 @@ def test_untrusted_pull_request_ci_is_read_only_and_has_no_secret_reference():
 def test_transifex_sync_is_an_optional_push_only_integration():
     workflow = _workflow("tx-push.yml")
     assert re.search(
-        r"(?m)^on:\n" r"  push:\n" r"    branches:\n" r"      - master\n" r"    paths:\n" r"      - locale/\*\.pot$",
+        r"(?m)^on:\n" r"  push:\n" r"    branches:\n" r"      - main\n" r"    paths:\n" r"      - locale/\*\.pot$",
         workflow,
     )
     assert "pull_request:" not in workflow
@@ -381,7 +381,7 @@ def test_ci_builds_checked_easy_launch_windows_exe_and_macos_app_artifacts():
         "desktop-dist/*.app.zip",
         "retention-days: 7",
         "github.event_name == 'push'",
-        "github.ref == 'refs/heads/master'",
+        "github.ref == 'refs/heads/main'",
         "requirements-release.txt",
     ):
         assert required in ci
@@ -461,20 +461,20 @@ def test_release_aggregates_real_dependency_closures_from_every_runtime_target()
     assert "Install the built distribution for dependency inventory" not in release
 
 
-def test_release_publication_requires_master_ancestry_and_successful_mainline_ci():
+def test_release_publication_requires_main_ancestry_and_successful_mainline_ci():
     release = _workflow("release.yml")
     publication_gate = ROOT.joinpath("scripts", "release_publication_gate.py").read_text(encoding="utf-8")
     for required in (
-        "immutable_releases_enabled",
+        "immutable-releases",
         "has_issues",
         "private-vulnerability-reporting",
         "can_admins_bypass",
         "required_reviewers",
         "prevent_self_review",
-        "compare/{commit}...master",
+        "compare/{commit}...main",
         "default.yml",
         "codeql-analysis.yml",
-        '"head_branch") == "master"',
+        '"head_branch") == "main"',
         '"conclusion") == "success"',
     ):
         assert required in publication_gate

@@ -1683,7 +1683,8 @@ msgid ""
 "These limits apply to filename, folder, tag, and picture scans that discover"
 " files directly. For a very large exact-match library, use the Contents scan"
 " and its Persistent Catalog."
-msgstr "これらの上限は、ファイルを直接探索するファイル名、フォルダー、タグ、画像の各スキャンに適用されます。非常に大きな完全一致ライブラリには、「内容」スキャンと永続カタログを使用してください。"
+msgstr ""
+"これらの上限は、ファイルを直接探索するファイル名、フォルダー、タグ、画像の各スキャンに適用されます。非常に大きな完全一致ライブラリには、「内容」スキャンと永続カタログを使用してください。"
 
 #: qt\app.py:385
 msgid ""
@@ -1698,3 +1699,43 @@ msgstr ""
 "キャッシュされたファイルハッシュ、画像解析、永続カタログ（スキャン履歴と未完了のスキャンを含む）を削除します。ファイル、設定、除外条件、保存済みの結果ファイルは削除されません。\n"
 "\n"
 "永続カタログ: {}"
+
+#: qt\pe\details_dialog.py:314
+msgid "The current keeper changed before this review was accepted."
+msgstr "このレビューを確定する前に、現在の保存対象が変更されました。"
+
+#: qt\pe\details_dialog.py:319
+msgid "The duplicate group changed before this review was accepted."
+msgstr "このレビューを確定する前に、重複グループが変更されました。"
+
+#: qt\pe\details_dialog.py:336
+msgid "The current results cannot be marked as one review batch."
+msgstr "現在の結果を1回のレビューバッチとしてチェックできません。"
+
+#: qt\pe\details_dialog.py:345
+msgid "The review batch could not be checked."
+msgstr "レビューバッチをチェックできませんでした。"
+
+#: qt\pe\details_dialog.py:351
+msgid "The review batch was not fully checked."
+msgstr "レビューバッチをすべてチェックできませんでした。"
+
+#: qt\pe\review_gallery.py:862
+msgid "No live keeper is available for this review."
+msgstr "このレビューには現在有効な保存対象がありません。"
+
+#: qt\pe\review_gallery.py:866
+msgid "This group has no duplicate candidates to check."
+msgstr "このグループにはチェックできる重複候補がありません。"
+
+#: qt\pe\review_gallery.py:1341
+msgid "Enter Accept keeper and next"
+msgstr "Enter 保存対象を確定して次へ"
+
+#: qt\pe\review_gallery.py:1343
+msgid ""
+"Check every safe byte-identical copy of the current keeper, then review the "
+"next group."
+msgstr ""
+"現在の保存対象以外で、安全なバイト単位の完全一致コピーをすべてチェックし、"
+"次のグループを確認します。"

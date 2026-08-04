@@ -8,13 +8,11 @@ dupeGuru's big picture.
 Branches and tags
 -----------------
 
-The git repo has one main branch, ``master``. It represents the latest "stable development commit",
-that is, the latest commit that doesn't include in-progress features. This branch should always
-be buildable, ``tox`` should always run without errors on it.
-
-When a feature/bugfix has an atomicity of a single commit, it's alright to commit right into
-``master``. However, if a feature/bugfix needs more than a commit, it should live in a separate
-topic branch until it's ready.
+The git repo has one protected integration branch, ``main``. It represents the latest stable
+development commit and must remain buildable. Every change, including a single-commit fix, lives
+on a short-lived topic branch and reaches ``main`` through a pull request after the required
+formatting, test, package, and CodeQL checks pass. Direct and force pushes to ``main`` are not part
+of the supported development process.
 
 Every release is tagged with the version number. For example, there's a ``2.8.2`` tag for the
 v2.8.2 release.

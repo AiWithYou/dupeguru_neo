@@ -95,6 +95,24 @@ most 64 requests, and clearing a gallery invalidates all in-flight
 publications. Cache, decode, generation, or cancellation failures still
 publish a terminal null result so pending rows cannot remain stuck.
 
+Active and deferred thumbnail work share that 64-request bound. Visible rows
+requested most recently are started first when a worker becomes available; an
+evicted deferred request explicitly releases its model waiter and can be
+requested again by a later natural paint. Hover comparison waits 200 ms before
+loading a full-size pair, while an explicit selection still previews
+immediately. The persistent cache reconciles all entries every 128 successful
+stores, but sorts only when a count or byte limit is exceeded; overflow pruning
+removes old entries to a 90-percent low-water mark instead of rescanning all
+4,096 entries after every new image.
+
+The review model keeps an identity-to-row index, a monotonic group-layout
+revision, and a monotonic mark revision. Selecting another member of an
+unchanged group refreshes one card, and normal next-group navigation computes
+the next contiguous group block directly instead of materializing or walking
+the complete result table. **Accept keeper and next** remains O(k) in the
+current group size because all k non-keeper candidates must pass the safety
+gate and have their review marks updated exactly once.
+
 The full-size comparison surface applies an independent display boundary. It
 reads at most 128 MiB of encoded data through the same no-follow,
 stable-generation adapter, rejects source dimensions above 32,768 pixels per

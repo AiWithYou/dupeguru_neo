@@ -43,13 +43,16 @@ Library, Compare Only, saved-report, stale, incomplete, and gray inputs are
 refused. Both the selected item and its review keeper must still have the
 physical identity, content-generation token, and scan-bound SHA-256 proof.
 Non-folder direct scans other than the byte-exact **Contents** path capture the
-proof before matching and compare it with a second full read after matching.
-The lighter byte-exact **Contents** path instead streams SHA-256 during the
-final byte comparison and binds that proof to members of a byte-verified exact
-candidate group. Later policy filtering may omit some of those members from the
-published result. Its stable snapshots from opened handles and final generation
-validation provide the corresponding
-freshness boundary without two scan-wide full reads. Both designs detect
+physical identity and content-generation of every input before matching without
+reading its payload, then revalidate every generation after matching. Only the
+unique members of groups eligible for publication are streamed once to bind a
+SHA-256 proof to that original generation. A changed input or a failed result
+seal withholds every group. The byte-exact **Contents** path instead streams
+SHA-256 during the final byte comparison and binds that proof to members of a
+byte-verified exact candidate group. Later policy filtering may omit some of
+those members from the published result. Its stable snapshots from opened
+handles and final generation validation provide the corresponding freshness
+boundary without an additional result-member read. Both designs detect
 equal-length rewrites instead of trusting one observable timestamp tick. The
 proof is checked at the command boundary, again in
 the worker, and the selected source's full proof is consumed once more by the
@@ -223,16 +226,20 @@ Persistent Catalog remains available as a separate, explicitly invoked
 
 ## Direct-scan and catalog evidence
 
-Non-folder direct scans other than the byte-exact **Contents** path keep each
-file's scan-start `FileSnapshot` and SHA-256 content proof in memory. They
-reread and compare that proof after matching before publishing a complete
-result receipt. These two streaming, cancellation-aware proof passes bound
-memory but add two full reads per file. Their weighted
-scan-start/matching/scan-end phases report completed files and streamed bytes
-at bounded intervals.
+Non-folder direct scans other than the byte-exact **Contents** path keep a
+scan-start `FileSnapshot` for every input, but that initial snapshot contains
+identity, size, mtime, and a content-generation token rather than a payload
+digest. After matching, every input generation is revalidated. The scanner then
+streams SHA-256 only for the unique members of groups that may be published and
+binds each digest to its unchanged scan-start generation. Unmatched inputs are
+never read merely to seed action authority. Generation capture and validation
+report completed files at bounded intervals; result sealing reports both files
+and streamed bytes and remains cancellation-aware. No result is published if
+any input changed or any result proof could not be sealed.
 
-The GUI byte-exact **Contents** scan deliberately avoids those two scan-wide
-content passes. It records an exact-scan snapshot and partitions by size first.
+The GUI byte-exact **Contents** scan likewise avoids scan-wide content passes
+and does not need a separate result-sealing read. It records an exact-scan
+snapshot and partitions by size first.
 Only same-size candidates receive a partial hash, an optional sample hash above
 the configured threshold, and then a full candidate digest. Every surviving
 member is byte-compared with its representative through stable handles. That

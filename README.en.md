@@ -5,7 +5,7 @@
 [**Download 5.4.0 for Windows 10 / 11 (EXE)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
 [**Download 5.4.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
 [Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
-[Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush)
+[Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
 > The 5.4.0 desktop pre-release includes the same simplified UI shown in the
@@ -138,6 +138,14 @@ In each result group, the first row is the file that will be kept. Only the
 extra copies have checkboxes. **Mark All** and **Mark None** make the review
 state explicit, while the summary shows the selected count and size.
 
+In Picture mode's detail gallery, press **Enter** on a green byte-verified exact
+group to accept its keeper, recheck every extra copy through the live safety
+gate, mark the eligible batch, and advance. The operation is all-or-nothing: if
+one member is not eligible, no member is newly marked. Approximate yellow and
+blue groups remain review-only and never expose this shortcut. This changes
+review marks only; it does not move or delete files. Press **Space** to advance
+without accepting the current group.
+
 **Quarantine Verified Marked Files…** is enabled only for checked byte-exact
 files from the current complete scan. Similar, incomplete, and saved results
 remain review-only. Quarantine stages files in a recoverable location; it is
@@ -169,7 +177,7 @@ The Windows EXE and macOS APP ZIP are permanently available from the unified
 [5.4.0 desktop pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.0)
 without a GitHub login. For newer short-retention builds, use the Artifacts
 section of the
-[latest successful master push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amaster+event%3Apush).
+[latest successful main push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush).
 A GitHub login is required for Actions artifacts, which are retained for seven
 days.
 

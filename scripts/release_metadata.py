@@ -1347,20 +1347,17 @@ def git_release_context(tag: str, commit: str) -> int:
             "merge-base",
             "--is-ancestor",
             commit,
-            "refs/remotes/origin/master",
+            "refs/remotes/origin/main",
         ],
         check=False,
         capture_output=True,
         text=True,
     )
     if ancestry.returncode == 1:
-        raise RuntimeError("the release commit is not reachable from origin/master")
+        raise RuntimeError("the release commit is not reachable from origin/main")
     if ancestry.returncode != 0:
-        detail = ancestry.stderr.strip()
-        raise RuntimeError(
-            "Git could not prove that the release commit is reachable from "
-            f"origin/master: {detail or 'unknown error'}"
-        )
+        reason = ancestry.stderr.strip() or "unknown error"
+        raise RuntimeError(f"Git could not prove release commit ancestry through origin/main: {reason}")
     raw_epoch = subprocess.run(
         ["git", "show", "-s", "--format=%ct", commit],
         check=True,
