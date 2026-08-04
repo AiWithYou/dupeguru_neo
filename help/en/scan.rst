@@ -3,10 +3,11 @@ The scanning process
 
 .. contents::
 
-dupeGuru has 3 basic ways of scanning: :ref:`worded-scan` and :ref:`contents-scan` and
-:ref:`picture blocks <picture-blocks-scan>`. The first two types are for the Standard and Music
-modes, the last is for the Picture mode. The scanning process is configured through the
-:doc:`Preference pane <preferences>`.
+dupeGuru has 3 basic ways of scanning: :ref:`worded-scan`,
+:ref:`contents-scan`, and :ref:`picture blocks <picture-blocks-scan>`.
+Standard and Music expose the first two families. Picture exposes both its own
+visual search and the shared byte-exact contents engine. The scanning process
+is configured through the :doc:`Preference pane <preferences>`.
 
 .. _worded-scan:
 
@@ -119,6 +120,10 @@ quarantine always creates a new live proof.
 
 The :ref:`filter hardness <filter-hardness>` preference is ignored in this scan.
 
+Choose **Contents** in Standard or Music mode, or **Byte-exact contents** in
+Picture mode, to use this engine. Picture exact scanning does not decode image
+pixels; it compares the complete files and keeps Picture's thumbnail review UI.
+
 Folders
 ^^^^^^^
 
@@ -152,12 +157,12 @@ application-owned state.
 
 .. _picture-blocks-scan:
 
-Picture blocks
---------------
+Visual similarity
+-----------------
 
-dupeGuru Picture mode stands apart of its two friends. Its scan types are completely different.
-The first one is its "Contents" scan, which is a bit too generic, hence the name we use here,
-"Picture blocks".
+Picture mode's **Visual similarity** scan finds images that may look alike even
+when their file bytes differ. It is distinct from Picture mode's
+**Byte-exact contents** scan.
 
 We decode the first image frame, apply EXIF orientation, convert a valid embedded
 ICC profile to sRGB, composite transparency onto a defined white background,
@@ -173,10 +178,11 @@ If that score is smaller or equal to ``100 - threshold``, we have a match.
 
 Visual scores are capped below the exact label. Even a perfect decoded-pixel
 score is an **Approximate similarity** result because encoding, metadata, and
-non-image payloads may differ. Use Standard mode's Contents scan when you need
-byte-exact evidence. Approximate results cannot authorize duplicate-removal
-quarantine. A complete, current scan may still support an explicit organizer
-Copy or Move for an Incoming Files item.
+non-image payloads may differ. Select **Byte-exact contents** in Picture mode
+when you need byte-exact evidence and the Picture review gallery. Approximate
+results cannot authorize duplicate-removal quarantine. A complete, current
+scan may still support an explicit organizer Copy or Move for an Incoming
+Files item.
 
 Candidate indexing usually removes nearly all pair comparisons in a diverse
 library. A pathological set in which many images share nearly identical

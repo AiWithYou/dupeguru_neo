@@ -101,8 +101,8 @@ class Photo(fs.File):
             "dupe_count": format_dupe_count(dupe_count),
         }
 
-    def _read_info(self, field):
-        fs.File._read_info(self, field)
+    def _read_info(self, field, strict=False):
+        fs.File._read_info(self, field, strict=strict)
         if field == "dimensions":
             self.dimensions = self._plat_get_dimensions()
             if self.get_orientation() in {5, 6, 7, 8}:

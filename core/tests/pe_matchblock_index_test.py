@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from core import engine
+from core import engine, fs
 from core.keeper import choose_keeper
 from core.pe import matchblock
 from core.pe.candidate_index import MultiIndexHamming
@@ -610,6 +610,34 @@ def test_scanner_exposes_receipt_and_never_promotes_visual_match_to_exact(tmp_pa
     assert scanner.candidate_stats.max_matches == matchblock.DEFAULT_MAX_MATCHES
     assert group.verification_kind is engine.VerificationKind.SIMILAR
     assert group.percentage == 99
+
+
+def test_picture_scanner_exposes_distinct_visual_and_byte_exact_modes(tmp_path):
+    options = ScannerPE.get_scan_options()
+    by_type = {option.scan_type: option.label for option in options}
+
+    assert set(by_type) == {
+        ScanType.FUZZYBLOCK,
+        ScanType.CONTENTS,
+        ScanType.EXIFTIMESTAMP,
+    }
+    assert len(set(by_type.values())) == len(by_type)
+
+    first_path = tmp_path / "first.png"
+    second_path = tmp_path / "second.png"
+    payload = b"byte-identical picture payload\n" * 64
+    first_path.write_bytes(payload)
+    second_path.write_bytes(payload)
+    scanner = ScannerPE()
+    scanner.scan_type = ScanType.CONTENTS
+
+    [group] = scanner.get_dupe_groups(
+        [fs.File(first_path), fs.File(second_path)],
+    )
+
+    assert group.verification_kind is engine.VerificationKind.VERIFIED_EXACT
+    assert group.evidence is not None
+    assert group.evidence.digest
 
 
 def test_ten_thousand_image_index_avoids_all_pairs_materialization():

@@ -49,10 +49,11 @@ Preferences
     list before matching and publishes no duplicate groups. The result receipt
     is marked resource-limited and bulk file actions remain disabled.
 
-    A byte-exact **Contents** scan first partitions files by size, applies
-    staged hashes only to candidates, and byte-compares the survivors. It does
-    not create Persistent Catalog history. The resumable catalog is a separate,
-    explicitly invoked ``dupeguru catalog`` CLI workflow.
+    A byte-exact **Contents** scan in Standard or Music mode, or
+    **Byte-exact contents** in Picture mode, first partitions files by size,
+    applies staged hashes only to candidates, and byte-compares the survivors.
+    It does not create Persistent Catalog history. The resumable catalog is a
+    separate, explicitly invoked ``dupeguru catalog`` CLI workflow.
 
 **Use regular expressions when filtering:**
     If you check this box, the filtering feature will treat your filter query as a

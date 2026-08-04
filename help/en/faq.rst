@@ -167,8 +167,8 @@ For NAS libraries, keep the catalog database on a local disk. The NAS may also
 provide weaker identity or durability guarantees; ``dupeguru doctor`` and the
 scan receipt report the detected capability.
 
-Why is Picture mode's contents scan so slow?
---------------------------------------------
+Why is Picture mode's visual similarity scan so slow?
+------------------------------------------------------
 
 Picture mode decodes and color-normalizes every new or changed image. It then
 uses a perceptual-hash index to retrieve nearby candidates and runs the detailed
@@ -176,9 +176,9 @@ uses a perceptual-hash index to retrieve nearby candidates and runs the detailed
 features, while a cold scan must still decode the library. Libraries containing
 many nearly identical images can also produce a large candidate set.
 
-If all you need to find is exact duplicates, just use the standard mode of dupeGuru with the
-Contents scan method. Exact mode avoids image decoding and gives the stronger
-byte-equality evidence required for a file action.
+If all you need to find is exact duplicates, choose **Byte-exact contents** in
+Picture mode. It avoids image decoding, gives the stronger byte-equality
+evidence required for a file action, and keeps the Picture review gallery.
 
 Where are user files located?
 -----------------------------

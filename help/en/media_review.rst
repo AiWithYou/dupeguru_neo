@@ -59,11 +59,13 @@ Keyboard review
 
 Use ``1`` to choose the selected image as keeper, ``2`` to toggle a green item
 that is eligible for quarantine, and ``Space`` to advance to the next group.
-For a green byte-verified exact group, ``Enter`` rechecks every non-keeper with
-the live safety gate, marks the whole eligible batch, and advances to the next
-group. If any member is no longer eligible, the batch is left unchanged. This
-one-decision keeper workflow changes review marks only; quarantine remains a
-separate explicit operation. It is never available to yellow, blue, gray,
-saved-report, or visual-query results. Use the explicit Copy or Move
-command—not the quarantine shortcut—to organize an eligible yellow or blue
-Incoming Files item.
+Choose **Byte-exact contents** to produce green groups in Picture mode. The
+fast review action **“Singularity”** means only pressing ``Enter`` on such a
+group to accept its keeper and continue. It rechecks whether every non-keeper
+is eligible to be marked from the current complete result, marks the whole
+batch, and advances to the next group. If any member is no longer eligible,
+the batch is left unchanged. This changes review marks only; quarantine is a
+separate explicit operation that performs fresh content verification. It is
+never available to yellow, blue, gray, saved-report, or visual-query results.
+Use the explicit Copy or Move command—not the quarantine shortcut—to organize
+an eligible yellow or blue Incoming Files item.

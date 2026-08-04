@@ -19,8 +19,10 @@ specialized features other modes have.
 Music mode scans only music files, but it supports tags comparison and its results window has many
 audio-related informational columns.
 
-Picture mode scans only pictures, but its contents scan type is a powerful fuzzy matcher that can
-find pictures that are similar without being exactly the same.
+Picture mode scans only pictures. **Visual similarity** is a perceptual matcher
+that can find images that look alike without being the same file, while
+**Byte-exact contents** uses the verified contents engine and preserves the
+Picture review gallery.
 
 Choosing an application mode not only changes available scan types in the selector below, but also
 changes available options in the preferences panel. Thus, if you want to fine tune your scan, be

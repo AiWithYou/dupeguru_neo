@@ -12,9 +12,11 @@ from hscommon.jobprogress.job import nulljob
 
 import core.app as app_module
 from core import engine, fs
+from core.app import AppMode
 from core.action_plan import build_bound_deletion_plan
 from core.directories import DirectoryState
 from core.destructive_eligibility import evaluate_relocation, evaluate_rename
+from core.pe import photo as photo_module
 from core.scanner import ScanType
 from core.tests.base import TestApp
 
@@ -121,6 +123,47 @@ def test_gui_contents_scan_is_direct_lightweight_and_finds_duplicates(tmp_path, 
     assert set(full_digest_paths) == {first, second}
     assert catalog_members(app) == ()
     assert fs.filesdb.conn.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 2
+
+
+def test_picture_gui_byte_exact_mode_publishes_live_verified_group(tmp_path, monkeypatch):
+    class ExactTestPhoto(photo_module.Photo):
+        def _plat_get_dimensions(self):
+            raise AssertionError("Byte-exact Picture scans must not decode image dimensions")
+
+        def _plat_get_blocks(self, block_count_per_side, orientation):
+            raise AssertionError("Byte-exact Picture scans must not decode image blocks")
+
+    root = tmp_path / "pictures"
+    root.mkdir()
+    first = root / "first.png"
+    second = root / "second.png"
+    payload = b"byte-identical picture payload\n" * 64
+    first.write_bytes(payload)
+    second.write_bytes(payload)
+    appdata = tmp_path / "appdata"
+    appdata.mkdir()
+    monkeypatch.setattr(
+        app_module.desktop,
+        "special_folder_path",
+        lambda _folder, portable=False: str(appdata),
+    )
+    monkeypatch.setattr(
+        photo_module,
+        "PLAT_SPECIFIC_PHOTO_CLASS",
+        ExactTestPhoto,
+    )
+    app = TestApp().app
+    app.app_mode = AppMode.PICTURE
+    app.options["scan_type"] = ScanType.CONTENTS
+    app.directories.add_path(root)
+
+    run_scan(app)
+
+    [group] = app.results.groups
+    assert {file.path for file in group} == {first, second}
+    assert group.verification_kind is engine.VerificationKind.VERIFIED_EXACT
+    assert app.results.scan_receipt.complete
+    assert all(file.validate_review_scan().content_digest is not None for file in group)
 
 
 def test_gui_contents_rescan_reuses_bounded_hash_rows_without_catalog_history(tmp_path, monkeypatch):

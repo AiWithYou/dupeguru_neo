@@ -27,7 +27,8 @@ class ScannerPE(Scanner):
     @staticmethod
     def get_scan_options():
         return [
-            ScanOption(ScanType.FUZZYBLOCK, tr("Contents")),
+            ScanOption(ScanType.FUZZYBLOCK, tr("Visual similarity")),
+            ScanOption(ScanType.CONTENTS, tr("Byte-exact contents")),
             ScanOption(ScanType.EXIFTIMESTAMP, tr("EXIF Timestamp")),
         ]
 
@@ -54,5 +55,7 @@ class ScannerPE(Scanner):
             return result
         elif self.scan_type == ScanType.EXIFTIMESTAMP:
             return matchexif.getmatches(files, self.match_scaled, j)
+        elif self.scan_type == ScanType.CONTENTS:
+            return super()._getmatches(files, j)
         else:
             raise ValueError("Invalid scan type")
