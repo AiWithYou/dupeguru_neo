@@ -229,6 +229,17 @@ class FakeThumbnailLoader(QObject):
         return self.pixmap
 
 
+@pytest.fixture(autouse=True)
+def use_fake_thumbnails_in_details_dialogs(monkeypatch):
+    """Keep unrelated dialog tests free of asynchronous worker lifetimes."""
+
+    class TestReviewGalleryWidget(ReviewGalleryWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent, thumbnail_loader=FakeThumbnailLoader())
+
+    monkeypatch.setattr(details_dialog_module, "ReviewGalleryWidget", TestReviewGalleryWidget)
+
+
 class FakeDetailsPanel:
     def __init__(self):
         self.view = None
@@ -411,6 +422,24 @@ def test_real_thumbnail_loader_decodes_after_decoration_request(qapp, tmp_path):
     assert model.thumbnail_waiter_count == 0
 
 
+def test_details_dialog_uses_real_thumbnail_loader_by_default(qapp, monkeypatch):
+    monkeypatch.setattr(details_dialog_module, "ReviewGalleryWidget", ReviewGalleryWidget)
+    group, _, _ = make_group()
+    model = FakeCoreModel(FakeResults(group), [])
+    parent = QMainWindow()
+    dialog = DetailsDialog(parent, FakeApplication(model))
+    loader = dialog.reviewGallery.model.thumbnail_loader
+
+    assert isinstance(loader, LazyThumbnailLoader)
+    assert loader.parent() is dialog.reviewGallery.model
+    assert loader.pending_count == 0
+
+    loader.close()
+    assert loader.thread_pool.waitForDone(3000)
+    dialog.close()
+    parent.close()
+
+
 def test_evicted_deferred_thumbnail_drops_model_waiter_without_repaint(qapp, tmp_path):
     class ManualPool:
         def __init__(self):
@@ -418,6 +447,10 @@ def test_evicted_deferred_thumbnail_drops_model_waiter_without_repaint(qapp, tmp
 
         def start(self, task):
             self.tasks.append(task)
+
+        def tryTake(self, task):
+            self.tasks.remove(task)
+            return True
 
     files = [FakeFile(tmp_path / f"missing-{index}.png") for index in range(3)]
     group = FakeGroup(files, VerificationKind.UNVERIFIED)

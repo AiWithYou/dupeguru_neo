@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from enum import Enum, IntEnum
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import (
     QAbstractListModel,
     QBuffer,
@@ -216,6 +217,65 @@ class _ThumbnailTaskSignals(QObject):
     loaded = pyqtSignal(str, int, object)
 
 
+class _ThumbnailTaskRuntime(QObject):
+    """Keep non-auto-deleting runnables alive independently of their view."""
+
+    finished = pyqtSignal(object)
+
+    def __init__(self):
+        super().__init__()
+        self._tasks: set[object] = set()
+        self.finished.connect(self.release, Qt.ConnectionType.QueuedConnection)
+
+    @property
+    def task_count(self) -> int:
+        return len(self._tasks)
+
+    def retain(self, task):
+        task.signals.setParent(self)
+        self._tasks.add(task)
+
+    @pyqtSlot(object)
+    def release(self, task):
+        if task not in self._tasks:
+            return
+        task.signals.deleteLater()
+        self._tasks.remove(task)
+
+    def is_retained(self, task) -> bool:
+        return task in self._tasks
+
+
+_THUMBNAIL_TASK_RUNTIME: _ThumbnailTaskRuntime | None = None
+
+
+def _thumbnail_task_runtime() -> _ThumbnailTaskRuntime:
+    global _THUMBNAIL_TASK_RUNTIME
+    if _THUMBNAIL_TASK_RUNTIME is not None and sip.isdeleted(_THUMBNAIL_TASK_RUNTIME):
+        if _THUMBNAIL_TASK_RUNTIME.task_count:
+            raise RuntimeError("thumbnail tasks outlived their Qt application")
+        _THUMBNAIL_TASK_RUNTIME = None
+    if _THUMBNAIL_TASK_RUNTIME is None:
+        _THUMBNAIL_TASK_RUNTIME = _ThumbnailTaskRuntime()
+    return _THUMBNAIL_TASK_RUNTIME
+
+
+def _drain_owned_thumbnail_pool(thread_pool, tasks, task_runtime):
+    """Finish Python runnables before QObject deletes their private pool."""
+
+    for task_id, task in tuple(tasks.items()):
+        if thread_pool.tryTake(task):
+            tasks.pop(task_id, None)
+            task_runtime.release(task)
+    # Calling the PyQt binding explicitly releases the GIL while it waits.
+    # Letting QObject delete the child pool would wait in C++ while retaining
+    # the GIL, which can deadlock a Python QRunnable finishing on a worker.
+    thread_pool.waitForDone()
+    for task in tuple(tasks.values()):
+        task_runtime.release(task)
+    tasks.clear()
+
+
 @contextmanager
 def _open_stable_thumbnail_source(
     path,
@@ -353,6 +413,7 @@ class _ThumbnailTask(QRunnable):
         max_source_bytes,
         max_source_pixels,
         allocation_limit_mb,
+        on_finished,
     ):
         super().__init__()
         self.key = key
@@ -366,6 +427,7 @@ class _ThumbnailTask(QRunnable):
         self.max_source_bytes = max_source_bytes
         self.max_source_pixels = max_source_pixels
         self.allocation_limit_mb = allocation_limit_mb
+        self.on_finished = on_finished
         self.signals = _ThumbnailTaskSignals()
 
     @pyqtSlot()
@@ -413,18 +475,23 @@ class _ThumbnailTask(QRunnable):
         finally:
             # A null image is an explicit terminal result.  The GUI thread can
             # always release ``_pending`` even when cache/source decoding fails.
-            self.signals.loaded.emit(self.key, self.generation, image)
+            try:
+                self.signals.loaded.emit(self.key, self.generation, image)
+            finally:
+                self.on_finished(self)
 
 
 class LazyThumbnailLoader(QObject):
     """Bounded asynchronous thumbnail cache.
 
     QImage decoding happens in a dedicated, bounded worker pool by default.
-    QPixmap conversion and cache mutation happen on the GUI thread in
-    ``_thumbnail_loaded``.  ``max_pending_tasks`` bounds active and deferred
-    work together.  When that bound requires a deferred request to be evicted,
-    ``thumbnailDiscarded`` tells clients to release its waiter without
-    immediately resubmitting it; a later natural paint may request it again.
+    Before a short-lived gallery destroys that pool, it drains Python workers
+    through the GIL-releasing PyQt API.  QPixmap conversion and cache mutation
+    happen on the GUI thread in ``_thumbnail_loaded``.  ``max_pending_tasks``
+    bounds active and deferred work together.  When that bound requires a
+    deferred request to be evicted, ``thumbnailDiscarded`` tells clients to
+    release its waiter without immediately resubmitting it; a later natural
+    paint may request it again.
     """
 
     thumbnailReady = pyqtSignal(str)
@@ -469,11 +536,22 @@ class LazyThumbnailLoader(QObject):
             thread_pool = QThreadPool(self)
             thread_pool.setMaxThreadCount(max_concurrent_tasks)
         self.thread_pool = thread_pool
+        self._task_runtime = _thumbnail_task_runtime()
         self.disk_cache = disk_cache or ThumbnailDiskCache()
         self._cache: OrderedDict[str, QPixmap] = OrderedDict()
         self._pending: set[str] = set()
         self._active: set[str] = set()
         self._deferred: OrderedDict[str, tuple[object, ...]] = OrderedDict()
+        self._tasks: dict[tuple[int, str], _ThumbnailTask] = {}
+        if self._owns_thread_pool:
+            owned_pool = self.thread_pool
+            owned_tasks = self._tasks
+            task_runtime = self._task_runtime
+
+            def drain_owned_pool(*_args):
+                _drain_owned_thumbnail_pool(owned_pool, owned_tasks, task_runtime)
+
+            self.destroyed.connect(drain_owned_pool)
         self._active_limit = min(max_concurrent_tasks, max_pending_tasks)
         self._generation = 0
         self._closed = False
@@ -528,7 +606,7 @@ class LazyThumbnailLoader(QObject):
             self.thumbnailDiscarded.emit(discarded_key)
 
         self._pending.add(key)
-        if len(self._active) < self._active_limit:
+        if len(self._tasks) < self._active_limit:
             self._start_request(key, request)
         else:
             self._deferred[key] = request
@@ -544,8 +622,12 @@ class LazyThumbnailLoader(QObject):
         """Forget cached rows and ignore results from already-running tasks."""
 
         self._generation += 1
-        if self._owns_thread_pool:
-            self.thread_pool.clear()
+        try_take = getattr(self.thread_pool, "tryTake", None)
+        if try_take is not None:
+            for task_id, task in tuple(self._tasks.items()):
+                if try_take(task):
+                    self._tasks.pop(task_id, None)
+                    self._task_runtime.release(task)
         self._cache.clear()
         self._pending.clear()
         self._active.clear()
@@ -561,7 +643,17 @@ class LazyThumbnailLoader(QObject):
 
     @pyqtSlot(str, int, object)
     def _thumbnail_loaded(self, key: str, generation: int, image):
-        if self._closed or generation != self._generation:
+        # Keep the runnable alive until its queued terminal signal has been
+        # delivered.  Popping before the generation checks also releases old
+        # work after clear(), while this local reference protects the signal
+        # sender through the rest of the slot.
+        task = self._tasks.pop((generation, key), None)
+        if task is None:
+            return
+        if self._closed:
+            return
+        if generation != self._generation:
+            self._start_next_deferred()
             return
         if key not in self._active:
             return
@@ -592,12 +684,24 @@ class LazyThumbnailLoader(QObject):
             max_source_bytes=self.max_source_bytes,
             max_source_pixels=self.max_source_pixels,
             allocation_limit_mb=self.allocation_limit_mb,
+            on_finished=self._task_runtime.finished.emit,
         )
+        task.setAutoDelete(False)
+        task_id = (self._generation, key)
+        self._tasks[task_id] = task
+        self._task_runtime.retain(task)
         task.signals.loaded.connect(self._thumbnail_loaded)
-        self.thread_pool.start(task)
+        try:
+            self.thread_pool.start(task)
+        except Exception:
+            self._tasks.pop(task_id, None)
+            self._task_runtime.release(task)
+            self._active.discard(key)
+            self._pending.discard(key)
+            raise
 
     def _start_next_deferred(self):
-        if self._closed or len(self._active) >= self._active_limit or not self._deferred:
+        if self._closed or len(self._tasks) >= self._active_limit or not self._deferred:
             return
         key, request = self._deferred.popitem(last=True)
         self._start_request(key, request)
