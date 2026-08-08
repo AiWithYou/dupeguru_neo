@@ -19,6 +19,12 @@
   re-run the downloaded EXE's `--version` and offscreen `--self-test`. Report
   the commit, EXE path or artifact link, actual SHA-256, and verification
   result.
+- Treat the current `origin/main` commit as the only latest development
+  artifact generation. After its complete CI succeeds, delete Actions
+  artifacts from every other commit. Keep workflow-run history as provenance,
+  let concurrency cancel superseded runs, and automatically delete merged
+  topic branches. After verifying a replacement local handoff, retain only its
+  exact-main directory and remove older generated outputs.
 - A local desktop build must use CPython 3.13.14, the pinned tools in
   `.github/workflows/default.yml`, a clean committed worktree, and a
   `SOURCE_DATE_EPOCH` equal to the commit timestamp. Build and verify the
