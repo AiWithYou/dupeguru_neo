@@ -4,15 +4,14 @@
 
 [**Windows 10 / 11版 5.4.0 をダウンロード（EXE）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
 [**macOS Apple Silicon版 5.4.0 をダウンロード（APP ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
-[ほかのリリース](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
 > 上の直接ダウンロードは、`desktop-5.4.0` タグのコミット `9c0241cf` に
 > 固定された公開済みデスクトップ・プレリリースです。この README は、特記が
 > ない限り現在の `main` を説明します。タグ公開後に追加された機能（画像詳細
-> ギャラリーの **Enter「保存対象を確定して次へ」** を含む）は、将来の公開版へ
-> 収録されるまで `main` の開発ビルドまたはソースでのみ利用できます。Windows
+> ギャラリーの **Enter「保存対象を確定して次へ」** を含む）は、`main` の最新
+> 開発ビルドまたはソースで利用できます。Windows
 > EXE は Authenticode 未署名、macOS APP は ad-hoc 署名のみで未公証です。
 
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
@@ -203,7 +202,8 @@ Windows EXE と macOS APP ZIP は、共通の
 から、GitHub へのログインなしで取得できます。さらに新しいコミットの短期保存ビルドは、
 [最新の成功した main push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 の Artifacts 欄から取得できます。Actions 成果物の取得には GitHub へのログインが
-必要で、保存期間は 7 日間です。
+必要です。最新 `main` の成果物だけを最大7日間保持し、次の `main` が完全に成功
+すると、それ以前のコミットの開発成果物は自動削除します。
 
 これらは正式な署名済み安定版ではありません。Windows の実行ファイルは
 Authenticode 未署名、macOS APP は ad-hoc 署名のみで Apple の公証を受けていない

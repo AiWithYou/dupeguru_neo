@@ -4,7 +4,6 @@
 
 [**Download 5.4.0 for Windows 10 / 11 (EXE)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
 [**Download 5.4.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
-[Other releases](https://github.com/AiWithYou/dupeguru_neo/releases) |
 [Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
 
 > [!NOTE]
@@ -12,8 +11,8 @@
 > commit `9c0241cf` by the `desktop-5.4.0` tag. Unless otherwise noted, this
 > README documents current `main`. Features added after that tag—including
 > **Enter — Accept keeper and next** in Picture mode's detail gallery—are
-> available only from a `main` development build or the current source until a
-> future release includes them. The Windows EXE is not Authenticode-signed;
+> available from the latest `main` development build or the current source.
+> The Windows EXE is not Authenticode-signed;
 > the macOS APP is only ad-hoc signed and is not Apple-notarized.
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
@@ -190,7 +189,9 @@ without a GitHub login. For newer short-retention builds, use the Artifacts
 section of the
 [latest successful main push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush).
 A GitHub login is required for Actions artifacts, which are retained for seven
-days.
+days at most. Only the latest successful `main` artifacts are kept; a later
+fully successful `main` run automatically deletes artifacts from superseded
+commits.
 
 These are not officially signed stable releases. The Windows executables are
 not Authenticode-signed; the macOS APP is ad-hoc signed and is not

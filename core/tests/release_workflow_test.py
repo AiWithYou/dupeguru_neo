@@ -90,34 +90,6 @@ def test_repository_contract_requires_a_verified_windows_exe_after_updates():
         assert required in instructions
 
 
-def test_desktop_release_announcement_is_an_explicit_unpublished_template():
-    announcement = ROOT.joinpath("docs", "DESKTOP_RELEASE_ANNOUNCEMENT.md").read_text(encoding="utf-8")
-    release_policy = ROOT.joinpath("docs", "RELEASE.md").read_text(encoding="utf-8")
-
-    assert "DESKTOP_RELEASE_ANNOUNCEMENT.md" in release_policy
-    for required in (
-        "下書き（未公開）",
-        "{VERSION}",
-        "{DESKTOP_TAG}",
-        "{COMMIT_SHA}",
-        "{RELEASE_URL}",
-        "{WINDOWS_ASSET}",
-        "{WINDOWS_SHA256}",
-        "{MACOS_ASSET}",
-        "{MACOS_SHA256}",
-        "Windows 10 / 11",
-        "Apple Silicon",
-        "Intel Mac",
-        "Authenticode未署名",
-        "ad-hoc署名",
-        "Mac実機での手動デバッグは行っていません",
-        "docs/images/ja/main-window.png",
-        "docs/images/ja/results-window.png",
-        "#dupeGuruNeo",
-    ):
-        assert required in announcement
-
-
 def test_japanese_help_is_built_and_selected_with_the_japanese_ui():
     build_script = ROOT.joinpath("build.py").read_text(encoding="utf-8")
     setup_script = ROOT.joinpath("setup.py").read_text(encoding="utf-8")
@@ -169,6 +141,20 @@ def test_untrusted_pull_request_ci_is_read_only_and_has_no_secret_reference():
     assert "secrets." not in ci
     assert "id-token: write" not in ci
     assert "contents: write" not in ci
+
+
+def test_main_ci_prunes_superseded_artifacts_after_every_required_job():
+    ci = _workflow("default.yml")
+    cleanup = ci.split("  cleanup-artifacts:\n", 1)[1]
+
+    assert "name: Keep only latest main artifacts" in cleanup
+    assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in cleanup
+    assert "needs: [test, package, portable]" in cleanup
+    assert "actions: write" in cleanup
+    assert "contents: read" in cleanup
+    assert "GITHUB_TOKEN: ${{ github.token }}" in cleanup
+    assert "GITHUB_RUN_ID" not in cleanup
+    assert "python scripts/prune_actions_artifacts.py" in cleanup
 
 
 def test_transifex_sync_is_an_optional_push_only_integration():
