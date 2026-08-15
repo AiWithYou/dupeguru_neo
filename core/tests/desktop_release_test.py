@@ -98,6 +98,9 @@ class FakeGitHub:
         raise AssertionError((path, fields))
 
     def array_api(self, path, *, fields=None):
+        if path == f"repos/{REPOSITORY}/releases":
+            assert fields == {"per_page": "100"}
+            return [] if self.release is None else [self.release]
         if path == f"repos/{REPOSITORY}/git/matching-refs/tags/desktop-{VERSION}":
             if self.tag_target is None:
                 return []
@@ -337,6 +340,23 @@ def test_draft_gate_rechecks_current_main_immediately_before_publication(tmp_pat
     )
 
     with pytest.raises(desktop_release.DesktopReleaseError, match="no longer current main"):
+        desktop_release.verify_remote_desktop_release(
+            REPOSITORY,
+            COMMIT,
+            VERSION,
+            directory,
+            published=False,
+            ci_run_id=RUN_ID,
+            api=github.api,
+            array_api=github.array_api,
+        )
+
+
+def test_draft_gate_requires_one_exact_release_listing_match(tmp_path):
+    directory = _asset_directory(tmp_path)
+    github = FakeGitHub(tag_target=COMMIT, release=None)
+
+    with pytest.raises(desktop_release.DesktopReleaseError, match="exactly one draft"):
         desktop_release.verify_remote_desktop_release(
             REPOSITORY,
             COMMIT,
