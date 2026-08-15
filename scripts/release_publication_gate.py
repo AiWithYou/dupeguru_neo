@@ -186,7 +186,7 @@ def validate_publication_state(
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
     return (
-        value.st_mode,
+        stat.S_IFMT(value.st_mode),
         value.st_size,
         value.st_mtime_ns,
         value.st_dev,

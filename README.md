@@ -2,17 +2,15 @@
 
 [English README](README.en.md) | **日本語**
 
-[**Windows 10 / 11版 5.4.0 をダウンロード（EXE）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
-[**macOS Apple Silicon版 5.4.0 をダウンロード（APP ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
-[最新の Windows / macOS 開発ビルド](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
+[**Windows 10 / 11版 5.4.1 をダウンロード（EXE）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe) |
+[**macOS Apple Silicon版 5.4.1 をダウンロード（APP ZIP）**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip)
 
 > [!NOTE]
-> 上の直接ダウンロードは、`desktop-5.4.0` タグのコミット `9c0241cf` に
-> 固定された公開済みデスクトップ・プレリリースです。この README は、特記が
-> ない限り現在の `main` を説明します。タグ公開後に追加された機能（画像詳細
-> ギャラリーの **Enter「保存対象を確定して次へ」** を含む）は、`main` の最新
-> 開発ビルドまたはソースで利用できます。Windows
-> EXE は Authenticode 未署名、macOS APP は ad-hoc 署名のみで未公証です。
+> 上の直接ダウンロードは、公開時点の `main` を `desktop-5.4.1` タグへ固定した
+> 恒久公開デスクトップ・プレリリースです。GitHub へのログインは不要で、
+> Actions 成果物のような有効期限もありません。この README は、特記がない限り
+> 現在の `main` を説明します。Windows EXE は Authenticode 未署名、macOS APP は
+> ad-hoc 署名のみで未公証です。
 
 dupeGuru Neo は、Windows、macOS、Linux に対応した、安全性を最優先する
 重複検出・大規模メディアライブラリ整理ツールです。dupeGuru の成熟した
@@ -143,8 +141,8 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 「チェックした完全一致ファイルを隔離…」を使えるのは、現在の完全なスキャンで
 バイト単位の一致が確認された、チェック済みファイルだけです。類似・不完全・
-保存済み結果は確認専用のままです。隔離は即時の完全削除ではなく、復元可能な
-領域への移動です。
+保存済み結果は確認専用のままです。隔離では、ファイルを復元可能な領域へ移動
+します。即時に完全削除しません。
 
 ![日本語表示の重複確認画面](docs/images/ja/results-window.png)
 
@@ -177,33 +175,31 @@ Version 5 の初回スキャンで新しい専用キャッシュへ完全ハッ�
 
 ## すぐ使えるデスクトップ版
 
-現在の `main` が報告するパッケージ版番号も **5.4.0** ですが、公開済み
-`desktop-5.4.0` タグと同一のソーススナップショットではありません。
+恒久公開版のパッケージ版番号は **5.4.1** です。`desktop-5.4.1` タグが
+公開した正確なソーススナップショットを識別します。
 
 - **Windows 10 / 11（64ビット）:**
-  [**5.4.0 EXE を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe)
+  [**5.4.1 EXE を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe)
   します。ダウンロードしたEXEをダブルクリックしてください。ZIPの展開、
   Python、インストーラーは不要です。SmartScreenが表示された場合は、
   発行元が未署名であることを確認したうえで実行するか判断してください。
 - **チェックサム:**
-  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe.sha256)
+  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe.sha256)
 - **macOS（Apple Silicon／arm64）:**
-  [**5.4.0 APP ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip)
+  [**5.4.1 APP ZIP を直接ダウンロード**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip)
   します。ZIP を展開し、`dupeguru-neo.app` を `Applications` フォルダーへ
   移動してください。初回はアプリを Control キーを押しながらクリックして
   「開く」を選びます。macOS の設定によっては「プライバシーとセキュリティ」
   から実行許可が必要です。Python やインストーラーは不要です。Intel Mac
   （x86_64）向けではありません。
 - **macOS チェックサム:**
-  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip.sha256)
+  [SHA-256 ファイル](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip.sha256)
 
 Windows EXE と macOS APP ZIP は、共通の
-[5.4.0 デスクトップ・プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.0)
-から、GitHub へのログインなしで取得できます。さらに新しいコミットの短期保存ビルドは、
-[最新の成功した main push CI](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
-の Artifacts 欄から取得できます。Actions 成果物の取得には GitHub へのログインが
-必要です。最新 `main` の成果物だけを最大7日間保持し、次の `main` が完全に成功
-すると、それ以前のコミットの開発成果物は自動削除します。
+[5.4.1 恒久公開デスクトップ・プレリリース](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.1)
+から、GitHub へのログインなしで期限なく取得できます。一般利用者向けの配布入口は
+この Release だけです。`main` の CI 成果物は公開前の検証用として短期保存し、配布 URL
+として案内しません。
 
 これらは正式な署名済み安定版ではありません。Windows の実行ファイルは
 Authenticode 未署名、macOS APP は ad-hoc 署名のみで Apple の公証を受けていない
@@ -300,9 +296,10 @@ dupeguru catalog backup catalog.sqlite3 catalog-backup.sqlite3
 ファイル操作を実行しません。変更レコードは version 2 の
 `dupeguru.catalog-change-record` スキーマを使います。信頼できるイベント
 ジャーナル証拠がない場合、2 つのパスで観測された 1 対 1 の安定ネイティブ ID は、
-証明済み `moved` ではなく `relocation_candidate` として報告します。候補の分類は、
-継続性の根拠が同じカタログ内容世代か、一致する canonical な完全 SHA-256
-成果物かを明示します。どちらも破壊的操作の権限にはなりません。
+移動の可能性を示す `relocation_candidate` として報告します。この記録は、証明済み
+`moved` の条件を満たしません。候補の分類は、継続性の根拠が同じカタログ内容世代か、
+canonical な完全 SHA-256 成果物が同値かを明示します。どちらも破壊的操作の権限には
+なりません。
 
 カタログの完全一致グループは、再構築可能な
 `dupeguru.catalog-group-record-v2` JSONL 契約を使います。最初に `header`、
@@ -339,8 +336,8 @@ dupeguru dataset prepare-root Incoming --destination-root Organized
 
 データセット復旧メタデータは、常に予約済み
 `.dupeguru-neo-dataset-executor` ディレクトリ以下へ隔離し、後続スキャンから
-除外します。`--state-root` を指定すると、それを状態ファイルそのものではなく
-基底ディレクトリとして扱い、その予約済み子ディレクトリを使います。
+除外します。`--state-root` に指定したパスを基底ディレクトリとして扱い、その下の
+予約済み子ディレクトリへ状態ファイルを保存します。
 
 Visual レポートに含まれる証拠は `similar` と `related` だけで、破壊的操作の
 権限を与えません。ファイル数、候補数、一致数、デコード画素数、時間の上限は
@@ -368,8 +365,9 @@ JSONL は物理行ごとに最大 8 MiB、総量 2 GiB、1,100,000 物理行、
 です。JSON／CSV の plan export は 128 MiB の公開上限付きでストリーミング
 します。これらは交換形式の上限です。クラッシュ復旧可能な 1 回の dataset apply
 トランザクションは最大 10,000 ファイルレコードです。それを超える計画は分割が
-必要です。完全な復旧ジャーナルを変更前に予約するため、非常に長いパスが多い場合は
-実用上の件数上限が下がることがあります。上限は UTF-8 バイトで数え、超過入力・
+必要です。完全な復旧ジャーナルを変更前に予約するため、パスの UTF-8 表現が長いほど、
+1 トランザクションで扱えるファイル件数が 10,000 未満になる場合があります。上限は
+UTF-8 バイトで数え、超過入力・
 出力は保存先を公開または置換せず、データセットを変更する前に失敗します。Raw
 CSV は信頼できないパスと ID をそのまま保持するため、表計算ソフトで開かないで
 ください。API 利用者は、損失の可能性を承知したうえで

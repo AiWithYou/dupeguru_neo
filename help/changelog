@@ -1,3 +1,13 @@
+=== 5.4.1 (2026-08-15)
+* Keep large-image review responsive with virtualized rows, lazy bounded
+  thumbnails, batched layout, and linear exact-group navigation.
+* Add the all-or-nothing ``Singularity`` shortcut for accepting one keeper and
+  advancing through byte-exact Picture groups.
+* Restore lightweight direct content scans, strengthen exact-result and cache
+  safety, and stabilize thumbnail worker shutdown.
+* Publish verified Windows and Apple Silicon desktop builds as a permanent,
+  no-login ``desktop-*`` pre-release after exact main CI and CodeQL succeed.
+
 === 5.4.0 (2026-07-29)
 * Simplify the desktop duplicate workflow into two clear steps: choose folders,
   then scan.

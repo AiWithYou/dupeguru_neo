@@ -220,6 +220,8 @@ def test_desktop_sidecars_include_checksum_usage_and_exact_source(tmp_path, monk
     assert "EXEをダブルクリック" in guide
     assert "not Authenticode-signed" in guide
     assert f"https://github.com/AiWithYou/dupeguru_neo/tree/{commit}" in guide
+    assert "An exact copy may be published permanently in a desktop-* GitHub pre-release." in guide
+    assert "This is not an official signed stable release asset." in guide
 
 
 def test_desktop_source_identity_rejects_a_dirty_tree(tmp_path, monkeypatch):
