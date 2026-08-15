@@ -1,0 +1,143 @@
+name: Permanent desktop release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: permanent-desktop-release
+  cancel-in-progress: false
+
+jobs:
+  publish-desktop:
+    name: Publish verified Windows and macOS desktop release
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+      RELEASE_RUN_ID: ${{ github.event.workflow_run.id }}
+    steps:
+      - name: Check out the exact successful main revision
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Set up Python 3.13.14
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: "3.13.14"
+      - name: Require exact current main CI and CodeQL before a new version is published
+        id: plan
+        run: >-
+          python scripts/desktop_release.py plan
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${RELEASE_COMMIT}"
+          --ci-run-id "${RELEASE_RUN_ID}"
+          --project-root .
+          --github-output "${GITHUB_OUTPUT}"
+      - name: Download the exact checked Windows EXE
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dupeguru-neo-windows-exe-${{ github.event.workflow_run.head_sha }}
+          path: desktop-dist
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Download the exact checked macOS APP
+        if: steps.plan.outputs.publish == 'true'
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: dupeguru-neo-macos-app-${{ github.event.workflow_run.head_sha }}
+          path: desktop-dist
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Verify the permanent desktop payload and generate release notes
+        if: steps.plan.outputs.publish == 'true'
+        run: >-
+          python scripts/desktop_release.py verify-local
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${RELEASE_COMMIT}"
+          --version "${{ steps.plan.outputs.version }}"
+          --directory desktop-dist
+          --notes-output "${RUNNER_TEMP}/desktop-release-notes.md"
+      - name: Revalidate current main immediately before creating the tag
+        id: final-plan
+        if: steps.plan.outputs.publish == 'true'
+        run: >-
+          python scripts/desktop_release.py plan
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${RELEASE_COMMIT}"
+          --ci-run-id "${RELEASE_RUN_ID}"
+          --project-root .
+          --github-output "${GITHUB_OUTPUT}"
+          --wait-seconds 0
+      - name: Create the fixed desktop source tag
+        if: steps.final-plan.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: >-
+          gh api
+          --method POST
+          -H "Accept: application/vnd.github+json"
+          -H "X-GitHub-Api-Version: 2026-03-10"
+          "repos/${GITHUB_REPOSITORY}/git/refs"
+          -f "ref=refs/tags/${RELEASE_TAG}"
+          -f "sha=${RELEASE_COMMIT}"
+      - name: Upload all six exact assets to a non-public draft
+        if: steps.final-plan.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.plan.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${RELEASE_TAG}" \
+            desktop-dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --verify-tag \
+            --draft \
+            --prerelease \
+            --latest=false \
+            --title "dupeGuru Neo ${RELEASE_VERSION} Desktop — 恒久公開版" \
+            --notes-file "${RUNNER_TEMP}/desktop-release-notes.md"
+      - name: Bind the draft asset set to the locally verified bytes
+        if: steps.final-plan.outputs.publish == 'true'
+        run: >-
+          python scripts/desktop_release.py verify-remote
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${RELEASE_COMMIT}"
+          --version "${{ steps.plan.outputs.version }}"
+          --directory desktop-dist
+          --ci-run-id "${RELEASE_RUN_ID}"
+          --draft
+      - name: Publish the permanent desktop pre-release
+        if: steps.final-plan.outputs.publish == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.plan.outputs.tag }}
+        run: >-
+          gh release edit "${RELEASE_TAG}"
+          --repo "${GITHUB_REPOSITORY}"
+          --draft=false
+          --prerelease
+          --latest=false
+      - name: Verify the public tag, notes, and exact asset bytes
+        if: steps.final-plan.outputs.publish == 'true'
+        run: >-
+          python scripts/desktop_release.py verify-remote
+          --repository "${GITHUB_REPOSITORY}"
+          --commit "${RELEASE_COMMIT}"
+          --version "${{ steps.plan.outputs.version }}"
+          --directory desktop-dist
+          --published

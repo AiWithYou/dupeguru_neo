@@ -1,3 +1,12 @@
+dupeguru (5.4.1-1) unstable; urgency=medium
+
+  * Keep large-image review virtualized, lazy, bounded, and responsive.
+  * Add the all-or-nothing Singularity shortcut for byte-exact Picture groups.
+  * Restore lightweight direct scans and stabilize cache and worker safety.
+  * Publish verified desktop builds through a permanent public pre-release.
+
+ -- AiWithYou contributors <noreply@github.com>  Sat, 15 Aug 2026 00:00:00 +0000
+
 dupeguru (5.4.0-1) unstable; urgency=medium
 
   * Simplify the desktop duplicate workflow into two clear steps.

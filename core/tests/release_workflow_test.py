@@ -19,11 +19,11 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
 
     assert "[English README](README.en.md)" in "\n".join(readme.splitlines()[:8])
     assert "README（GitHub既定）" in "\n".join(english.splitlines()[:8])
-    assert f"現在の `main` が報告するパッケージ版番号も **{__version__}**" in readme
-    assert f"Current `main` still reports package version **{__version__}**" in english
+    assert f"恒久公開版のパッケージ版番号は **{__version__}**" in readme
+    assert f"permanently published package version is **{__version__}**" in english
     for text in (readme, english):
         assert "https://github.com/AiWithYou/dupeguru_neo/releases" in text
-        assert "actions/workflows/default.yml?query=branch%3Amain+event%3Apush" in text
+        assert "actions/workflows/default.yml?query=branch%3Amain+event%3Apush" not in text
         assert f"releases/tag/desktop-{__version__}" in text
         assert (
             f"releases/download/desktop-{__version__}/" f"dupeguru-neo-{__version__}-windows-x86_64-unsigned.exe"
@@ -35,7 +35,7 @@ def test_top_level_readme_exposes_a_complete_japanese_entry_point():
         assert "dupeguru-neo-5.0.0-" not in text
         assert "desktop-5.3.0-dev" not in text
         assert "desktop-5.3.0-macos-dev" not in text
-        assert "9c0241cf" in text
+        assert "9c0241cf" not in text
         assert "Singularity" in text or "シンギュラリティ" in text
         assert "CPython 3.13.14" in text
         assert "scripts/portable_bundle.py build" in text
@@ -85,6 +85,9 @@ def test_repository_contract_requires_a_verified_windows_exe_after_updates():
         "scripts/desktop_bundle.py build",
         "scripts/desktop_bundle.py verify",
         "fail if it differs from the `.exe.sha256` sidecar",
+        "Permanent desktop release / Publish",
+        "desktop-<version>",
+        "publishing changed bytes requires another version bump",
         "Never commit them",
     ):
         assert required in instructions
@@ -155,6 +158,46 @@ def test_main_ci_prunes_superseded_artifacts_after_every_required_job():
     assert "GITHUB_TOKEN: ${{ github.token }}" in cleanup
     assert "GITHUB_RUN_ID" not in cleanup
     assert "python scripts/prune_actions_artifacts.py" in cleanup
+
+
+def test_new_version_is_published_only_from_exact_successful_main_desktop_artifacts():
+    workflow = _workflow("desktop-release.yml")
+
+    for required in (
+        "name: Permanent desktop release",
+        "workflow_run:",
+        "workflows: [CI]",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+        "github.event.workflow_run.head_branch == 'main'",
+        "github.event.workflow_run.head_repository.full_name == github.repository",
+        "actions: read",
+        "contents: write",
+        "ref: ${{ github.event.workflow_run.head_sha }}",
+        'python-version: "3.13.14"',
+        "scripts/desktop_release.py plan",
+        "dupeguru-neo-windows-exe-${{ github.event.workflow_run.head_sha }}",
+        "dupeguru-neo-macos-app-${{ github.event.workflow_run.head_sha }}",
+        "scripts/desktop_release.py verify-local",
+        "scripts/desktop_release.py verify-remote",
+        "Revalidate current main immediately before creating the tag",
+        "steps.final-plan.outputs.publish == 'true'",
+        "--draft",
+        "--published",
+        "gh release create",
+        "--verify-tag",
+        "--prerelease",
+        "--latest=false",
+        "--draft=false",
+    ):
+        assert required in workflow
+    assert workflow.count("scripts/desktop_release.py verify-remote") == 2
+    assert workflow.count("scripts/desktop_release.py plan") == 2
+    publication_gate = ROOT.joinpath("scripts", "desktop_release.py").read_text(encoding="utf-8")
+    assert "codeql-analysis.yml" in publication_gate
+    assert "pull_request:" not in workflow
+    assert "secrets." not in workflow
+    assert "continue-on-error" not in workflow
 
 
 def test_transifex_sync_is_an_optional_push_only_integration():

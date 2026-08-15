@@ -2,17 +2,14 @@
 
 [**日本語版 README（GitHub既定）**](README.md) | English
 
-[**Download 5.4.0 for Windows 10 / 11 (EXE)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe) |
-[**Download 5.4.0 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip) |
-[Latest Windows / macOS development build](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush)
+[**Download 5.4.1 for Windows 10 / 11 (EXE)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe) |
+[**Download 5.4.1 for macOS Apple Silicon (APP ZIP)**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip)
 
 > [!NOTE]
-> The direct downloads above are the published desktop prerelease fixed at
-> commit `9c0241cf` by the `desktop-5.4.0` tag. Unless otherwise noted, this
-> README documents current `main`. Features added after that tag—including
-> **Enter — Accept keeper and next** in Picture mode's detail gallery—are
-> available from the latest `main` development build or the current source.
-> The Windows EXE is not Authenticode-signed;
+> The direct downloads above are the permanent desktop pre-release fixed from
+> `main` at publication time by the `desktop-5.4.1` tag. They require no GitHub
+> login and do not expire like Actions artifacts. Unless otherwise noted, this
+> README documents current `main`. The Windows EXE is not Authenticode-signed;
 > the macOS APP is only ad-hoc signed and is not Apple-notarized.
 
 dupeGuru Neo is a safety-first duplicate detector and large media-library
@@ -164,34 +161,30 @@ not immediate permanent deletion.
 
 ## Easy-launch desktop builds
 
-Current `main` still reports package version **5.4.0**, but it is not the same
-source snapshot as the published `desktop-5.4.0` tag.
+The permanently published package version is **5.4.1**. The `desktop-5.4.1`
+tag identifies its exact published source snapshot.
 
 - **64-bit Windows 10 / 11:**
-  [**Download the 5.4.0 EXE directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe).
+  [**Download the 5.4.1 EXE directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe).
   Double-click the downloaded EXE. No ZIP extraction, Python installation, or
   installer is required. If SmartScreen appears, review the unsigned-publisher
   warning before deciding whether to run it.
 - **Checksum:**
-  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-windows-x86_64-unsigned.exe.sha256)
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-windows-x86_64-unsigned.exe.sha256)
 - **macOS (Apple Silicon / arm64):**
-  [**Download the 5.4.0 APP ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip).
+  [**Download the 5.4.1 APP ZIP directly**](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip).
   Expand the ZIP and move `dupeguru-neo.app` to Applications. On first launch,
   Control-click the app and choose Open. Depending on the macOS configuration,
   you may also need to allow it under Privacy & Security. Python and an
   installer are not required. This build does not support Intel Macs (x86_64).
 - **macOS checksum:**
-  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.0/dupeguru-neo-5.4.0-macos-arm64-adhoc.app.zip.sha256)
+  [SHA-256 sidecar](https://github.com/AiWithYou/dupeguru_neo/releases/download/desktop-5.4.1/dupeguru-neo-5.4.1-macos-arm64-adhoc.app.zip.sha256)
 
 The Windows EXE and macOS APP ZIP are permanently available from the unified
-[5.4.0 desktop pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.0)
-without a GitHub login. For newer short-retention builds, use the Artifacts
-section of the
-[latest successful main push CI run](https://github.com/AiWithYou/dupeguru_neo/actions/workflows/default.yml?query=branch%3Amain+event%3Apush).
-A GitHub login is required for Actions artifacts, which are retained for seven
-days at most. Only the latest successful `main` artifacts are kept; a later
-fully successful `main` run automatically deletes artifacts from superseded
-commits.
+[5.4.1 permanent desktop pre-release](https://github.com/AiWithYou/dupeguru_neo/releases/tag/desktop-5.4.1)
+without a GitHub login or expiration. This Release is the only end-user
+download entry point. Short-retention main CI artifacts remain publication
+inputs and are not documented as distribution URLs.
 
 These are not officially signed stable releases. The Windows executables are
 not Authenticode-signed; the macOS APP is ad-hoc signed and is not

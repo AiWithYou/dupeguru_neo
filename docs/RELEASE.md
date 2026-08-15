@@ -86,13 +86,32 @@ named `unsigned` and `adhoc`, respectively. They are not copied into `dist`,
 are not signed by that workflow, and are excluded from the official release
 payload and attestation.
 
-For easier installation, a separately named `desktop-*` GitHub development
-pre-release may mirror one exact pair that already passed those checks. The
-mirror must retain the original artifact bytes and SHA-256 sidecars, name the
-exact source commit, carry bilingual unsigned/ad-hoc trust warnings, and remain
-marked as a pre-release. This convenience channel does not weaken the `v*`
-official-release allowlist and does not turn a frozen desktop artifact into an
-official release asset of the signed stable `v*` channel.
+For easier installation, `.github/workflows/desktop-release.yml` permanently
+publishes one separately named `desktop-<version>` GitHub development
+pre-release when a new stable three-part `core.__version__` first reaches
+`main`. It runs only after the exact main CI succeeds, independently requires a
+successful CodeQL push run for the same commit, and refuses a superseded main
+commit. The workflow downloads the already checked Windows and macOS artifacts
+from that exact CI run; it does not rebuild or normalize them.
+
+`scripts/desktop_release.py` requires the exact six-file allowlist: both native
+artifacts, both SHA-256 sidecars, and both bilingual usage notes. It binds the
+sidecars and exact source URL to the local bytes, creates a fixed lightweight
+`desktop-*` tag, uploads a non-public draft, compares every remote asset name,
+size, and GitHub-reported SHA-256 with the local payload, and only then makes
+the pre-release public. A version whose complete public desktop pre-release
+already exists is an idempotent no-op; publishing changed source requires a new
+version. Release assets have no Actions retention deadline and need no GitHub
+login to download.
+
+The desktop mirror retains the original artifact bytes, names the exact source
+commit, carries bilingual unsigned/ad-hoc trust warnings, and remains marked as
+a pre-release. Once a replacement is public and independently verified, older
+desktop Release asset sets may be retired while their lightweight source tags,
+workflow history, and Git history remain as provenance. This convenience
+channel does not weaken the `v*` official-release allowlist and does not turn a
+frozen desktop artifact into an official release asset of the signed stable
+`v*` channel.
 
 This is a source-completeness boundary, not a naming preference. Binary Python
 wheels may contain native libraries below the Python-distribution level. For

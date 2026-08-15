@@ -720,8 +720,10 @@ def _write_sidecars(
             f"Exact source / 対応ソース:\n{source_url}\n\n"
             "GPLv3、第三者ライセンス、依存関係・ソース情報は成果物内に同梱されています。\n"
             "GPLv3, third-party notices, dependency inventory, and source mappings are embedded.\n"
-            "公式リリース資産ではなく、短期保存されるCI開発成果物です。\n"
-            "This is a short-retention CI development artifact, not an official release asset.\n"
+            "CI 上のコピーは短期保存ですが、同一バイトを desktop-* GitHub プレリリースで恒久公開できます。\n"
+            "An exact copy may be published permanently in a desktop-* GitHub pre-release.\n"
+            "正式な署名済み安定版の資産ではありません。\n"
+            "This is not an official signed stable release asset.\n"
         ),
         encoding="utf-8",
         newline="\n",

@@ -25,6 +25,16 @@
   let concurrency cancel superseded runs, and automatically delete merged
   topic branches. After verifying a replacement local handoff, retain only its
   exact-main directory and remove older generated outputs.
+- When `core.__version__` changes, wait for `Permanent desktop release / Publish
+  verified Windows and macOS desktop release` on that exact `main` commit.
+  Confirm that the public `desktop-<version>` pre-release tag resolves to the
+  commit and contains exactly the Windows EXE, macOS APP ZIP, their SHA-256
+  sidecars, and both source receipts. A same-version source change remains a
+  development build; publishing changed bytes requires another version bump.
+- After independently verifying a replacement permanent desktop pre-release,
+  keep only that latest public desktop Release asset set. Remove older
+  `desktop-*` GitHub Releases without deleting their lightweight source tags,
+  workflow history, or Git history.
 - A local desktop build must use CPython 3.13.14, the pinned tools in
   `.github/workflows/default.yml`, a clean committed worktree, and a
   `SOURCE_DATE_EPOCH` equal to the commit timestamp. Build and verify the
