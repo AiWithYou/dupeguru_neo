@@ -223,6 +223,29 @@ def _validate_existing_release(
     _validate_existing_asset_records(assets, version)
 
 
+def _draft_release_by_tag(
+    array_api: Callable[..., list[Any]],
+    repository: str,
+    tag: str,
+) -> Mapping[str, Any]:
+    """Find one draft release, which GitHub's release-by-tag API omits."""
+
+    documents = array_api(
+        f"repos/{repository}/releases",
+        fields={"per_page": str(_ASSET_PAGE_SIZE)},
+    )
+    if len(documents) >= _ASSET_PAGE_SIZE:
+        raise DesktopReleaseError("release listing reached the single-page safety limit")
+    matches = []
+    for value in documents:
+        release = _require_mapping(value, "release listing entry")
+        if release.get("tag_name") == tag:
+            matches.append(release)
+    if len(matches) != 1:
+        raise DesktopReleaseError("GitHub must return exactly one draft desktop release")
+    return matches[0]
+
+
 def _validate_ci_run(
     api: Callable[..., Mapping[str, Any]],
     repository: str,
@@ -540,10 +563,13 @@ def verify_remote_desktop_release(
     tag = f"desktop-{version}"
     if _exact_tag_target(array_api, repository, tag) != commit:
         raise DesktopReleaseError("desktop release tag does not resolve to the expected commit")
-    release = _require_mapping(
-        api(f"repos/{repository}/releases/tags/{quote(tag, safe='')}"),
-        "desktop release",
-    )
+    if published:
+        release = _require_mapping(
+            api(f"repos/{repository}/releases/tags/{quote(tag, safe='')}"),
+            "desktop release",
+        )
+    else:
+        release = _draft_release_by_tag(array_api, repository, tag)
     release_id = release.get("id")
     if type(release_id) is not int or release_id <= 0:
         raise DesktopReleaseError("desktop release has an invalid id")
